@@ -17,10 +17,15 @@ Thumbs.db
 .idea/
 
 # Local results
-results_pages/
+result/
 *.docx
-merged.md
+*.pdf
+*.png
+*.md
+
+# Local tooling artifacts
+.specstory/
+.cursorindexingignore
 
 # Logs / misc
 *.log
-

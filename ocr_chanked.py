@@ -1,73 +1,96 @@
+import argparse
 import os
-import re
 import sys
 import time
+import platform
 import subprocess
 from pathlib import Path
 
 from pdf2image import convert_from_path, pdfinfo_from_path
 
+from ocr import OcrOptions, run_ocr, build_command
+
+"""PDF をチャンク処理しながら OCR するユーティリティ。
+
+例:
+    poetry run python ocr_chanked.py input.pdf --start 11 --end 20
 """
-使い方:
-    poetry run python ocr_chunked.py input.pdf
-"""
 
-CHUNK_SIZE = 10          # 10ページ単位
-REST_SECONDS = 10        # チャンクごとの休憩秒数
 
-if len(sys.argv) < 2:
-    print("使い方: poetry run python ocr_chunked.py <PDFファイル>")
-    sys.exit(1)
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="PDF をチャンク処理で OCR")
+    parser.add_argument("pdf_path", help="入力 PDF ファイル")
+    parser.add_argument("--start", type=int, default=1, help="開始ページ (1 起点)")
+    parser.add_argument("--end", type=int, default=None, help="終了ページ (指定なしは最終ページ)")
+    parser.add_argument(
+        "--chunk-size",
+        type=int,
+        default=10,
+        help="チャンク単位のページ数 (既定: 10)",
+    )
+    parser.add_argument(
+        "--rest-seconds",
+        type=int,
+        default=10,
+        help="チャンク完了後の休憩秒数 (既定: 10)",
+    )
+    parser.add_argument(
+        "--mode",
+        choices=["lite", "full"],
+        default="lite",
+        help="YomiToku のモード (lite or full)",
+    )
+    return parser.parse_args()
 
-PDF_PATH = Path(sys.argv[1])
+
+args = parse_args()
+
+PDF_PATH = Path(args.pdf_path)
 
 if not PDF_PATH.exists():
     print(f"エラー: {PDF_PATH} が見つかりません: {PDF_PATH}")
     sys.exit(1)
 
+CHUNK_SIZE = max(1, args.chunk_size)
+REST_SECONDS = max(0, args.rest_seconds)
+
 # プロジェクト内 poppler
 BASE_DIR = Path(__file__).resolve().parent
-POPPLER_PATH = BASE_DIR / "poppler" / "Library" / "bin"
 
-if not POPPLER_PATH.exists():
-    print(f"エラー: poppler が見つかりません: {POPPLER_PATH}")
-    sys.exit(1)
 
+def resolve_poppler_path(base_dir: Path) -> Path:
+    system = sys.platform
+    candidates: list[Path] = []
+
+    if system.startswith("win"):
+        candidates.append(base_dir / "poppler" / "win" / "bin")
+        candidates.append(base_dir / "poppler" / "Library" / "bin")  # legacy 互換
+    elif system == "darwin":
+        candidates.append(base_dir / "poppler" / "macos" / "bin")
+        candidates.append(Path("/opt/homebrew/opt/poppler/bin"))
+        candidates.append(Path("/usr/local/opt/poppler/bin"))
+    else:
+        candidates.append(base_dir / "poppler" / system / "bin")
+
+    for path in candidates:
+        if path.exists():
+            return path
+
+    raise FileNotFoundError(
+        "Poppler バイナリが見つかりません。OS ごとの bin ディレクトリを用意するか、"
+        "Homebrew / Choco などでインストールして PATH を設定してください。"
+    )
+
+
+POPPLER_PATH = resolve_poppler_path(BASE_DIR)
 os.environ["PATH"] = str(POPPLER_PATH) + os.pathsep + os.environ.get("PATH", "")
 
-OUT_DIR = Path("results_pages")
-OUT_DIR.mkdir(exist_ok=True)
+RESULT_ROOT = Path("result")
+OUT_DIR = RESULT_ROOT / PDF_PATH.stem
+OUT_DIR.mkdir(parents=True, exist_ok=True)
+(OUT_DIR / "figures").mkdir(exist_ok=True)
 
-RAW_MD_PATTERN = re.compile(rf"{re.escape(OUT_DIR.name)}_page_(\d+)_p(\d+)\.md")
-ALT_MD_PATTERN = re.compile(r"page_?(\d+)(?:_p(\d+))?\.md")
-TARGET_MD_PATTERN = re.compile(r"page_(\d+)(?:_p(\d+))?\.md")
-
-
-def normalize_md_files(target_page=None):
-    for md_path in OUT_DIR.glob("*.md"):
-        name = md_path.name
-        if TARGET_MD_PATTERN.fullmatch(name):
-            continue
-        match = RAW_MD_PATTERN.fullmatch(name)
-        if not match:
-            match = ALT_MD_PATTERN.fullmatch(name)
-        if not match:
-            continue
-
-        page_num = int(match.group(1))
-        part = int(match.group(2) or "1")
-
-        if target_page is not None and page_num != target_page:
-            continue
-
-        suffix = "" if part <= 1 else f"_p{part:02}"
-        new_path = OUT_DIR / f"page_{page_num:03}{suffix}.md"
-        if new_path.exists():
-            new_path.unlink()
-        md_path.rename(new_path)
-
-
-normalize_md_files()
+OPTIONS = OcrOptions(mode=args.mode, device="cpu", enable_figure=True)
 
 
 def run_merger(base_name: str):
@@ -76,7 +99,14 @@ def run_merger(base_name: str):
         print("merged_md.py が見つからないため、自動マージはスキップします。")
         return
 
-    cmd = [sys.executable, str(merger), "--base-name", base_name]
+    cmd = [
+        sys.executable,
+        str(merger),
+        "--input",
+        str(OUT_DIR),
+        "--base-name",
+        base_name,
+    ]
     print("\n--- merged_md.py を実行 ---")
     subprocess.run(cmd, check=True)
 
@@ -85,22 +115,32 @@ DPI = 150
 info = pdfinfo_from_path(str(PDF_PATH), poppler_path=str(POPPLER_PATH))
 num_pages = int(info["Pages"])
 
+start_page_limit = max(1, args.start)
+end_page_limit = args.end if args.end is not None else num_pages
+end_page_limit = min(end_page_limit, num_pages)
+
+if start_page_limit > end_page_limit:
+    raise SystemExit(
+        f"開始ページ ({start_page_limit}) が終了ページ ({end_page_limit}) より後です。"
+    )
+
 print(f"PDF: {PDF_PATH}")
 print(f"総ページ数: {num_pages}")
+print(f"処理範囲: {start_page_limit}〜{end_page_limit}")
 print(f"チャンクサイズ: {CHUNK_SIZE}")
 print(f"チャンク休憩: {REST_SECONDS} 秒")
 print(f"poppler path: {POPPLER_PATH}")
 
-current = 1
+current = start_page_limit
 chunk_index = 1
 
-while current <= num_pages:
-    start_page = current
-    end_page = min(current + CHUNK_SIZE - 1, num_pages)
+while current <= end_page_limit:
+    chunk_start = current
+    chunk_end = min(current + CHUNK_SIZE - 1, end_page_limit)
 
-    print(f"\n=== Chunk {chunk_index}: {start_page}〜{end_page} ===")
+    print(f"\n=== Chunk {chunk_index}: {chunk_start}〜{chunk_end} ===")
 
-    for page in range(start_page, end_page + 1):
+    for page in range(chunk_start, chunk_end + 1):
         print(f"\n--- Page {page}/{num_pages} ---")
 
         images = convert_from_path(
@@ -117,21 +157,9 @@ while current <= num_pages:
         img.save(img_path)
         del img
 
-        cmd = [
-            "yomitoku",
-            str(img_path),
-            "-f",
-            "md",
-            "--lite",
-            "-d",
-            "cpu",
-            "-o",
-            str(OUT_DIR),
-        ]
-        print(" ".join(cmd))
-        subprocess.run(cmd, check=True)
-
-        normalize_md_files(target_page=page)
+        preview_cmd = build_command(img_path, OUT_DIR, OPTIONS)
+        print(" ".join(preview_cmd))
+        run_ocr(img_path, OUT_DIR, page_number=page, options=OPTIONS)
 
         try:
             img_path.unlink()
