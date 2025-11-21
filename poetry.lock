@@ -792,18 +792,6 @@ MarkupSafe = ">=2.0"
 i18n = ["Babel (>=2.7)"]
 
 [[package]]
-name = "latex2mathml"
-version = "3.78.1"
-description = "Pure Python library for LaTeX to MathML conversion"
-optional = false
-python-versions = ">=3.9"
-groups = ["main"]
-files = [
-    {file = "latex2mathml-3.78.1-py3-none-any.whl", hash = "sha256:f089b6d75e85b937f99693c93e8c16c0804008672c3dd2a3d25affd36f238100"},
-    {file = "latex2mathml-3.78.1.tar.gz", hash = "sha256:f941db80bf41db33f31df87b304e8b588f8166b813b0257c11c98f7a9d0aac71"},
-]
-
-[[package]]
 name = "lxml"
 version = "5.4.0"
 description = "Powerful and Pythonic XML processing library combining libxml2/libxslt with the ElementTree API."
@@ -3107,4 +3095,4 @@ requests = "*"
 [metadata]
 lock-version = "2.1"
 python-versions = ">=3.12,<3.13"
-content-hash = "68e6da2d8513b56890a0be40bd9a10357d12f72cbe8f0a23b3f42c900cc79468"
+content-hash = "d3b1c7f58aa5a6fe2c8716aa293a351116aecc422a20ccef3a64b3645ec3a038"
