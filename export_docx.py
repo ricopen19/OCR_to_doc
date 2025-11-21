@@ -3,6 +3,7 @@ import sys
 from pathlib import Path
 
 from docx import Document
+from docx.shared import Inches, Cm, Mm
 
 """
 使い方:
@@ -11,6 +12,9 @@ from docx import Document
 """
 
 TABLE_RULE = re.compile(r"^:?-{3,}:?$")
+IMG_HTML_PATTERN = re.compile(r"<img[^>]*src=\"([^\"]+)\"[^>]*>")
+IMG_MD_PATTERN = re.compile(r"!\[[^\]]*\]\(([^)]+)\)")
+WIDTH_PATTERN = re.compile(r"width\s*=\s*\"?([0-9]+(?:\.[0-9]+)?)(px|cm|mm)?\"?")
 
 
 def read_markdown(path: Path) -> list[str]:
@@ -71,7 +75,41 @@ def flush_paragraph(document: Document, buffer: list[str]) -> None:
     document.add_paragraph(text)
 
 
-def convert_markdown(document: Document, lines: list[str]) -> None:
+def to_width(value: str | None):
+    if not value:
+        return None
+    match = WIDTH_PATTERN.search(value)
+    if not match:
+        return None
+    amount = float(match.group(1))
+    unit = match.group(2) or "px"
+    if unit == "cm":
+        return Cm(amount)
+    if unit == "mm":
+        return Mm(amount)
+    # px ベース（96dpi）
+    return Inches(amount / 96)
+
+
+def add_image(document: Document, base_dir: Path, src: str, width_token: str | None = None) -> None:
+    src = src.strip()
+    if src.startswith("./"):
+        src_path = (base_dir / src[2:]).resolve()
+    else:
+        src_path = (base_dir / src).resolve() if not Path(src).is_absolute() else Path(src)
+
+    if not src_path.exists():
+        document.add_paragraph(f"[画像が見つかりません: {src}]")
+        return
+
+    paragraph = document.add_paragraph()
+    run = paragraph.add_run()
+    width = to_width(width_token)
+    kwargs = {"width": width} if width else {}
+    run.add_picture(str(src_path), **kwargs)
+
+
+def convert_markdown(document: Document, lines: list[str], base_dir: Path) -> None:
     paragraph_buffer: list[str] = []
     i = 0
 
@@ -114,6 +152,23 @@ def convert_markdown(document: Document, lines: list[str]) -> None:
             i += 1
             continue
 
+        if "<img" in stripped or "![" in stripped:
+            flush_paragraph(document, paragraph_buffer)
+            handled = False
+            for match in IMG_HTML_PATTERN.finditer(stripped):
+                add_image(document, base_dir, match.group(1), match.group(0))
+                handled = True
+            stripped_no_html = IMG_HTML_PATTERN.sub("", stripped)
+            for match in IMG_MD_PATTERN.finditer(stripped_no_html):
+                add_image(document, base_dir, match.group(1))
+                handled = True
+            remainder = IMG_MD_PATTERN.sub("", stripped_no_html).strip()
+            if remainder:
+                paragraph_buffer.append(remainder)
+            if handled:
+                i += 1
+                continue
+
         paragraph_buffer.append(stripped)
         i += 1
 
@@ -134,7 +189,7 @@ def main():
 
     document = Document()
     lines = read_markdown(md_path)
-    convert_markdown(document, lines)
+    convert_markdown(document, lines, base_dir=md_path.parent)
     document.save(docx_path)
 
     print(f"Word ファイルを出力しました: {docx_path}")

@@ -7,3 +7,10 @@
 - Poetry でルートプロジェクトのインストールエラーが出ていたため、`pyproject.toml` に `package-mode = false` を設定し、依存管理だけを行う構成とした（外部配布を想定しないモード）。
 - GUI 展開を視野に入れて一時パッケージ化を試みたが、現状は Poetry による環境再現のみを重視する方針に戻し、`package-mode = false` を再設定するとともに `yomitoku_ocr/` ディレクトリを削除。
 - Windows 環境での動作検証を自動化するため、`.github/workflows/windows-ci.yml` を追加。`actions/setup-python@v5` + Poetry で依存をインストールし、主要なスクリプトを `python -m compileall` で検証するワークフローを push / PR 時に実行。
+
+## 2025-11-20
+
+- OCR 出力ディレクトリを `result/` に統一し、図版は `result/figures/fig_page001_01.png` の形式で命名するよう `ocr.py` を更新。Markdown 内の画像リンクも自動で置換される。
+- `ocr_chanked.py` に `--start` / `--end` / `--chunk-size` / `--rest-seconds` オプションを追加し、PDF の一部ページだけを変換できるようにした。これに伴い `ocr_per_page.py` は役割を終えたため削除。
+- 出力先を `result/<入力ファイル名>/` に統一し、同フォルダ内に `figures/` と `<name>_merged.md` を配置するようにした。
+- README へページ範囲指定と `--mode full` の使い方を追記。
