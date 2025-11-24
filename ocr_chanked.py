@@ -8,6 +8,7 @@ from pathlib import Path
 
 from pdf2image import convert_from_path, pdfinfo_from_path
 
+from math_refiner import MathRefiner
 from ocr import OcrOptions, run_ocr, build_command
 
 """PDF をチャンク処理しながら OCR するユーティリティ。
@@ -35,10 +36,48 @@ def parse_args() -> argparse.Namespace:
         help="チャンク完了後の休憩秒数 (既定: 10)",
     )
     parser.add_argument(
+        "--enable-rest",
+        action="store_true",
+        help="低スペック対策の休憩を有効化 (既定: 無効)",
+    )
+    parser.add_argument(
         "--mode",
         choices=["lite", "full"],
         default="lite",
         help="YomiToku のモード (lite or full)",
+    )
+    parser.add_argument(
+        "--label",
+        help="追加ラベル。出力ディレクトリ名 (result/<PDF名>_<label>) に付与されます",
+    )
+    parser.add_argument(
+        "--math-refiner",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Pix2Text を用いた数式置換を有効/無効にします (default: 有効)",
+    )
+    parser.add_argument(
+        "--math-score",
+        type=float,
+        default=0.7,
+        help="MathRefiner が採用する最小信頼度 (default: 0.7)",
+    )
+    parser.add_argument(
+        "--math-cache",
+        type=Path,
+        help="Pix2Text のキャッシュルート (default: ./\.pix2text_cache)",
+    )
+    parser.add_argument(
+        "--math-resized-shape",
+        type=int,
+        default=960,
+        help="Pix2Text 推論時の resized_shape (default: 960)",
+    )
+    parser.add_argument(
+        "--keep-page-images",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="ページ画像 (page_images/*.png) を保存します。--no-keep-page-images で削除",
     )
     return parser.parse_args()
 
@@ -52,7 +91,7 @@ if not PDF_PATH.exists():
     sys.exit(1)
 
 CHUNK_SIZE = max(1, args.chunk_size)
-REST_SECONDS = max(0, args.rest_seconds)
+REST_SECONDS = max(0, args.rest_seconds) if args.enable_rest else 0
 
 # プロジェクト内 poppler
 BASE_DIR = Path(__file__).resolve().parent
@@ -85,12 +124,19 @@ def resolve_poppler_path(base_dir: Path) -> Path:
 POPPLER_PATH = resolve_poppler_path(BASE_DIR)
 os.environ["PATH"] = str(POPPLER_PATH) + os.pathsep + os.environ.get("PATH", "")
 
-RESULT_ROOT = Path("result")
-OUT_DIR = RESULT_ROOT / PDF_PATH.stem
-OUT_DIR.mkdir(parents=True, exist_ok=True)
-(OUT_DIR / "figures").mkdir(exist_ok=True)
-
 OPTIONS = OcrOptions(mode=args.mode, device="cpu", enable_figure=True)
+
+MATH_REFINER: MathRefiner | None = None
+if args.math_refiner:
+    try:
+        MATH_REFINER = MathRefiner(
+            cache_root=args.math_cache,
+            min_score=args.math_score,
+            resized_shape=args.math_resized_shape,
+        )
+    except RuntimeError as exc:
+        print(f"MathRefiner の初期化に失敗したため無効化します: {exc}")
+        MATH_REFINER = None
 
 
 def run_merger(base_name: str):
@@ -124,11 +170,27 @@ if start_page_limit > end_page_limit:
         f"開始ページ ({start_page_limit}) が終了ページ ({end_page_limit}) より後です。"
     )
 
+label_suffix = args.label
+if not label_suffix and (start_page_limit != 1 or end_page_limit != num_pages):
+    label_suffix = f"p{start_page_limit}-{end_page_limit}"
+
+RESULT_ROOT = Path("result")
+output_dir_name = PDF_PATH.stem if not label_suffix else f"{PDF_PATH.stem}_{label_suffix}"
+OUT_DIR = RESULT_ROOT / output_dir_name
+OUT_DIR.mkdir(parents=True, exist_ok=True)
+(OUT_DIR / "figures").mkdir(exist_ok=True)
+PAGE_IMAGE_DIR = OUT_DIR / "page_images"
+PAGE_IMAGE_DIR.mkdir(exist_ok=True)
+
 print(f"PDF: {PDF_PATH}")
+print(f"出力ディレクトリ: {OUT_DIR}")
 print(f"総ページ数: {num_pages}")
 print(f"処理範囲: {start_page_limit}〜{end_page_limit}")
 print(f"チャンクサイズ: {CHUNK_SIZE}")
-print(f"チャンク休憩: {REST_SECONDS} 秒")
+if REST_SECONDS > 0:
+    print(f"チャンク休憩: {REST_SECONDS} 秒 (有効)")
+else:
+    print("チャンク休憩: 無効 ( --enable-rest を指定で有効化 )")
 print(f"poppler path: {POPPLER_PATH}")
 
 current = start_page_limit
@@ -153,7 +215,7 @@ while current <= end_page_limit:
         )
         img = images[0]
 
-        img_path = OUT_DIR / f"page_{page:03}.png"
+        img_path = PAGE_IMAGE_DIR / f"page_{page:03}.png"
         img.save(img_path)
         del img
 
@@ -161,19 +223,40 @@ while current <= end_page_limit:
         print(" ".join(preview_cmd))
         run_ocr(img_path, OUT_DIR, page_number=page, options=OPTIONS)
 
-        try:
-            img_path.unlink()
-        except FileNotFoundError:
-            pass
+        if MATH_REFINER:
+            md_paths = sorted(OUT_DIR.glob(f"page_{page:03}*.md"))
+            if md_paths:
+                result = MATH_REFINER.refine_page(
+                    page_md_paths=md_paths,
+                    image_path=img_path,
+                    page_number=page,
+                )
+                if result.replaced:
+                    print(
+                        f"MathRefiner: {result.replaced} 件の数式を置換 (未使用 {result.unused})"
+                    )
+                elif result.unused:
+                    print(
+                        f"MathRefiner: 数式を {result.unused} 件検出しましたが置換対象がありませんでした"
+                    )
+
+        if not args.keep_page_images:
+            try:
+                img_path.unlink()
+            except FileNotFoundError:
+                pass
 
         time.sleep(1.0)  # ページごとの軽い休憩
 
-    print(f"\n=== Chunk {chunk_index} 完了 → {REST_SECONDS} 秒休憩 ===")
-    time.sleep(REST_SECONDS)
+    if REST_SECONDS > 0:
+        print(f"\n=== Chunk {chunk_index} 完了 → {REST_SECONDS} 秒休憩 ===")
+        time.sleep(REST_SECONDS)
+    else:
+        print(f"\n=== Chunk {chunk_index} 完了 → 休憩なし ===")
 
     current += CHUNK_SIZE
     chunk_index += 1
 
-run_merger(PDF_PATH.stem)
+run_merger(output_dir_name)
 
 print("\nすべてのチャンク処理が完了しました。")

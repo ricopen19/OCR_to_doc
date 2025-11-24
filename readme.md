@@ -38,6 +38,13 @@
 - ページ Markdown の結合と図表画像の整理
 - Pandoc などを使った docx 変換
 
+## OCR 後の自動整形
+
+- `markdown_cleanup.py` が見出し (`# $1-1-1$` → `### 1-1-1`)、章付き箇条書き（`- □ $1-1-1$` → `- 1-1-1 ...`）、ページ番号末尾（`...50` → `（p.50）`）などを自動補正。
+- `ocr.py` 実行時に各ページの Markdown を即クリーンアップし、`<br>` を正規の改行へ変換、`page_images/` 参照の `$` や URL の崩れも防止。
+- `<details>` ブロックでページ全体画像を挿入し、分数が壊れたページをあとから目視できるようにした（`ocr_chanked.py` が `page_images/` を既定保存）。
+- 小型＆単色アイコン画像を自動検出して削除し、Markdown から参照も取り除くフィルタを搭載（面積/色数/標準偏差を指標に段階調整中）。
+
 ## 想定入力
 
 - 数的処理系の問題集やプリントをスマホで撮影した画像
@@ -68,17 +75,38 @@ poetry shell
 poetry install
 
 # OCR 実行（例：全ページ、lite モード）
-poetry run python ocr_chanked.py input.pdf
+poetry run python ocr_chanked.py input.pdf --no-math-refiner
 
 # OCR 実行（例：11〜20ページのみ、モード full）
-poetry run python ocr_chanked.py input.pdf --start 11 --end 20 --mode full
+poetry run python ocr_chanked.py input.pdf --start 11 --end 20 --mode full --no-math-refiner
 
 # Markdown を結合（`result/input/input_merged.md` が生成される）
 poetry run python poppler/merged_md.py --input result/input --base-name input
 
+# ページ画像を活用したマージ（数式フォールバック用）
+poetry run python poppler/merged_md.py --input result/input --base-name input --keep-pages
+
+`--keep-pages` を付けるとページ単位の Markdown を残しつつ、`result/<name>/page_images/` に保存したページ画像を `<details>` ブロックとして `*_merged.md` に埋め込みます。記事化途中で再マージや docx 変換を繰り返す場合はこの CLI での再生成が前提になります。
+
 # Word に変換
 poetry run python export_docx.py output_merged.md
 ```
+
+### 数式出力と PoC 結果
+
+- 2025-11-23 実施の PoC（`docs/poc_results/2025-11-23-math_ocr_poc.md`）で、Pix2Text の分数再現精度が要件を満たさないことが判明しました。そのため **フェーズ1ではプレーンテキスト出力を正式採用** しています。
+- `ocr_chanked.py` は `--no-math-refiner` での実行を推奨します（デフォルトでも無効化する予定）。式の整形は後工程（人手やローカル LLM など）で行うことを前提としています。
+- 参考までに、Pix2Text を試したい場合は以下のオプションを利用できます:
+  - `--math-refiner`: 数式補正を明示的に有効化。
+  - `--math-score <0〜1>`: Pix2Text が返す信頼度の閾値。
+  - `--math-resized-shape <int>`: Pix2Text 解析時のリサイズ幅。
+  - `--math-cache <dir>`: モデルキャッシュ保存先（既定は `./.pix2text_cache/`）。
+- 低スペック PC 向けには `--enable-rest` と `--rest-seconds` でチャンク処理ごとに休憩を挟めます。
+
+### 要件定義 / PoC テンプレート
+
+- 新しい機能に着手する際は `docs/requirements_template.md` または `docs/templates/requirements_general_template.md` をコピーして要件と成功指標を定義してください。
+- PoC の結果は `docs/poc_results/` 配下にレポート化し、Go/No-Go の記録を残します。
 
 ## 参考ドキュメント
 - 詳細仕様: `docs/spec.md`

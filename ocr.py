@@ -16,6 +16,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable, Sequence, Dict
 
+from PIL import Image, ImageStat
+
+from markdown_cleanup import clean_file
+
 RAW_MD_PATTERN = re.compile(r"page_(\d+)_p(\d+)\.md")
 ALT_MD_PATTERN = re.compile(r"(?:.*_)?page_?(\d+)(?:_p(\d+))?\.md")
 TARGET_MD_PATTERN = re.compile(r"page_(\d+)(?:_p(\d+))?\.md")
@@ -110,6 +114,7 @@ def rename_figure_assets(output_dir: Path, page_number: int) -> None:
         mapping[fig_path.name] = new_name
 
     _update_markdown_figure_links(output_dir, page_number, mapping)
+    remove_icon_figures(output_dir, page_number)
 
 
 def _update_markdown_figure_links(output_dir: Path, page_number: int, mapping: Dict[str, str]) -> None:
@@ -146,6 +151,79 @@ def _update_markdown_figure_links(output_dir: Path, page_number: int, mapping: D
             replaced = True
         if replaced:
             md_path.write_text(text, encoding="utf-8")
+
+    cleanup_markdown_files(output_dir, page_number)
+
+
+def cleanup_markdown_files(output_dir: Path, page_number: int) -> None:
+    for md_path in output_dir.glob(f"page_{page_number:03}*.md"):
+        clean_file(md_path, inplace=True)
+
+
+def remove_icon_figures(output_dir: Path, page_number: int) -> None:
+    figure_dir = output_dir / "figures"
+    if not figure_dir.exists():
+        return
+
+    icon_files: list[Path] = []
+    for fig_path in figure_dir.glob(f"fig_page{page_number:03d}_*"):
+        if fig_path.suffix.lower() not in {".png", ".jpg", ".jpeg"}:
+            continue
+        try:
+            with Image.open(fig_path) as img:
+                if is_icon_image(img):
+                    icon_files.append(fig_path)
+        except Exception:
+            continue
+
+    if not icon_files:
+        return
+
+    for icon in icon_files:
+        remove_figure_references(output_dir, page_number, icon.name)
+        try:
+            icon.unlink()
+        except FileNotFoundError:
+            pass
+
+
+def is_icon_image(image: Image.Image) -> bool:
+    width, height = image.size
+    area = width * height
+    if area == 0:
+        return False
+    if width > 220 or height > 220 or area > 35000:
+        return False
+
+    sample = image.convert("RGB")
+    colors = sample.getcolors(maxcolors=4096) or []
+    unique = len(colors)
+    stat = ImageStat.Stat(sample)
+    avg_std = sum(stat.stddev) / max(1, len(stat.stddev))
+
+    if unique <= 40:
+        return True
+    if avg_std < 18:
+        return True
+    dominant_ratio = 0
+    if colors:
+        dominant = max(count for count, _ in colors)
+        dominant_ratio = dominant / area
+    return dominant_ratio >= 0.85
+
+
+def remove_figure_references(output_dir: Path, page_number: int, figure_name: str) -> None:
+    candidates = list(output_dir.glob(f"page_{page_number:03}*.md"))
+    patterns = [
+        rf"!\[[^\]]*\]\((?:\./)?figures/{re.escape(figure_name)}\)",
+        rf"<img[^>]+src=\"(?:\./)?figures/{re.escape(figure_name)}\"[^>]*>"
+    ]
+    combined = re.compile("|".join(patterns))
+    for md_path in candidates:
+        text = md_path.read_text(encoding="utf-8")
+        new_text = combined.sub("", text)
+        if new_text != text:
+            md_path.write_text(new_text, encoding="utf-8")
 
 
 def _sanitize_math(text: str) -> str:

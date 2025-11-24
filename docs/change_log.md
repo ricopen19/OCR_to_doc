@@ -8,6 +8,13 @@
 - GUI 展開を視野に入れて一時パッケージ化を試みたが、現状は Poetry による環境再現のみを重視する方針に戻し、`package-mode = false` を再設定するとともに `yomitoku_ocr/` ディレクトリを削除。
 - Windows 環境での動作検証を自動化するため、`.github/workflows/windows-ci.yml` を追加。`actions/setup-python@v5` + Poetry で依存をインストールし、主要なスクリプトを `python -m compileall` で検証するワークフローを push / PR 時に実行。
 
+## 2025-11-24
+
+- `markdown_cleanup.py` を拡張し、見出し (`# $1-1-1$` → `### 1-1-1`)、章リスト (`- □ $1-1-1$ ...` → `- 1-1-1 ...`)、ページ末尾 (`...50` → `（p.50）`)、`<br>` だらけの本文などを自動整形するルールを追加。URL 行は崩さないよう例外処理し、`page_images/` 参照に混入した `$` も自動で除去するようにした。
+- `ocr.py` で各ページ処理の最後に `markdown_cleanup.clean_file()` を呼び出し、OCR 直後から統一書式が得られるようにした。また `postprocess.py` の `<details>` 埋め込みは 1 ページ 1 回に制限し、`ocr_chanked.py` にはページ画像保存を既定化する `--(no-)keep-page-images` を追加。
+- 小型かつ単色アイコンの図版を自動削除するフィルタを `ocr.py` へ追加（面積・最大辺・色数・標準偏差で判定し、削除時は Markdown から参照も除去）。閾値は今後ログを見ながら調整予定。
+- README の「ざっくり使い方」に `poppler/merged_md.py --keep-pages` の例と、ページ画像を `<details>` で参照できる運用メモを追記。
+
 ## 2025-11-20
 
 - OCR 出力ディレクトリを `result/` に統一し、図版は `result/figures/fig_page001_01.png` の形式で命名するよう `ocr.py` を更新。Markdown 内の画像リンクも自動で置換される。

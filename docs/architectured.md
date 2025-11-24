@@ -35,7 +35,7 @@
 - 一時ファイルや作業ディレクトリ (`result/`, `result/figures/`) の管理とクリーンアップ。
 
 ### ocr.py / ocr_chanked.py
-- YomiToku CLI を呼び出すラッパ。`lite`/`full` モード切り替えや `--figure` オプションのオン/オフ管理。
+- YomiToku CLI を呼び出すラッパ。`lite`/`full` モード切り替えや `--figure` オプションのオン/オフ管理。`ocr_chanked.py` は `--label` によって同一 PDF でもページ範囲ごとに別名ディレクトリへ出力できる。
 - 1 ページごとの Markdown / 図表ファイル命名規則（`fig_page001_01.png` 等）を統一。
 - フェーズ 3 で fallback チェーン（YomiToku → Tesseract → PaddleOCR etc.）を組み込み、失敗ログを残す。
 
@@ -48,7 +48,7 @@
 - 基本的な Markdown 整形（段落、箇条書き、表の検出）を担当。
 
 ### postprocess.py / poppler/merged_md.py
-- ページ Markdown のソート＋マージと `# Page n` の挿入。
+- ページ Markdown のソート＋マージと `# Page n` の挿入。マージ後は `markdown_cleanup.py` を通して記号エスケープや LaTeX の整形を自動で行い、出力の一貫性を保つ。
 - `--keep-pages` フラグでページファイルを残すかどうかを制御。
 - マージ後のクリーンアップ（`layout.jpeg` / `ocr.jpeg` など不要ファイル削除）。
 

@@ -87,4 +87,4 @@
 
 ### 出力ディレクトリ構成
 - OCR 実行時は `result/<入力ファイル名>/` を自動生成し、ページ Markdown・`figures/fig_page***.png`・結合済み `*_merged.md` を同じフォルダにまとめる。
-- `poppler/merged_md.py` を直接使う場合は `--input result/<入力ファイル名>` を指定する。
+- `poppler/merged_md.py` を直接使う場合は `--input result/<入力ファイル名>` を指定する。`ocr_chanked.py` の `--label` を使えば `result/<入力名>_<label>` へ出力でき、同じ PDF でもページ範囲ごとに別保存できる。

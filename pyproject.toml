@@ -12,7 +12,8 @@ dependencies = [
     "pdf2image (>=1.17.0,<2.0.0)",
     "python-docx (>=0.8.11,<1.0.0)",
     "markitdown[all] (>=0.1.3,<0.2.0)",
-    "image2pdf (>=1.0.0,<2.0.0)"
+    "image2pdf (>=1.0.0,<2.0.0)",
+    "pix2text[multilingual] (>=1.1.0,<2.0.0)"
 ]
 
 [tool.poetry]

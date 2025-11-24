@@ -1,9 +1,14 @@
+from __future__ import annotations
+
 import re
 import sys
 from pathlib import Path
 
 from docx import Document
 from docx.shared import Inches, Cm, Mm
+from docx.oxml import OxmlElement
+from latex2mathml.converter import convert as latex_to_mathml
+from lxml import etree
 
 """
 使い方:
@@ -15,6 +20,43 @@ TABLE_RULE = re.compile(r"^:?-{3,}:?$")
 IMG_HTML_PATTERN = re.compile(r"<img[^>]*src=\"([^\"]+)\"[^>]*>")
 IMG_MD_PATTERN = re.compile(r"!\[[^\]]*\]\(([^)]+)\)")
 WIDTH_PATTERN = re.compile(r"width\s*=\s*\"?([0-9]+(?:\.[0-9]+)?)(px|cm|mm)?\"?")
+INLINE_LATEX_PATTERN = re.compile(r"\\\(|\\\)|\\\[|\\\]")
+INLINE_MATH_PATTERN = re.compile(r"(?<!\$)\$(?!\$)(.+?)(?<!\$)\$(?!\$)", re.DOTALL)
+
+OMML_NS = "http://schemas.openxmlformats.org/officeDocument/2006/math"
+XML_NS = "http://www.w3.org/XML/1998/namespace"
+MATHML_NS = "http://www.w3.org/1998/Math/MathML"
+
+ALLOWED_FORMULA_CHARS = set("0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ+-*/=×÷().,^_:%$ {}\\")
+ESCAPED_SYMBOLS = {
+    r"\-": "-",
+    r"\+": "+",
+    r"\=": "=",
+    r"\(": "(",
+    r"\)": ")",
+    r"\{": "{",
+    r"\}": "}",
+}
+
+
+def normalize_math_markers(text: str) -> str:
+    if not text:
+        return ""
+    result = INLINE_LATEX_PATTERN.sub(
+        lambda m: "$$" if m.group(0) in {r"\[", r"\]"} else "$",
+        text,
+    )
+    result = re.sub(r"\$\s+\$", "$$", result)
+    result = re.sub(r"\$\$\s+\$\$", "$$ $$", result)
+    return result
+
+
+def extract_inline_block(text: str) -> str | None:
+    stripped = text.strip()
+    if not stripped.startswith("$$") or not stripped.endswith("$$"):
+        return None
+    inner = stripped[2:-2].strip()
+    return inner if inner else None
 
 
 def read_markdown(path: Path) -> list[str]:
@@ -40,6 +82,14 @@ def looks_like_divider(row: list[str]) -> bool:
     return row and all(TABLE_RULE.match(cell.replace(" ", "")) for cell in row)
 
 
+def is_placeholder_row(row: list[str]) -> bool:
+    for cell in row:
+        stripped = cell.replace("<br>", "").strip()
+        if stripped and stripped not in {"-", "–", "—"}:
+            return False
+    return True
+
+
 def add_table(document: Document, table_lines: list[str]) -> None:
     rows = [split_table_line(line) for line in table_lines if line.strip()]
     if not rows:
@@ -48,6 +98,8 @@ def add_table(document: Document, table_lines: list[str]) -> None:
     cleaned = []
     for row in rows:
         if looks_like_divider(row):
+            continue
+        if is_placeholder_row(row):
             continue
         cleaned.append(row)
 
@@ -61,18 +113,36 @@ def add_table(document: Document, table_lines: list[str]) -> None:
     for r_idx, row in enumerate(cleaned):
         for c_idx in range(cols):
             value = row[c_idx] if c_idx < len(row) else ""
-            table.rows[r_idx].cells[c_idx].text = value.replace("<br>", "\n")
+            text = value.replace("<br>", "\n").strip()
+            if text == "-":
+                text = ""
+            table.rows[r_idx].cells[c_idx].text = text
 
 
-def flush_paragraph(document: Document, buffer: list[str]) -> None:
+def flush_paragraph(document: Document, buffer: list[str], base_dir: Path | None = None) -> None:
     if not buffer:
         return
     text = " ".join(buffer).strip()
     buffer.clear()
     if not text:
         return
-    text = text.replace("<br>", "\n")
-    document.add_paragraph(text)
+    paragraph = document.add_paragraph()
+    render_inline_content(paragraph, text)
+
+
+def render_inline_content(paragraph, text: str) -> None:
+    working = text.replace("<br>", "\n")
+    last = 0
+    for match in INLINE_MATH_PATTERN.finditer(working):
+        if match.start() > last:
+            paragraph.add_run(working[last:match.start()])
+        latex = match.group(1).strip()
+        if latex:
+            if not append_math_element(paragraph, latex, inline=True):
+                paragraph.add_run(match.group(0))
+        last = match.end()
+    if last < len(working):
+        paragraph.add_run(working[last:])
 
 
 def to_width(value: str | None):
@@ -109,29 +179,258 @@ def add_image(document: Document, base_dir: Path, src: str, width_token: str | N
     run.add_picture(str(src_path), **kwargs)
 
 
+def add_math_block(document: Document, latex: str) -> None:
+    latex = latex.strip()
+    if not latex:
+        return
+    paragraph = document.add_paragraph()
+    if not append_math_element(paragraph, latex, inline=False):
+        paragraph.add_run(latex)
+
+
+def append_math_element(paragraph, latex: str, inline: bool) -> bool:
+    element = latex_to_omml_element(latex, inline=inline)
+    if element is None:
+        return False
+    paragraph._p.append(element)
+    return True
+
+
+def latex_to_omml_element(latex: str, inline: bool) -> OxmlElement | None:
+    latex = latex.strip()
+    if not latex:
+        return None
+    try:
+        mathml = latex_to_mathml(latex)
+    except Exception:
+        return None
+    try:
+        root = etree.fromstring(mathml.encode("utf-8"))
+    except etree.XMLSyntaxError:
+        return None
+
+    omml_children = convert_mathml_children(root)
+    if not omml_children:
+        return None
+
+    math_element = OxmlElement("m:oMath")
+    for child in omml_children:
+        math_element.append(child)
+
+    if inline:
+        return math_element
+    math_para = OxmlElement("m:oMathPara")
+    math_para.append(math_element)
+    return math_para
+
+
+def convert_mathml_children(node) -> list[OxmlElement]:
+    tag = strip_namespace(node.tag)
+    if tag == "semantics":
+        for child in node:
+            if strip_namespace(child.tag).startswith("annotation"):
+                continue
+            return convert_mathml_children(child)
+        return []
+    if tag in {"math", "mrow", "mstyle"}:
+        elements: list[OxmlElement] = []
+        if node.text and node.text.strip():
+            elements.extend(text_to_math_runs(node.text.strip()))
+        for child in node:
+            if strip_namespace(child.tag).startswith("annotation"):
+                continue
+            elements.extend(convert_mathml_children(child))
+            if child.tail and child.tail.strip():
+                elements.extend(text_to_math_runs(child.tail.strip()))
+        return elements
+    return convert_mathml_node(node)
+
+
+def convert_mathml_node(node) -> list[OxmlElement]:
+    tag = strip_namespace(node.tag)
+
+    if tag in {"math", "mrow", "mstyle"}:
+        return convert_mathml_children(node)
+    if tag == "semantics":
+        return convert_mathml_children(node)
+    if tag in {"mi", "mn", "mo", "mtext", "mspace"}:
+        text = (node.text or "").strip()
+        if not text:
+            return []
+        return text_to_math_runs(text)
+    if tag == "mfrac":
+        children = list(iter_math_children(node))
+        if len(children) < 2:
+            return []
+        frac = OxmlElement("m:f")
+        num = wrap_math_container("m:num", convert_mathml_node(children[0]))
+        den = wrap_math_container("m:den", convert_mathml_node(children[1]))
+        frac.append(num)
+        frac.append(den)
+        return [frac]
+    if tag == "msup":
+        children = list(iter_math_children(node))
+        sup = OxmlElement("m:sSup")
+        base = wrap_math_container("m:e", convert_mathml_node(children[0]) if len(children) > 0 else [])
+        power = wrap_math_container("m:sup", convert_mathml_node(children[1]) if len(children) > 1 else [])
+        sup.append(base)
+        sup.append(power)
+        return [sup]
+    if tag == "msub":
+        children = list(iter_math_children(node))
+        sub = OxmlElement("m:sSub")
+        base = wrap_math_container("m:e", convert_mathml_node(children[0]) if len(children) > 0 else [])
+        lower = wrap_math_container("m:sub", convert_mathml_node(children[1]) if len(children) > 1 else [])
+        sub.append(base)
+        sub.append(lower)
+        return [sub]
+    if tag == "msubsup":
+        children = list(iter_math_children(node))
+        node_el = OxmlElement("m:sSubSup")
+        base = wrap_math_container("m:e", convert_mathml_node(children[0]) if len(children) > 0 else [])
+        lower = wrap_math_container("m:sub", convert_mathml_node(children[1]) if len(children) > 1 else [])
+        upper = wrap_math_container("m:sup", convert_mathml_node(children[2]) if len(children) > 2 else [])
+        node_el.append(base)
+        node_el.append(lower)
+        node_el.append(upper)
+        return [node_el]
+    if tag == "msqrt":
+        children = list(iter_math_children(node))
+        if not children:
+            return []
+        rad = OxmlElement("m:rad")
+        body = wrap_math_container("m:e", convert_mathml_node(children[0]))
+        rad.append(body)
+        return [rad]
+    if tag == "mroot":
+        children = list(iter_math_children(node))
+        if not children:
+            return []
+        rad = OxmlElement("m:rad")
+        if len(children) > 1:
+            degree = wrap_math_container("m:deg", convert_mathml_node(children[1]))
+            rad.append(degree)
+        body = wrap_math_container("m:e", convert_mathml_node(children[0]))
+        rad.append(body)
+        return [rad]
+    if tag == "mfenced":
+        return convert_mfenced(node)
+
+    elements: list[OxmlElement] = []
+    for child in iter_math_children(node):
+        elements.extend(convert_mathml_node(child))
+    return elements
+
+
+def convert_mfenced(node) -> list[OxmlElement]:
+    open_char = node.get("open", "(") or "("
+    close_char = node.get("close", ")") or ")"
+    separators = (node.get("separators") or ",")
+    children = list(iter_math_children(node))
+    elements: list[OxmlElement] = []
+    if open_char.strip():
+        elements.extend(text_to_math_runs(open_char.strip()))
+    for idx, child in enumerate(children):
+        elements.extend(convert_mathml_node(child))
+        if idx < len(children) - 1 and separators:
+            elements.extend(text_to_math_runs(separators[0]))
+    if close_char.strip():
+        elements.extend(text_to_math_runs(close_char.strip()))
+    return elements
+
+
+def iter_math_children(node):
+    for child in node:
+        if strip_namespace(child.tag).startswith("annotation"):
+            continue
+        yield child
+
+
+def strip_namespace(tag: str) -> str:
+    return tag.split("}")[-1] if "}" in tag else tag
+
+
+def wrap_math_container(tag: str, children: list[OxmlElement]) -> OxmlElement:
+    element = OxmlElement(tag)
+    content = children if children else [create_math_run(" ")]
+    for child in content:
+        element.append(child)
+    return element
+
+
+def text_to_math_runs(text: str) -> list[OxmlElement]:
+    if not text:
+        return []
+    if not text.strip():
+        return []
+    return [create_math_run(text)]
+
+
+def create_math_run(text: str) -> OxmlElement:
+    run = OxmlElement("m:r")
+    t = OxmlElement("m:t")
+    if text.startswith(" ") or text.endswith(" "):
+        t.set(f"{{{XML_NS}}}space", "preserve")
+    t.text = text
+    run.append(t)
+    return run
+
+
 def convert_markdown(document: Document, lines: list[str], base_dir: Path) -> None:
     paragraph_buffer: list[str] = []
     i = 0
 
     while i < len(lines):
-        line = lines[i].rstrip()
-        stripped = line.strip()
+        raw_line = lines[i].rstrip("\n")
+        normalized = normalize_math_markers(raw_line.strip())
 
-        if not stripped:
-            flush_paragraph(document, paragraph_buffer)
+        if normalized == "$$":
+            flush_paragraph(document, paragraph_buffer, base_dir)
+            block_lines: list[str] = []
+            j = i + 1
+            closed = False
+            while j < len(lines):
+                candidate_raw = lines[j].rstrip("\n")
+                candidate_norm = normalize_math_markers(candidate_raw.strip())
+                if candidate_norm == "$$":
+                    closed = True
+                    break
+                block_lines.append(candidate_norm)
+                j += 1
+            if closed:
+                latex = "\n".join(block_lines).strip()
+                if latex:
+                    add_math_block(document, latex)
+                i = j + 1
+                continue
+            else:
+                # 閉じ記号が見つからなければテキストとして扱う
+                paragraph_buffer.append(normalized)
+                i += 1
+                continue
+
+        single_line_block = extract_inline_block(normalized)
+        if single_line_block is not None:
+            flush_paragraph(document, paragraph_buffer, base_dir)
+            add_math_block(document, single_line_block)
             i += 1
             continue
 
-        if stripped.startswith("#"):
-            flush_paragraph(document, paragraph_buffer)
-            level = len(stripped) - len(stripped.lstrip("#"))
-            heading_text = stripped[level:].strip()
+        if not normalized:
+            flush_paragraph(document, paragraph_buffer, base_dir)
+            i += 1
+            continue
+
+        if normalized.startswith("#"):
+            flush_paragraph(document, paragraph_buffer, base_dir)
+            level = len(normalized) - len(normalized.lstrip("#"))
+            heading_text = normalized[level:].strip()
             document.add_heading(heading_text or " ", level=min(level, 4))
             i += 1
             continue
 
-        if is_table_line(line):
-            flush_paragraph(document, paragraph_buffer)
+        if is_table_line(raw_line):
+            flush_paragraph(document, paragraph_buffer, base_dir)
             table_block = []
             while i < len(lines) and is_table_line(lines[i]):
                 table_block.append(lines[i])
@@ -139,26 +438,26 @@ def convert_markdown(document: Document, lines: list[str], base_dir: Path) -> No
             add_table(document, table_block)
             continue
 
-        if stripped.startswith("- ") or stripped.startswith("* "):
-            flush_paragraph(document, paragraph_buffer)
-            document.add_paragraph(stripped[2:].strip(), style="List Bullet")
+        if normalized.startswith("- ") or normalized.startswith("* "):
+            flush_paragraph(document, paragraph_buffer, base_dir)
+            document.add_paragraph(normalized[2:].strip(), style="List Bullet")
             i += 1
             continue
 
-        ordered_match = re.match(r"(\d+)[\.\)]\s+(.*)", stripped)
+        ordered_match = re.match(r"(\d+)[\.\)]\s+(.*)", normalized)
         if ordered_match:
-            flush_paragraph(document, paragraph_buffer)
+            flush_paragraph(document, paragraph_buffer, base_dir)
             document.add_paragraph(ordered_match.group(2).strip(), style="List Number")
             i += 1
             continue
 
-        if "<img" in stripped or "![" in stripped:
-            flush_paragraph(document, paragraph_buffer)
+        if "<img" in normalized or "![" in normalized:
+            flush_paragraph(document, paragraph_buffer, base_dir)
             handled = False
-            for match in IMG_HTML_PATTERN.finditer(stripped):
+            for match in IMG_HTML_PATTERN.finditer(normalized):
                 add_image(document, base_dir, match.group(1), match.group(0))
                 handled = True
-            stripped_no_html = IMG_HTML_PATTERN.sub("", stripped)
+            stripped_no_html = IMG_HTML_PATTERN.sub("", normalized)
             for match in IMG_MD_PATTERN.finditer(stripped_no_html):
                 add_image(document, base_dir, match.group(1))
                 handled = True
@@ -169,10 +468,10 @@ def convert_markdown(document: Document, lines: list[str], base_dir: Path) -> No
                 i += 1
                 continue
 
-        paragraph_buffer.append(stripped)
+        paragraph_buffer.append(normalized)
         i += 1
 
-    flush_paragraph(document, paragraph_buffer)
+    flush_paragraph(document, paragraph_buffer, base_dir)
 
 
 def main():

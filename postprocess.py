@@ -3,14 +3,19 @@
 from __future__ import annotations
 
 import argparse
+import csv
 import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable, List
 
+from markdown_cleanup import clean_file
+
 INPUT_DIR = Path("result")
 DEFAULT_OUTPUT = Path("merged.md")
 PATTERN = re.compile(r"(?:.*_)?page_?(\d+)(?:_p(\d+))?\.md$")
+FRACTION_KEYWORDS = ("比率", "割合", "分数", "比率", "率", "比")
+FRACTION_SYMBOLS = ("/", "÷", "×", "%", "％")
 
 
 @dataclass(order=True)
@@ -18,6 +23,14 @@ class PageFile:
     page: int
     part: int
     path: Path
+
+
+@dataclass
+class MathIssue:
+    page: int
+    line: int
+    reason: str
+    text: str
 
 
 def collect_md_files(input_dir: Path = INPUT_DIR) -> List[PageFile]:
@@ -33,22 +46,52 @@ def collect_md_files(input_dir: Path = INPUT_DIR) -> List[PageFile]:
     return files
 
 
-def write_merged_md(files: Iterable[PageFile], output_path: Path, add_page_heading: bool = True) -> None:
+def write_merged_md(
+    files: Iterable[PageFile],
+    output_path: Path,
+    add_page_heading: bool = True,
+    page_image_dir: Path | None = None,
+) -> List[MathIssue]:
     output_path.parent.mkdir(parents=True, exist_ok=True)
+    issues: List[MathIssue] = []
+    embedded_pages: set[int] = set()
     with output_path.open("w", encoding="utf-8") as out:
-        current_page = None
+        current_page: int | None = None
+        page_chunks: list[str] = []
         first_section = True
-        for entry in files:
-            text = entry.path.read_text(encoding="utf-8").strip()
-            if not text:
-                continue
-            if add_page_heading and current_page != entry.page:
+
+        def flush_page(page: int | None) -> None:
+            nonlocal first_section
+            if page is None:
+                return
+            page_text = "\n\n".join(chunk for chunk in page_chunks if chunk.strip())
+            page_chunks.clear()
+            if not page_text.strip():
+                return
+            if add_page_heading:
                 if not first_section:
                     out.write("\n")
-                out.write(f"# Page {entry.page}\n\n")
-                current_page = entry.page
+                out.write(f"# Page {page}\n\n")
                 first_section = False
-            out.write(text + "\n\n")
+            out.write(page_text + "\n\n")
+            detected = detect_math_issues(page_text, page)
+            if detected:
+                issues.extend(detected)
+                if page_image_dir and page not in embedded_pages:
+                    inject_page_image(out, page, page_image_dir)
+                    embedded_pages.add(page)
+
+        for entry in files:
+            if current_page is None:
+                current_page = entry.page
+            elif entry.page != current_page:
+                flush_page(current_page)
+                current_page = entry.page
+            page_chunks.append(entry.path.read_text(encoding="utf-8").strip())
+
+        flush_page(current_page)
+
+    return issues
 
 
 def cleanup(files: Iterable[PageFile]) -> None:
@@ -57,6 +100,60 @@ def cleanup(files: Iterable[PageFile]) -> None:
             entry.path.unlink()
         except FileNotFoundError:
             pass
+
+
+def detect_math_issues(text: str, page: int) -> List[MathIssue]:
+    issues: List[MathIssue] = []
+    for idx, line in enumerate(text.splitlines(), start=1):
+        stripped = line.strip()
+        if not stripped:
+            continue
+        reason = None
+        if looks_like_fraction(stripped):
+            reason = "fraction_like"
+        elif noisy_dollar(stripped):
+            reason = "noisy_dollar"
+        if reason:
+            issues.append(MathIssue(page=page, line=idx, reason=reason, text=stripped))
+    return issues
+
+
+def looks_like_fraction(text: str) -> bool:
+    if not any(sym in text for sym in ("=", "≒", "≠")):
+        return False
+    if not any(sym in text for sym in FRACTION_SYMBOLS):
+        return False
+    return any(keyword in text for keyword in FRACTION_KEYWORDS)
+
+
+def noisy_dollar(text: str) -> bool:
+    if text.count("$") < 2:
+        return False
+    return any("\u3040" <= ch <= "\u9FFF" for ch in text)
+
+
+def inject_page_image(out_stream, page: int, image_dir: Path) -> None:
+    image_path = image_dir / f"page_{page:03}.png"
+    if not image_path.exists():
+        return
+    out_stream.write(
+        "<details>\n"
+        f"<summary>数式が崩れた可能性があります (Page {page})</summary>\n\n"
+        f"![Page {page}](./page_images/page_{page:03}.png)\n\n"
+        "</details>\n\n"
+    )
+
+
+def write_math_review_log(log_path: Path, issues: List[MathIssue]) -> None:
+    if not issues:
+        if log_path.exists():
+            log_path.unlink()
+        return
+    with log_path.open("w", encoding="utf-8", newline="") as csvfile:
+        writer = csv.writer(csvfile)
+        writer.writerow(["page", "line", "reason", "text"])
+        for issue in issues:
+            writer.writerow([issue.page, issue.line, issue.reason, issue.text])
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -82,7 +179,15 @@ def main(argv: list[str] | None = None) -> None:
     if not files:
         raise SystemExit(f"結合対象の md ファイルが見つかりません: {input_dir}")
 
-    write_merged_md(files, output_path, add_page_heading=not args.no_heading)
+    page_image_dir = input_dir / "page_images"
+    issues = write_merged_md(
+        files,
+        output_path,
+        add_page_heading=not args.no_heading,
+        page_image_dir=page_image_dir if page_image_dir.exists() else None,
+    )
+    write_math_review_log(input_dir / "math_review.csv", issues)
+    clean_file(output_path, inplace=True)
 
     if args.keep_pages:
         print("ページ単位の md ファイルを保持しました (--keep-pages)")
