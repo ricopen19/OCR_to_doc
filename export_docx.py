@@ -21,7 +21,6 @@ IMG_HTML_PATTERN = re.compile(r"<img[^>]*src=\"([^\"]+)\"[^>]*>")
 IMG_MD_PATTERN = re.compile(r"!\[[^\]]*\]\(([^)]+)\)")
 WIDTH_PATTERN = re.compile(r"width\s*=\s*\"?([0-9]+(?:\.[0-9]+)?)(px|cm|mm)?\"?")
 INLINE_LATEX_PATTERN = re.compile(r"\\\(|\\\)|\\\[|\\\]")
-INLINE_MATH_PATTERN = re.compile(r"(?<!\$)\$(?!\$)(.+?)(?<!\$)\$(?!\$)", re.DOTALL)
 
 OMML_NS = "http://schemas.openxmlformats.org/officeDocument/2006/math"
 XML_NS = "http://www.w3.org/XML/1998/namespace"
@@ -37,6 +36,17 @@ ESCAPED_SYMBOLS = {
     r"\{": "{",
     r"\}": "}",
 }
+SIMPLE_LATEX_REPLACEMENTS = {
+    r"\times": "×",
+    r"\cdot": "·",
+    r"\div": "÷",
+    r"\pm": "±",
+    r"\le": "≤",
+    r"\ge": "≥",
+    r"\neq": "≠",
+}
+TEXT_CMD_PATTERN = re.compile(r"\\text\{([^}]*)\}")
+PLAIN_FRAC_PATTERN = re.compile(r"\\frac\{([^{}]+)\}\{([^{}]+)\}")
 
 
 def normalize_math_markers(text: str) -> str:
@@ -130,19 +140,82 @@ def flush_paragraph(document: Document, buffer: list[str], base_dir: Path | None
     render_inline_content(paragraph, text)
 
 
+def split_inline_math_segments(text: str) -> list[tuple[str, str]]:
+    segments: list[tuple[str, str]] = []
+    current: list[str] = []
+    mode = "text"
+    i = 0
+    length = len(text)
+
+    def append_segment(kind: str, value: str) -> None:
+        if not value:
+            return
+        if kind == "text" and segments and segments[-1][0] == "text":
+            segments[-1] = ("text", segments[-1][1] + value)
+        else:
+            segments.append((kind, value))
+
+    def flush_text_buffer() -> None:
+        nonlocal current
+        if current:
+            append_segment("text", "".join(current))
+            current = []
+
+    while i < length:
+        ch = text[i]
+        if ch == "$":
+            if i + 1 < length and text[i + 1] == "$":
+                current.append("$")
+                current.append("$")
+                i += 2
+                continue
+
+            backslashes = 0
+            j = i - 1
+            while j >= 0 and text[j] == "\\":
+                backslashes += 1
+                j -= 1
+            if backslashes % 2 == 1:
+                current.append("$")
+                i += 1
+                continue
+
+            if mode == "text":
+                flush_text_buffer()
+                mode = "math"
+                current = []
+                i += 1
+                continue
+
+            latex = "".join(current).strip()
+            current = []
+            if latex:
+                append_segment("math", latex)
+            mode = "text"
+            i += 1
+            continue
+
+        current.append(ch)
+        i += 1
+
+    if mode == "math":
+        append_segment("text", "$" + "".join(current))
+    else:
+        flush_text_buffer()
+
+    return segments
+
+
 def render_inline_content(paragraph, text: str) -> None:
     working = text.replace("<br>", "\n")
-    last = 0
-    for match in INLINE_MATH_PATTERN.finditer(working):
-        if match.start() > last:
-            paragraph.add_run(working[last:match.start()])
-        latex = match.group(1).strip()
-        if latex:
-            if not append_math_element(paragraph, latex, inline=True):
-                paragraph.add_run(match.group(0))
-        last = match.end()
-    if last < len(working):
-        paragraph.add_run(working[last:])
+    for kind, value in split_inline_math_segments(working):
+        if not value:
+            continue
+        if kind == "text":
+            paragraph.add_run(value)
+        else:
+            if not append_math_element(paragraph, value, inline=True):
+                paragraph.add_run(format_plain_latex_text(value))
 
 
 def to_width(value: str | None):
@@ -185,14 +258,18 @@ def add_math_block(document: Document, latex: str) -> None:
         return
     paragraph = document.add_paragraph()
     if not append_math_element(paragraph, latex, inline=False):
-        paragraph.add_run(latex)
+        paragraph.add_run(format_plain_latex_text(latex))
 
 
 def append_math_element(paragraph, latex: str, inline: bool) -> bool:
     element = latex_to_omml_element(latex, inline=inline)
     if element is None:
         return False
-    paragraph._p.append(element)
+    if inline:
+        run = paragraph.add_run()
+        run._r.append(element)
+    else:
+        paragraph._p.append(element)
     return True
 
 
@@ -358,6 +435,18 @@ def wrap_math_container(tag: str, children: list[OxmlElement]) -> OxmlElement:
     return element
 
 
+def format_plain_latex_text(latex: str) -> str:
+    if not latex:
+        return ""
+    text = TEXT_CMD_PATTERN.sub(lambda m: m.group(1), latex)
+    text = PLAIN_FRAC_PATTERN.sub(lambda m: f"({m.group(1)})/({m.group(2)})", text)
+    for src, dst in SIMPLE_LATEX_REPLACEMENTS.items():
+        text = text.replace(src, dst)
+    text = re.sub(r"\\[a-zA-Z]+", "", text)
+    text = text.replace("{", "").replace("}", "")
+    return text.strip() or latex
+
+
 def text_to_math_runs(text: str) -> list[OxmlElement]:
     if not text:
         return []
@@ -440,14 +529,19 @@ def convert_markdown(document: Document, lines: list[str], base_dir: Path) -> No
 
         if normalized.startswith("- ") or normalized.startswith("* "):
             flush_paragraph(document, paragraph_buffer, base_dir)
-            document.add_paragraph(normalized[2:].strip(), style="List Bullet")
+            paragraph = document.add_paragraph(style="List Bullet")
+            render_inline_content(paragraph, normalized[2:].strip())
             i += 1
             continue
 
         ordered_match = re.match(r"(\d+)[\.\)]\s+(.*)", normalized)
         if ordered_match:
             flush_paragraph(document, paragraph_buffer, base_dir)
-            document.add_paragraph(ordered_match.group(2).strip(), style="List Number")
+            number_text = ordered_match.group(1)
+            body_text = ordered_match.group(2).strip()
+            paragraph = document.add_paragraph()
+            paragraph.add_run(f"{number_text}. ")
+            render_inline_content(paragraph, body_text)
             i += 1
             continue
 
@@ -474,24 +568,30 @@ def convert_markdown(document: Document, lines: list[str], base_dir: Path) -> No
     flush_paragraph(document, paragraph_buffer, base_dir)
 
 
+def convert_file(md_path: Path) -> Path:
+    if not md_path.exists():
+        raise FileNotFoundError(f"Markdown ファイルが見つかりません: {md_path}")
+
+    docx_path = md_path.with_suffix(".docx")
+    document = Document()
+    lines = read_markdown(md_path)
+    convert_markdown(document, lines, base_dir=md_path.parent)
+    document.save(docx_path)
+    return docx_path
+
+
 def main():
     if len(sys.argv) >= 2:
         md_path = Path(sys.argv[1])
     else:
         md_path = Path("merged.md")
 
-    if not md_path.exists():
-        print(f"エラー: Markdown ファイルが見つかりません: {md_path}")
+    try:
+        docx_path = convert_file(md_path)
+        print(f"Word ファイルを出力しました: {docx_path}")
+    except Exception as e:
+        print(f"エラー: {e}")
         sys.exit(1)
-
-    docx_path = md_path.with_suffix(".docx")
-
-    document = Document()
-    lines = read_markdown(md_path)
-    convert_markdown(document, lines, base_dir=md_path.parent)
-    document.save(docx_path)
-
-    print(f"Word ファイルを出力しました: {docx_path}")
 
 
 if __name__ == "__main__":

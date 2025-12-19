@@ -1,0 +1,65 @@
+[
+  {
+    "name": "fraction_inline",
+    "description": "a/b を LaTeX の分数に（URL除外）",
+    "pattern": "(?<![\\w/])(\\d+)\\s*/\\s*(\\d+)(?![\\w/])",
+    "replacement": "$\\\\frac{\\g<1>}{\\g<2>}$",
+    "flags": []
+  },
+  {
+    "name": "ratio_simple",
+    "description": "a:b を比表記に（URL除外）",
+    "pattern": "(?<![\\w/])(\\d+)\\s*[:：]\\s*(\\d+)(?![\\w/])",
+    "replacement": "\\g<1> : \\g<2>",
+    "flags": []
+  },
+  {
+    "name": "fix_exponents",
+    "description": "指数 x^2 → x^{2}",
+    "pattern": "(\\w+)\\s*\\^\\s*(\\d+)",
+    "replacement": "\\g<1>^{\\g<2>}",
+    "flags": []
+  },
+  {
+    "name": "fix_square_roots",
+    "description": "v{n} → \\sqrt{n}",
+    "pattern": "v\\s*\\{\\s*(\\d+)\\s*\\}",
+    "replacement": "\\\\sqrt{\\g<1>}",
+    "flags": []
+  },
+  {
+    "name": "fix_underscore_subscript",
+    "description": "下付き x_1 → x_{1}",
+    "pattern": "([a-zA-Z])\\s*_\\s*(\\d+)",
+    "replacement": "\\g<1>_{\\g<2>}",
+    "flags": []
+  },
+  {
+    "name": "fix_percent",
+    "description": "パーセントの前後を整える",
+    "pattern": "(\\d)\\s*%",
+    "replacement": "\\g<1>%",
+    "flags": []
+  },
+  {
+    "name": "fix_inequality",
+    "description": "不等号の前後にスペース",
+    "pattern": "\\s*([<>])\\s*",
+    "replacement": " \\g<1> ",
+    "flags": []
+  },
+  {
+    "name": "fix_fraction_spacing",
+    "description": "既存 \\frac の前後スペース調整",
+    "pattern": "\\s*\\\\frac\\s*{(.*?)}\\s*{(.*?)}\\s*",
+    "replacement": " $\\\\frac{\\g<1>}{\\g<2>}$ ",
+    "flags": []
+  },
+  {
+    "name": "tighten_math_ops",
+    "description": "数値同士の演算子は詰める (1 + 2 → 1+2)",
+    "pattern": "(?<=\\d)\\s*([+\\-*/])\\s*(?=\\d)",
+    "replacement": "\\g<1>",
+    "flags": []
+  }
+]

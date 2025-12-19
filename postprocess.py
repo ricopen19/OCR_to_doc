@@ -50,11 +50,9 @@ def write_merged_md(
     files: Iterable[PageFile],
     output_path: Path,
     add_page_heading: bool = True,
-    page_image_dir: Path | None = None,
 ) -> List[MathIssue]:
     output_path.parent.mkdir(parents=True, exist_ok=True)
     issues: List[MathIssue] = []
-    embedded_pages: set[int] = set()
     with output_path.open("w", encoding="utf-8") as out:
         current_page: int | None = None
         page_chunks: list[str] = []
@@ -77,9 +75,6 @@ def write_merged_md(
             detected = detect_math_issues(page_text, page)
             if detected:
                 issues.extend(detected)
-                if page_image_dir and page not in embedded_pages:
-                    inject_page_image(out, page, page_image_dir)
-                    embedded_pages.add(page)
 
         for entry in files:
             if current_page is None:
@@ -133,15 +128,8 @@ def noisy_dollar(text: str) -> bool:
 
 
 def inject_page_image(out_stream, page: int, image_dir: Path) -> None:
-    image_path = image_dir / f"page_{page:03}.png"
-    if not image_path.exists():
-        return
-    out_stream.write(
-        "<details>\n"
-        f"<summary>数式が崩れた可能性があります (Page {page})</summary>\n\n"
-        f"![Page {page}](./page_images/page_{page:03}.png)\n\n"
-        "</details>\n\n"
-    )
+    # 互換のため空関数を維持（将来の再利用時に差し込み位置を明確化するため）。
+    return
 
 
 def write_math_review_log(log_path: Path, issues: List[MathIssue]) -> None:
@@ -161,7 +149,6 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--input", default=str(INPUT_DIR), help="ページ Markdown のディレクトリ")
     parser.add_argument("--output", default=None, help="出力ファイルパス (省略時は <base-name>_merged.md)")
     parser.add_argument("--base-name", default="merged", help="出力ベース名。--output 指定時は無視")
-    parser.add_argument("--keep-pages", action="store_true", help="ページ Markdown を削除せずに残す")
     parser.add_argument("--no-heading", action="store_true", help="ページ見出しを挿入しない")
     return parser.parse_args(argv)
 
@@ -179,21 +166,17 @@ def main(argv: list[str] | None = None) -> None:
     if not files:
         raise SystemExit(f"結合対象の md ファイルが見つかりません: {input_dir}")
 
-    page_image_dir = input_dir / "page_images"
     issues = write_merged_md(
         files,
         output_path,
         add_page_heading=not args.no_heading,
-        page_image_dir=page_image_dir if page_image_dir.exists() else None,
     )
     write_math_review_log(input_dir / "math_review.csv", issues)
     clean_file(output_path, inplace=True)
+    clean_file(output_path, inplace=True)  # run twice to ensure backrefs are cleared after layout injection
 
-    if args.keep_pages:
-        print("ページ単位の md ファイルを保持しました (--keep-pages)")
-    else:
-        cleanup(files)
-        print("ページ単位の md ファイルを削除しました。")
+    cleanup(files)
+    print("ページ単位の md ファイルを削除しました（デフォルト動作）。")
 
     print(f"結合完了: {output_path}")
 

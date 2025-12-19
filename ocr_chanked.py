@@ -1,15 +1,26 @@
 import argparse
+import json
 import os
 import sys
 import time
 import platform
 import subprocess
 from pathlib import Path
+from typing import Any
 
 from pdf2image import convert_from_path, pdfinfo_from_path
 
 from math_refiner import MathRefiner
-from ocr import OcrOptions, run_ocr, build_command
+from ocr import (
+    IconFilterConfig,
+    OcrOptions,
+    build_command,
+    run_ocr,
+    update_icon_filter_config,
+    update_icon_filter_config,
+    export_json,
+    export_csv,
+)
 
 """PDF をチャンク処理しながら OCR するユーティリティ。
 
@@ -52,9 +63,9 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--math-refiner",
-        action=argparse.BooleanOptionalAction,
-        default=True,
-        help="Pix2Text を用いた数式置換を有効/無効にします (default: 有効)",
+        action="store_true",
+        default=False,
+        help="Pix2Text を用いた数式置換を有効化 (デフォルト無効)",
     )
     parser.add_argument(
         "--math-score",
@@ -65,7 +76,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--math-cache",
         type=Path,
-        help="Pix2Text のキャッシュルート (default: ./\.pix2text_cache)",
+        help="Pix2Text のキャッシュルート (default: ./.pix2text_cache)",
     )
     parser.add_argument(
         "--math-resized-shape",
@@ -74,10 +85,64 @@ def parse_args() -> argparse.Namespace:
         help="Pix2Text 推論時の resized_shape (default: 960)",
     )
     parser.add_argument(
-        "--keep-page-images",
+        "--drop-page-images",
+        dest="keep_page_images",
+        action="store_false",
+        default=True,
+        help="ページ画像 (page_images/*.png) を保存しない",
+    )
+    parser.add_argument(
+        "--icon-profile",
+        choices=["default", "strict", "lenient"],
+        default="default",
+        help="アイコンフィルタのプリセット (default/strict/lenient)",
+    )
+    parser.add_argument(
+        "--icon-policy",
+        choices=["auto", "review", "keep"],
+        default="auto",
+        help="小型アイコン削除ポリシー。auto=完全自動, review=候補ログのみ, keep=削除しない",
+    )
+    parser.add_argument(
+        "--icon-config",
+        type=Path,
+        help="アイコンフィルタ閾値を記述した JSON ファイル (任意)",
+    )
+    parser.add_argument(
+        "--icon-log",
         action=argparse.BooleanOptionalAction,
         default=True,
-        help="ページ画像 (page_images/*.png) を保存します。--no-keep-page-images で削除",
+        help="アイコン候補を icon_candidates.json に記録するか",
+    )
+    parser.add_argument(
+        "--icon-log-all",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="true にすると全図版の統計を all_fig_stats.json に追記",
+    )
+    parser.add_argument(
+        "--fallback-tesseract",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="OCR結果が空に近い場合、pytesseract で再OCRするフォールバックを有効化",
+    )
+    parser.add_argument(
+        "--emit-json",
+        choices=["off", "on", "auto"],
+        default="off",
+        help="YomiToku JSON 出力モード (off=出力しない, on=常に出力, auto=数式がありそうなページのみ)",
+    )
+    parser.add_argument(
+        "--emit-csv",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="表抽出のための CSV 出力を有効化",
+    )
+    parser.add_argument(
+        "--force-tesseract-merge",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="YomiToku 結果に関わらず pytesseract の結果を追記する",
     )
     return parser.parse_args()
 
@@ -95,6 +160,7 @@ REST_SECONDS = max(0, args.rest_seconds) if args.enable_rest else 0
 
 # プロジェクト内 poppler
 BASE_DIR = Path(__file__).resolve().parent
+ICON_PROFILE_DIR = BASE_DIR / "configs" / "icon_profiles"
 
 
 def resolve_poppler_path(base_dir: Path) -> Path:
@@ -124,7 +190,105 @@ def resolve_poppler_path(base_dir: Path) -> Path:
 POPPLER_PATH = resolve_poppler_path(BASE_DIR)
 os.environ["PATH"] = str(POPPLER_PATH) + os.pathsep + os.environ.get("PATH", "")
 
-OPTIONS = OcrOptions(mode=args.mode, device="cpu", enable_figure=True)
+
+def page_has_math(md_paths: list[Path]) -> bool:
+    """簡易判定: 数式らしき記号/記法があれば True。
+
+    過剰検知しすぎないよう、以下の条件に該当すれば数式ありとみなす:
+    - 行内に "$" が2つ以上
+    - "\\(" "\\[" など TeX デリミタを含む
+    - ^ や _ が複数（インライン指数/添字っぽい）
+    - 数式記号集合にマッチ (Σ, ∫, √, ≤, ≥)
+    """
+
+    math_symbols = {"∑", "Σ", "∫", "√", "≤", "≥", "≈", "≒", "≠", "∞"}
+    for md in md_paths:
+        try:
+            text = md.read_text(encoding="utf-8")
+        except OSError:
+            continue
+        for line in text.splitlines():
+            if line.count("$") >= 2:
+                return True
+            if "\\(" in line or "\\[" in line:
+                return True
+            if line.count("^") >= 2 or line.count("_") >= 2:
+                return True
+            if any(sym in line for sym in math_symbols):
+                return True
+    return False
+
+
+OPTIONS = OcrOptions(
+    mode=args.mode,
+    device="cpu",
+    enable_figure=True,
+    fallback_tesseract=args.fallback_tesseract,
+    force_tesseract_merge=args.force_tesseract_merge,
+)
+
+
+def _load_icon_profile(name: str) -> dict[str, Any]:
+    profile_path = ICON_PROFILE_DIR / f"{name}.json"
+    if not profile_path.exists():
+        print(f"警告: icon profile '{name}' が見つかりませんでした。default を使用します。")
+        return _load_icon_profile("default") if name != "default" else {}
+    try:
+        loaded = json.loads(profile_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        print(f"警告: icon profile '{name}' の読み込みに失敗しました: {exc}")
+        return {}
+    if not isinstance(loaded, dict):
+        print(f"警告: icon profile '{name}' は JSON object 形式ではありません")
+        return {}
+    return loaded
+
+
+def _apply_icon_overrides(overrides: dict[str, Any], source: dict[str, Any], icon_field_names: set[str]) -> None:
+    for key, value in source.items():
+        if key in icon_field_names:
+            overrides[key] = value
+        else:
+            print(f"警告: icon filter 設定キー {key} は無視されました")
+
+
+def apply_icon_filter_from_args() -> None:
+    icon_field_names = set(IconFilterConfig.__dataclass_fields__.keys())
+
+    # 1) プリセット読み込み
+    overrides = _load_icon_profile(args.icon_profile)
+
+    # 2) ポリシー/ログ系は CLI の指定で上書き
+    overrides.update(
+        {
+            "policy": args.icon_policy,
+            "log_candidates": args.icon_log,
+            "log_all_figures": args.icon_log_all,
+        }
+    )
+
+    # 3) カスタム JSON があればさらに上書き
+    if args.icon_config:
+        try:
+            loaded = json.loads(args.icon_config.read_text(encoding="utf-8"))
+        except OSError as exc:
+            print(f"アイコン設定ファイルを開けませんでした: {exc}")
+            loaded = None
+        except json.JSONDecodeError as exc:
+            print(f"アイコン設定ファイルの JSON 解析に失敗しました: {exc}")
+            loaded = None
+        if isinstance(loaded, dict):
+            _apply_icon_overrides(overrides, loaded, icon_field_names)
+        elif loaded is not None:
+            print("警告: icon 設定ファイルは JSON object 形式である必要があります")
+
+    try:
+        update_icon_filter_config(**overrides)
+    except ValueError as exc:
+        print(f"アイコンフィルタ設定を適用できません: {exc}")
+
+
+apply_icon_filter_from_args()
 
 MATH_REFINER: MathRefiner | None = None
 if args.math_refiner:
@@ -223,22 +387,40 @@ while current <= end_page_limit:
         print(" ".join(preview_cmd))
         run_ocr(img_path, OUT_DIR, page_number=page, options=OPTIONS)
 
-        if MATH_REFINER:
-            md_paths = sorted(OUT_DIR.glob(f"page_{page:03}*.md"))
-            if md_paths:
-                result = MATH_REFINER.refine_page(
-                    page_md_paths=md_paths,
-                    image_path=img_path,
-                    page_number=page,
+        md_paths = sorted(OUT_DIR.glob(f"page_{page:03}*.md"))
+
+        should_emit_json = args.emit_json == "on" or (
+            args.emit_json == "auto" and page_has_math(md_paths)
+        )
+
+        if should_emit_json:
+            try:
+                export_json(img_path, OUT_DIR, OPTIONS)
+            except subprocess.CalledProcessError as exc:
+                print(f"JSON 出力に失敗しました (page {page}): {exc}")
+        elif args.emit_json == "auto":
+            print("JSON スキップ (数式なし判定)")
+
+        if args.emit_csv:
+            try:
+                export_csv(img_path, OUT_DIR, OPTIONS)
+            except subprocess.CalledProcessError as exc:
+                print(f"CSV 出力に失敗しました (page {page}): {exc}")
+
+        if MATH_REFINER and md_paths:
+            result = MATH_REFINER.refine_page(
+                page_md_paths=md_paths,
+                image_path=img_path,
+                page_number=page,
+            )
+            if result.replaced:
+                print(
+                    f"MathRefiner: {result.replaced} 件の数式を置換 (未使用 {result.unused})"
                 )
-                if result.replaced:
-                    print(
-                        f"MathRefiner: {result.replaced} 件の数式を置換 (未使用 {result.unused})"
-                    )
-                elif result.unused:
-                    print(
-                        f"MathRefiner: 数式を {result.unused} 件検出しましたが置換対象がありませんでした"
-                    )
+            elif result.unused:
+                print(
+                    f"MathRefiner: 数式を {result.unused} 件検出しましたが置換対象がありませんでした"
+                )
 
         if not args.keep_page_images:
             try:

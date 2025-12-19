@@ -1,0 +1,8 @@
+{
+  "formats": [
+    "md"
+  ],
+  "imageAsPdf": true,
+  "enableFigure": true,
+  "outputRoot": null
+}

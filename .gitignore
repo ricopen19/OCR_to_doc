@@ -1,0 +1,55 @@
+# Python / Poetry
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+
+.venv/
+venv/
+env/
+.env
+.env.*
+
+# IDE / OS
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+.cursor/
+
+# direnv / local env
+.envrc
+.direnv/
+
+# Local tooling artifacts
+.mcp.json
+.specstory/
+.cursorindexingignore
+
+# Node / UI
+node_modules/
+ui/dist/
+ui/test-results/
+ui/playwright-report/
+ui/src-tauri/target/
+
+# Local results / caches
+result/
+tmp/
+.pix2text_cache/
+
+# Logs / misc
+*.log
+
+# Local inputs (repo root only)
+/*.docx
+/*.pdf
+/*.png
+/*.jpg
+/*.jpeg
+/*.heic
+/*.heif
+/*.HEIC
+/*.HEIF
+/*.xlsx

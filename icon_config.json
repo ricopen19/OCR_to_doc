@@ -1,0 +1,14 @@
+{
+  "policy": "auto",
+  "log_candidates": true,
+  "log_all_figures": true,
+  "likely_area_ratio": 0.005,
+  "likely_area": 40000,
+  "likely_avg_std": 25,
+  "likely_unique_colors": 500,
+  "likely_dominant_ratio": 0.55,
+  "auto_drop_area_ratio": 0.0038,
+  "auto_drop_area": 42000,
+  "auto_drop_unique_colors": 3000,
+  "auto_drop_avg_std": 40
+}

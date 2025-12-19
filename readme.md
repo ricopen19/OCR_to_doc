@@ -1,115 +1,28 @@
 # スマホスキャン OCR → Markdown / Word 変換ツール
 
-## 概要
+スマホで撮った画像や、iOS の「書類をスキャン」で作った PDF を入力に、ローカルで OCR→Markdown（→docx/xlsx）まで繋ぐツール群です。  
+確定仕様は `docs/spec.md` に集約しています。
 
-スマホで撮った画像や iOS の「書類をスキャン」で作った PDF を入力に、
-- 日本語 OCR と図表の切り出し
-- Markdown 正規化と Word/将来的な Excel 変換
-を段階的に実現するためのツール群です。
-
-## ゴール
-
-**入力**
-- スマホ写真（jpg, png）
-- 画像 PDF / テキスト埋め込み PDF
-
-**処理**
-- 入力種別を判定し、YomiToku など適切なエンジンでテキスト化
-- 図表画像を抽出し、Markdown 内にリンクとして埋め込む
-
-**出力**
-- Markdown（中間フォーマット）
-- Word（.docx）
-- 将来的には Excel（.xlsx）
-
-## パイプライン概要
-
-1. ファイル投入（画像 / PDF）
-2. PDF は `pdf2image + poppler` でページ単位に画像化
-3. YomiToku（lite/full）を中心に OCR を実行
-4. ページごとの Markdown を結合して `merged.md` を生成
-5. Markdown を元に docx（将来は xlsx）へ変換
-
-## 主な機能
-
-- PDF / 画像のページ分解と前処理
-- YomiToku CLI をラップした OCR 実行（`lite`/`full` 切り替え）
-- 入力ファイルごとに `result/<ファイル名>/` を作り、ページ Markdown と `figures/` 配下の図版を保存
-- ページ Markdown の結合と図表画像の整理
-- Pandoc などを使った docx 変換
-
-## OCR 後の自動整形
-
-- `markdown_cleanup.py` が見出し (`# $1-1-1$` → `### 1-1-1`)、章付き箇条書き（`- □ $1-1-1$` → `- 1-1-1 ...`）、ページ番号末尾（`...50` → `（p.50）`）などを自動補正。
-- `ocr.py` 実行時に各ページの Markdown を即クリーンアップし、`<br>` を正規の改行へ変換、`page_images/` 参照の `$` や URL の崩れも防止。
-- `<details>` ブロックでページ全体画像を挿入し、分数が壊れたページをあとから目視できるようにした（`ocr_chanked.py` が `page_images/` を既定保存）。
-- 小型＆単色アイコン画像を自動検出して削除し、Markdown から参照も取り除くフィルタを搭載（面積/色数/標準偏差を指標に段階調整中）。
-
-## 想定入力
-
-- 数的処理系の問題集やプリントをスマホで撮影した画像
-- iOS「書類をスキャン」で生成した 1〜数十ページの PDF
-
-## 実装フェーズ概要
-
-### フェーズ 1：基本 OCR パイプライン
-- 対象：画像 PDF / 画像ファイル
-- モジュール：`ingest.py`（PDF→画像）、`ocr.py`（YomiToku ラッパ）、`postprocess.py`（Markdown 結合）
-- 成果物：図表付き Markdown を一括生成
-
-### フェーズ 2：エンジン切り替えとテキスト PDF 対応
-- `dispatcher.py` で入力種別を判定し、画像なら OCR、テキスト PDF なら `text_pdf.py` で抽出
-- 将来的な `markitdown` など別エンジンとの連携を想定
-
-### フェーズ 3：エクスポートと fallback
-- `export.py` で Markdown→docx/xlsx へ変換
-- `ocr.py` に fallback 戦略を用意し、YomiToku が失敗したページを Tesseract/PaddleOCR などで再処理
-
-## ざっくり使い方
+## 使い方（最短）
 
 ```bash
-# 仮想環境に入る
-poetry shell
-
 # 依存インストール（初回のみ）
 poetry install
 
-# OCR 実行（例：全ページ、lite モード）
-poetry run python ocr_chanked.py input.pdf --no-math-refiner
+# PDF / 画像 / HEIC / SVG を自動判定して処理（result/<入力名>/ に出力）
+poetry run python dispatcher.py sample.pdf
+poetry run python dispatcher.py sample.heic
 
-# OCR 実行（例：11〜20ページのみ、モード full）
-poetry run python ocr_chanked.py input.pdf --start 11 --end 20 --mode full --no-math-refiner
+# docx まで作る
+poetry run python dispatcher.py sample.pdf --formats md docx
 
-# Markdown を結合（`result/input/input_merged.md` が生成される）
-poetry run python poppler/merged_md.py --input result/input --base-name input
-
-# ページ画像を活用したマージ（数式フォールバック用）
-poetry run python poppler/merged_md.py --input result/input --base-name input --keep-pages
-
-`--keep-pages` を付けるとページ単位の Markdown を残しつつ、`result/<name>/page_images/` に保存したページ画像を `<details>` ブロックとして `*_merged.md` に埋め込みます。記事化途中で再マージや docx 変換を繰り返す場合はこの CLI での再生成が前提になります。
-
-# Word に変換
-poetry run python export_docx.py output_merged.md
+# PDF のページ範囲などを ocr_chanked.py に渡す（-- 以降が透過されます）
+poetry run python dispatcher.py sample.pdf -- --start 11 --end 20
 ```
 
-### 数式出力と PoC 結果
-
-- 2025-11-23 実施の PoC（`docs/poc_results/2025-11-23-math_ocr_poc.md`）で、Pix2Text の分数再現精度が要件を満たさないことが判明しました。そのため **フェーズ1ではプレーンテキスト出力を正式採用** しています。
-- `ocr_chanked.py` は `--no-math-refiner` での実行を推奨します（デフォルトでも無効化する予定）。式の整形は後工程（人手やローカル LLM など）で行うことを前提としています。
-- 参考までに、Pix2Text を試したい場合は以下のオプションを利用できます:
-  - `--math-refiner`: 数式補正を明示的に有効化。
-  - `--math-score <0〜1>`: Pix2Text が返す信頼度の閾値。
-  - `--math-resized-shape <int>`: Pix2Text 解析時のリサイズ幅。
-  - `--math-cache <dir>`: モデルキャッシュ保存先（既定は `./.pix2text_cache/`）。
-- 低スペック PC 向けには `--enable-rest` と `--rest-seconds` でチャンク処理ごとに休憩を挟めます。
-
-### 要件定義 / PoC テンプレート
-
-- 新しい機能に着手する際は `docs/requirements_template.md` または `docs/templates/requirements_general_template.md` をコピーして要件と成功指標を定義してください。
-- PoC の結果は `docs/poc_results/` 配下にレポート化し、Go/No-Go の記録を残します。
-
 ## 参考ドキュメント
-- 詳細仕様: `docs/spec.md`
-- タスクとロードマップ: `docs/Tasks.md`
-- アーキテクチャ詳細: `docs/architectured.md`
-- 環境と制約: `docs/env_and_limits.md`（macOS 開発 + Windows 配布ポリシーを記載）
+- 確定仕様（実装済み/入出力）: `docs/spec.md`
+- CLI コマンド一覧: `docs/cli_commands.md`
+- タスク（未完のみ）: `docs/Tasks.md`
+- アーキテクチャ（責務分割）: `docs/architectured.md`
+- 実行環境/制約: `docs/env_and_limits.md`

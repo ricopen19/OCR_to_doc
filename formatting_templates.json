@@ -1,0 +1,16 @@
+[
+  {
+    "name": "fix_image_tags",
+    "description": "画像ブロックの前後に空行を追加",
+    "pattern": "(?<!\\n)\\s*<img",
+    "replacement": "\\n\\n<img",
+    "flags": []
+  },
+  {
+    "name": "fix_list_formatting",
+    "description": "箇条書きの前後に空行を追加",
+    "pattern": "(?<=\\S)\\n(\\s*[-*+]\\s+)",
+    "replacement": "\\n\\n\\g<1>",
+    "flags": []
+  }
+]

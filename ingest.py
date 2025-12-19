@@ -11,7 +11,18 @@ from enum import Enum
 from pathlib import Path
 from typing import Optional
 
-IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".webp", ".tif", ".tiff", ".bmp"}
+from image_normalizer import HEIC_EXTENSIONS, SVG_EXTENSIONS
+
+IMAGE_EXTS = {
+    ".png",
+    ".jpg",
+    ".jpeg",
+    ".webp",
+    ".tif",
+    ".tiff",
+    ".bmp",
+}
+IMAGE_EXTS |= HEIC_EXTENSIONS | SVG_EXTENSIONS
 PDF_EXTS = {".pdf"}
 DEFAULT_PAGE_DIR = Path("result")
 DEFAULT_FIGURE_DIR = DEFAULT_PAGE_DIR / "figures"

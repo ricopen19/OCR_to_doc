@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import argparse
+import json
 import re
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Match
 
@@ -33,10 +35,36 @@ URL_PATTERN = re.compile(r"https?://\S+|www\.\S+")
 PAGE_TAIL_PATTERN = re.compile(r"\.{3}\s*(\d+)")
 BULLET_PATTERN = re.compile(r"^(\s*)[・●○◆■◇□▶▷]\s*", re.MULTILINE)
 SECTION_ITEM_PATTERN = re.compile(r"^(?P<prefix>\s*[-*])\s*(?:[□■◯○●◆◇▶▷・\-]?\s*)?\$(?P<num>\d+(?:-\d+)+)\$\s*(?P<title>.*)$")
+BLOCK_TRAILING_DIGIT_PATTERN = re.compile(r"(\$\$\s*[\s\S]+?\s*\$\$)(?:\s*<br>)?\s*\b2\b", re.MULTILINE)
+BLOCK_NESTED_DOLLAR_PATTERN = re.compile(r"\$\$\s*\$+([\s\S]*?)\$+\s*\$\$", re.MULTILINE)
+STRAY_MARKER_BEFORE_MEDIA = re.compile(r"(?:\\g(?:<\d+>)?|\$\d+)\s*(?=(?:<)?img\b|<br>|\bbr\b)", re.IGNORECASE)
+STRAY_MARKER_AFTER_MEDIA = re.compile(r"((?:<)?img[^>]*>|<br>|\bbr\b)\s*(?:\\g(?:<\d+>)?|\$\d+)", re.IGNORECASE)
+BACKREF_TOKEN_PATTERN = re.compile(r"\s*\\g(?:<\d+>)?\s*")
+IMG_MISSING_BRACKETS_PATTERN = re.compile(r"(?<!<)(img\s+src=\"[^\"]+\"[^>\n]*)", re.IGNORECASE)
+BARE_BR_PATTERN = re.compile(r"(?<!\w)br(?!\w)")
+BARE_TAGS = ("details", "/details", "summary", "/summary")
+BIT_TEXT_NESTED_PATTERN = re.compile(r"\\text\s*{\s*\\text\s*{\s*\\$\\text\s*{ビット}\\$}\s*}")
+BIT_TEXT_INNER_PATTERN = re.compile(r"\\text\s*{\s*\\$\\text\s*{ビット}\\$\\s*}")
+BIT_TEXT_SIMPLE_PATTERN = re.compile(r"\\text\s*{\s*ビット\\s*}")
+UNIT_TOKENS = ["回/秒", "ビット/回", "ビット", "バイト", "kバイト", "秒", "[ビット/バイト]"]
+UNIT_TOKEN_PATTERN = re.compile("|".join(re.escape(token) for token in UNIT_TOKENS))
+UNIT_TOKEN_OUTSIDE_PATTERN = re.compile(
+    r"(?<!\$)(?P<unit>" + "|".join(re.escape(token) for token in UNIT_TOKENS) + r")(?!\$)"
+)
+LOG_PATTERN_INLINE = re.compile(r"\$log\^\{?2\}?\s*n\$", re.IGNORECASE)
+LOG_PATTERN_BARE = re.compile(r"(?<![\\\w])log\^\{?2\}?\s*n(?![\w}])", re.IGNORECASE)
 
 
 def clean_text(line: str) -> str:
     text = line.rstrip("\n")
+    stripped = text.strip()
+    if stripped.startswith("$$") and stripped.endswith("$$") and stripped.count("$$") >= 2:
+        inner = stripped.strip("$").strip()
+        inner = inner.replace("$", " ")
+        inner = re.sub(r"\s+", " ", inner).strip()
+        if not inner:
+            return "$$ $$"
+        return f"$$ {inner} $$"
     text = UNESCAPE_PATTERN.sub(lambda m: m.group(1), text)
     text = EXTRA_BACKSLASH_PATTERN.sub(r"\\", text)
     text = text.replace("’", "'")
@@ -52,12 +80,21 @@ def clean_text(line: str) -> str:
     text = collapse_block_dollars(text)
     text = cleanup_dangling_dollar(text)
     text = strip_invalid_inline_segments(text)
+    text = apply_formula_templates(text)
+    text = apply_formatting_templates(text)
     text = normalize_fragmented_math(text)
     text = format_inline_math(text)
     text = normalize_headings(text)
     text = normalize_layout_marks(text)
+    text = cleanup_stray_markers(text)
+    text = recover_html_tokens(text)
+    text = wrap_units_outside_math(text)
+    text = wrap_units_inside_math(text)
+    text = normalize_bit_unit_notation(text)
+    text = normalize_log_notation(text)
     text = sanitize_media_paths(text)
-    
+    text = strip_backrefs(text)
+
     if needs_block_math(text):
         stripped = text.strip()
         if not stripped.startswith("$$"):
@@ -179,6 +216,91 @@ def format_inline_math(text: str) -> str:
     return "".join(result)
 
 
+def wrap_units_outside_math(text: str) -> str:
+    def repl(match: Match[str]) -> str:
+        unit = match.group("unit")
+        return f"$\\text{{{unit}}}$"
+
+    return UNIT_TOKEN_OUTSIDE_PATTERN.sub(repl, text)
+
+
+def wrap_units_inside_math(text: str) -> str:
+    def repl(match: Match[str]) -> str:
+        expr = match.group("expr")
+        if "\\text{" in expr:
+            return match.group(0)
+        expr = UNIT_TOKEN_PATTERN.sub(lambda m: f"\\text{{{m.group(0)}}}", expr)
+        return f"${expr}$"
+
+    return INLINE_ANY_PATTERN.sub(repl, text)
+
+
+def normalize_bit_unit_notation(text: str) -> str:
+    """崩れた \\text{\\text{$\\text{ビット}$}} などをプレーンな『ビット』に統一する。"""
+
+    replacements = (
+        r"\text{\text{\text{\text{$\text{ビット}$}}}}",
+        r"\text{\text{\text{$\text{ビット}$}}}",
+        r"\text{\text{$\text{ビット}$}}",
+        r"\text{$\text{ビット}$}",
+        r"$\text{ビット}$",
+        r"\text{ビット}",
+    )
+    prev = None
+    while prev != text:
+        prev = text
+        for pat in replacements:
+            text = text.replace(pat, "ビット")
+        text = BIT_TEXT_NESTED_PATTERN.sub("ビット", text)
+        text = BIT_TEXT_INNER_PATTERN.sub("ビット", text)
+        text = BIT_TEXT_SIMPLE_PATTERN.sub("ビット", text)
+    return text
+
+
+def normalize_log_notation(text: str) -> str:
+    text = LOG_PATTERN_INLINE.sub(r"$\\log_2 n$", text)
+    text = LOG_PATTERN_BARE.sub(r"$\\log_2 n$", text)
+    return text
+
+
+def apply_formula_templates(text: str) -> str:
+    templates = load_formula_templates()
+    if not templates:
+        return text
+    block_match = re.fullmatch(r"\s*\$\$\s*(.*?)\s*\$\$\s*", text, re.DOTALL)
+    inline_match = re.fullmatch(r"\s*\$(.*?)\$\s*", text)
+
+    if block_match:
+        inner = block_match.group(1)
+        inner = _apply_templates_to_segment(inner, templates)
+        return f"$$ {inner.strip()} $$"
+    if inline_match:
+        inner = inline_match.group(1)
+        inner = _apply_templates_to_segment(inner, templates)
+        return f"${inner.strip()}$"
+    return _apply_templates_to_segment(text, templates)
+
+
+def _apply_templates_to_segment(segment: str, templates: list[FormulaTemplate]) -> str:
+    for template in templates:
+        def repl(match: Match[str]) -> str:
+            groups = {key: (match.group(key) or "").strip() for key in match.re.groupindex}
+            try:
+                return template.replacement.format(**groups)
+            except KeyError:
+                return match.group(0)
+
+        segment = template.pattern.sub(repl, segment)
+    return segment
+
+
+def apply_formatting_templates(text: str) -> str:
+    templates = load_formatting_templates()
+    if not templates:
+        return text
+    return _apply_templates_to_segment(text, templates)
+
+
 def contains_cjk(text: str) -> bool:
     return any("\u3040" <= ch <= "\u9FFF" for ch in text)
 
@@ -229,6 +351,81 @@ def sanitize_media_paths(text: str) -> str:
     return MEDIA_PATH_PATTERN.sub(repl, text)
 
 
+def cleanup_nested_block_dollars(text: str) -> str:
+    def repl(match: Match[str]) -> str:
+        body = match.group(1).replace("$", " ")
+        body = re.sub(r"\s+", " ", body).strip()
+        if not body:
+            return "$$ $$"
+        return f"$$ {body} $$"
+
+    return BLOCK_NESTED_DOLLAR_PATTERN.sub(repl, text)
+
+
+def cleanup_block_trailing_digits(text: str) -> str:
+    return BLOCK_TRAILING_DIGIT_PATTERN.sub(r"\1", text)
+
+
+def cleanup_stray_markers(text: str) -> str:
+    """Remove stray regex backreferences left around media tags and <br>."""
+
+    text = STRAY_MARKER_BEFORE_MEDIA.sub("", text)
+    text = STRAY_MARKER_AFTER_MEDIA.sub(r"\1", text)
+    return text
+
+
+def strip_backrefs(text: str) -> str:
+    """Remove lingering \g or \g<1> tokens that survived other cleaners."""
+
+    return BACKREF_TOKEN_PATTERN.sub(" ", text)
+
+
+def recover_html_tokens(text: str) -> str:
+    """Re-wrap img/details/summary/br that lost angle brackets."""
+
+    # img 行に < > を補う
+    def repl_img(match: Match[str]) -> str:
+        body = match.group(1).strip()
+        return f"<{body}>"
+
+    text = IMG_MISSING_BRACKETS_PATTERN.sub(repl_img, text)
+
+    # br をタグ化（単語中の br は避ける）
+    text = BARE_BR_PATTERN.sub("<br>", text)
+
+    # details / summary タグ
+    for tag in BARE_TAGS:
+        text = re.sub(rf"(?<!<){tag}(?!>)", f"<{tag}>", text, flags=re.IGNORECASE)
+
+    # img タグに紛れ込んだ <br> を外に出す
+    text = re.sub(r"<img([^>]*?)<br>[^>]*>", r"<img\1><br>", text, flags=re.IGNORECASE)
+    # img の閉じ > を保証
+    text = re.sub(r"(<img[^>\n]*)(?<!/)>?", r"\1>", text, flags=re.IGNORECASE)
+    # details/summary の閉じタグを修正
+    text = re.sub(r"\$\$\s*/details\s*\$\$", "</details>", text, flags=re.IGNORECASE)
+    text = re.sub(r"(?<!<)/details(?!>)", "</details>", text, flags=re.IGNORECASE)
+    text = re.sub(r"(?<!<)details(?!>)", "<details>", text, flags=re.IGNORECASE)
+    text = re.sub(r"(?<!<)/summary(?!>)", "</summary>", text, flags=re.IGNORECASE)
+    text = re.sub(r"<summary>([^<]*?)/<summary>", r"<summary>\1</summary>", text, flags=re.IGNORECASE)
+
+    return text
+
+
+def finalize_html_tokens(text: str) -> str:
+    """Fix remaining placeholders after full-line pass."""
+
+    replacements = {
+        r"\$\$\s*/details\s*\$\$": "</details>",
+        r"\$\$\s*details\s*\$\$": "<details>",
+        r"\$\$\s*/summary\s*\$\$": "</summary>",
+        r"\$\$\s*summary\s*\$\$": "<summary>",
+    }
+    for pattern, repl in replacements.items():
+        text = re.sub(pattern, repl, text, flags=re.IGNORECASE)
+    text = text.replace("<br>", "\n")
+    return text
+
+
 def normalize_layout_marks(text: str) -> str:
     text = re.sub(r"\s*<br>\s*", "\n", text)
     text = re.sub(r"(<img[^>]+>)\s*\n+", r"\1\n", text)
@@ -259,6 +456,31 @@ def format_section_item(match: Match[str]) -> str:
     return f"- {match.group('num')}"
 
 
+PAGE_HEADING_PATTERN = re.compile(r"^#\s+Page\s+\d+\s*$")
+H1_PATTERN = re.compile(r"^(?P<prefix>\s*)#\s+(?P<title>.+)$")
+
+
+def demote_inner_headings_between_pages(text: str) -> str:
+    """# Page n で区切られた範囲内の単独 H1 を H2 に落とす。"""
+
+    lines = text.splitlines()
+    in_page = False
+    result: list[str] = []
+    for line in lines:
+        stripped = line.strip()
+        if PAGE_HEADING_PATTERN.match(stripped):
+            in_page = True
+            result.append(line)
+            continue
+        m = H1_PATTERN.match(line)
+        if m and in_page:
+            title = m.group("title").strip()
+            result.append(f"{m.group('prefix')}## {title}")
+        else:
+            result.append(line)
+    return "\n".join(result)
+
+
 def clean_file(path: Path, inplace: bool = True) -> Path:
     text = path.read_text(encoding="utf-8")
     lines = text.splitlines()
@@ -275,6 +497,10 @@ def clean_file(path: Path, inplace: bool = True) -> Path:
             continue
         cleaned_lines.append(clean_text(line))
     cleaned = "\n".join(cleaned_lines)
+    cleaned = cleanup_nested_block_dollars(cleaned)
+    cleaned = cleanup_block_trailing_digits(cleaned)
+    cleaned = demote_inner_headings_between_pages(cleaned)
+    cleaned = finalize_html_tokens(cleaned)
     if inplace:
         path.write_text(cleaned, encoding="utf-8")
         return path
@@ -294,11 +520,92 @@ def main() -> None:
         raise SystemExit(f"Markdown ファイルが見つかりません: {md_path}")
 
     if args.output:
-        text = md_path.read_text(encoding="utf-8")
-        cleaned = "\n".join(clean_text(line) for line in text.splitlines())
-        Path(args.output).write_text(cleaned, encoding="utf-8")
+        clean_file(md_path, inplace=False).rename(args.output)
     else:
         clean_file(md_path, inplace=True)
+FORMULA_TEMPLATE_PATH = Path(__file__).with_name("formula_templates.json")
+FORMATTING_TEMPLATE_PATH = Path(__file__).with_name("formatting_templates.json")
+
+
+@dataclass
+class FormulaTemplate:
+    name: str
+    pattern: re.Pattern[str]
+    replacement: str
+
+
+_FORMULA_TEMPLATES: list[FormulaTemplate] | None = None
+_FORMATTING_TEMPLATES: list[FormulaTemplate] | None = None
+
+
+def load_formula_templates() -> list[FormulaTemplate]:
+    global _FORMULA_TEMPLATES
+    if _FORMULA_TEMPLATES is not None:
+        return _FORMULA_TEMPLATES
+
+    templates: list[FormulaTemplate] = []
+    try:
+        data = json.loads(FORMULA_TEMPLATE_PATH.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        _FORMULA_TEMPLATES = []
+        return _FORMULA_TEMPLATES
+    except json.JSONDecodeError:
+        _FORMULA_TEMPLATES = []
+        return _FORMULA_TEMPLATES
+
+    for entry in data:
+        pattern_text = entry.get("pattern")
+        replacement = entry.get("replacement")
+        if not pattern_text or replacement is None:
+            continue
+        flags_value = 0
+        for flag_name in entry.get("flags", []):
+            flag = getattr(re, flag_name, None)
+            if isinstance(flag, int):
+                flags_value |= flag
+        try:
+            pattern = re.compile(pattern_text, flags_value)
+        except re.error:
+            continue
+        templates.append(FormulaTemplate(entry.get("name", ""), pattern, replacement))
+
+    _FORMULA_TEMPLATES = templates
+    return _FORMULA_TEMPLATES
+
+
+def load_formatting_templates() -> list[FormulaTemplate]:
+    global _FORMATTING_TEMPLATES
+    if _FORMATTING_TEMPLATES is not None:
+        return _FORMATTING_TEMPLATES
+
+    templates: list[FormulaTemplate] = []
+    try:
+        data = json.loads(FORMATTING_TEMPLATE_PATH.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        _FORMATTING_TEMPLATES = []
+        return _FORMATTING_TEMPLATES
+    except json.JSONDecodeError:
+        _FORMATTING_TEMPLATES = []
+        return _FORMATTING_TEMPLATES
+
+    for entry in data:
+        pattern_text = entry.get("pattern")
+        replacement = entry.get("replacement")
+        if not pattern_text or replacement is None:
+            continue
+        flags_value = 0
+        for flag_name in entry.get("flags", []):
+            flag = getattr(re, flag_name, None)
+            if isinstance(flag, int):
+                flags_value |= flag
+        try:
+            pattern = re.compile(pattern_text, flags_value)
+        except re.error:
+            continue
+        templates.append(FormulaTemplate(entry.get("name", ""), pattern, replacement))
+
+    _FORMATTING_TEMPLATES = templates
+    return _FORMATTING_TEMPLATES
 
 
 if __name__ == "__main__":

@@ -1,6 +1,7 @@
 # アーキテクチャ / 実装指針
 
-このドキュメントは、README と Tasks に記載したゴール・ロードマップを支えるモジュール設計を記録する。具体的な優先順位や作業項目は `readme.md` / `docs/Tasks.md` を参照し、ここではコンポーネント間の責務分担に集中する。
+このドキュメントは、モジュール間の責務分担（アーキテクチャ）に集中します。  
+確定した入出力仕様・ディレクトリ構成・既定挙動は `docs/spec.md` を参照してください。
 
 ---
 
@@ -31,52 +32,50 @@
 
 ### ingest.py
 - 画像 / PDF / テキスト PDF の判定。
-- PDF→画像変換（`pdf2image` + `poppler`）。
+- PDF→画像変換（`pdf2image` + `poppler`）および前処理（DPI・二値化・ノイズ除去など）の適用。
 - 一時ファイルや作業ディレクトリ (`result/`, `result/figures/`) の管理とクリーンアップ。
+- 画像入力では `image_normalizer` で形式統一し、`image_preprocessor` で OCR 用の前処理プロファイルを生成する。
 
 ### ocr.py / ocr_chanked.py
 - YomiToku CLI を呼び出すラッパ。`lite`/`full` モード切り替えや `--figure` オプションのオン/オフ管理。`ocr_chanked.py` は `--label` によって同一 PDF でもページ範囲ごとに別名ディレクトリへ出力できる。
-- 1 ページごとの Markdown / 図表ファイル命名規則（`fig_page001_01.png` 等）を統一。
-- フェーズ 3 で fallback チェーン（YomiToku → Tesseract → PaddleOCR etc.）を組み込み、失敗ログを残す。
+- 命名規則・出力ファイルは `docs/spec.md` に集約。
+- fallback や高度化の優先度は `docs/Tasks.md` を参照。
 
-### dispatcher.py（フェーズ 2）
-- 入力ファイル情報を受け取り、OCR すべきかテキスト抽出すべきかを決定。
-- 判定ロジックを 1 箇所に集約し、CLI からは `dispatcher.run(path, mode="auto")` のように呼び出せる形にする。
+### dispatcher.py
+- 入力ファイル情報を受け取り、PDF/画像の処理経路を切り替えるエントリポイント。
+- `python dispatcher.py <path> -- <ocr_chanked.py の追加引数>` の形式で、PDF 側の追加引数を透過できる。
 
 ### text_pdf.py（フェーズ 2）
 - テキスト埋め込み PDF から `markitdown` / `pdfplumber` 等でテキスト抽出。
-- 基本的な Markdown 整形（段落、箇条書き、表の検出）を担当。
+- 基本的な Markdown 整形（段落、箇条書き、表の検出）を担当。現状は PoC 途中で、抽出精度/整形ルールは今後詰める。
 
 ### postprocess.py / poppler/merged_md.py
-- ページ Markdown のソート＋マージと `# Page n` の挿入。マージ後は `markdown_cleanup.py` を通して記号エスケープや LaTeX の整形を自動で行い、出力の一貫性を保つ。
-- `--keep-pages` フラグでページファイルを残すかどうかを制御。
-- マージ後のクリーンアップ（`layout.jpeg` / `ocr.jpeg` など不要ファイル削除）。
+- ページ Markdown のソート＋マージと `# Page n` の挿入。
+- 結合後に `markdown_cleanup.py` で整形して一貫性を保つ（詳細は `docs/spec.md`）。
 
 ### export.py / export_docx.py
-- Markdown → docx 変換（`python-docx` または Pandoc ラッパ）。
-- 将来的に Markdown → xlsx 変換を担う。テーブル抽出は `markdown-it-py` 等の再利用も検討。
+- Markdown → docx 変換（`python-docx` 実装、テーブル/箇条書き/画像のスタイル調整済み）。
+- 将来的に Markdown → xlsx 変換を担う。テーブル抽出は `markdown-it-py` 等の再利用も検討。Excel 変換 PoC は `export_excel_poc.py` で進行中。
+
+---
+
+### 2.5 GUI Layer (Tauri + React)
+- **Tauri (Rust)**: バックエンドプロセス (`dispatcher.py` 等) の起動・監視、ファイルシステム操作、設定管理を担当。
+- **React (Frontend)**: ユーザーインターフェース。ジョブの作成、進捗状況の可視化、結果プレビュー、設定変更を行う。
+- **通信**: Tauri コマンドとイベントを通じてフロントエンドとバックエンドが非同期に連携する。
 
 ---
 
 ## 3. データ配置と命名
-
-| ディレクトリ | 役割 |
-| --- | --- |
-| `result/<name>/` | ページ分割後の画像 (`page_0001.png`) とページ単位 Markdown (`page_0001.md`) |
-| `result/<name>/figures/` | 図表抽出画像。`fig_page001_01.png` のようにページ + 連番で命名 |
-| `result/<name>/<name>_merged.md` 等 | 中間成果物（`merged.md`, `*.docx` など） |
-
-命名規則の例：
-- ページ画像: `page_{page:04d}.png`
-- ページ Markdown: `page_{page:04d}_p{part}.md`（チャンク単位を含める場合）
-- 図表: `page-{page:03d}-fig-{idx:02d}.png`
+ディレクトリ構成・成果物一覧・命名規則は `docs/spec.md` に集約しました。
 
 ---
 
 ## 4. 今後の検討メモ
 
-- **CLI 統一**: ingest → ocr → merge → export を一つの `ocrdoc run input.pdf` のような CLI で統括。
+- **GUI 統合**: GUI から `dispatcher.py` を呼ぶ形を前提に、設定/履歴/プレビューなどの拡充を検討する。
+- **CLI 統一**: ingest → ocr → merge → export を一つの `ocrdoc run input.pdf` のような CLI で統括（GUI からもこれを呼ぶ形が理想）。
 - **ロギング/監視**: ページ単位の処理時間と fallback 発生状況を構造化ログで残し、失敗ページを再投入しやすくする。
 - **エクスポート拡張**: docx 出力に加え、表だけを CSV/xlsx に切り出すパスを `export.py` に用意する。
 
-上記は README/Tasks での優先度管理とは独立して、アーキテクチャ的に意識しておきたいポイントである。
+未確定の改善案や優先度は `docs/Tasks.md` / `docs/poc_results/` を参照してください。
