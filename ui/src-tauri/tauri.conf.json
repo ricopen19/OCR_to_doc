@@ -2,7 +2,7 @@
   "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
   "productName": "ocr-to-doc",
   "version": "0.1.0",
-  "identifier": "com.tauri.dev",
+  "identifier": "io.github.ricopen19.ocrtodoc",
   "build": {
     "frontendDist": "../build",
     "devUrl": "http://127.0.0.1:5173",
