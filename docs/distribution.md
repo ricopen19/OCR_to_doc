@@ -95,6 +95,10 @@ ocr-to-doc/
   - 実行後、Artifacts から `ocr-to-doc-portable-windows.zip` をダウンロード
   - 職場PCで zip を展開して起動（必要なら `resources/.venv` を同梱/配置）
 
+自動化（タグ運用）:
+- `v*` タグを push すると自動で workflow が走る（例: `v0.1.0`）
+- タグ起動時は runtime 同梱を前提に実行される（`resources/.venv` を作成して zip に含める）
+
 ### 手順（手動コピーでの試用：最短）
 
 1. 職場PCに `ocr-to-doc/` フォルダをコピー（USB/ネットワーク共有など）
