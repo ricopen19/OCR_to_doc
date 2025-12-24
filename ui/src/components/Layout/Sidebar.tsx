@@ -23,7 +23,14 @@ const navItems: { key: PageKey; label: string; icon: React.ReactNode }[] = [
 export function Sidebar({ activePage, setPage }: SidebarProps) {
     return (
         <Stack gap="xs">
-            <Text fw={600} size="xs" c="dimmed" mb={4} tt="uppercase" style={{ letterSpacing: '0.5px' }}>
+            <Text 
+                fw={600} 
+                size="xs" 
+                c="dimmed" 
+                mb={4} 
+                tt="uppercase" 
+                style={{ letterSpacing: '0.5px' }}
+            >
                 Menu
             </Text>
             {navItems.map((item) => (
@@ -41,6 +48,8 @@ export function Sidebar({ activePage, setPage }: SidebarProps) {
                             fontWeight: 500,
                             padding: '10px 12px',
                             transition: 'all 0.2s ease',
+                            maxWidth: '100%',
+                            overflow: 'hidden',
                             '&:hover': {
                                 backgroundColor: activePage === item.key
                                     ? theme.colors.blue[0]

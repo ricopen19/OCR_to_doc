@@ -1,9 +1,24 @@
 import { invoke } from '@tauri-apps/api/core'
+import type { CropRect } from '../types/crop'
+
+export type FileSpecificOptions = {
+  start?: number
+  end?: number
+  crop?: CropRect
+}
 
 export type RunOptions = {
   formats: string[]
   imageAsPdf: boolean
   enableFigure: boolean
+  useGpu?: boolean
+  mode: 'lite' | 'full'
+  excelMode?: 'layout' | 'table'
+  chunkSize?: number
+  enableRest: boolean
+  restSeconds?: number
+  pdfDpi?: number
+  fileOptions?: Record<string, FileSpecificOptions>
 }
 
 export type ProgressPayload = {
@@ -11,6 +26,10 @@ export type ProgressPayload = {
   progress?: number
   log?: string[]
   error?: string
+  currentMessage?: string
+  pageCurrent?: number
+  pageTotal?: number
+  etaSeconds?: number
 }
 
 export type ResultPayload = {
@@ -52,4 +71,20 @@ export async function saveFile(jobId: string, filename: string, destPath: string
   // dev server mock
   console.log('Mock save:', filename, 'to', destPath)
   await new Promise((r) => setTimeout(r, 500))
+}
+
+export async function openOutput(jobId: string, filename: string): Promise<void> {
+  const hasTauri = typeof window !== 'undefined' && '__TAURI__' in window
+  if (hasTauri) {
+    return invoke('open_output', { jobId, filename })
+  }
+  console.log('Mock open:', filename)
+}
+
+export async function openOutputDir(jobId: string): Promise<void> {
+  const hasTauri = typeof window !== 'undefined' && '__TAURI__' in window
+  if (hasTauri) {
+    return invoke('open_output_dir', { jobId })
+  }
+  console.log('Mock open dir for job:', jobId)
 }

@@ -1,0 +1,126 @@
+name: windows-portable
+
+on:
+  workflow_dispatch:
+    inputs:
+      with_runtime:
+        description: "Bundle Python runtime (.venv) into the portable zip (large)"
+        type: boolean
+        default: false
+
+jobs:
+  build:
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+          cache-dependency-path: ui/package-lock.json
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Build Tauri (Windows)
+        working-directory: ui
+        run: |
+          npm ci
+          npm run tauri:build
+
+      - name: Assemble portable directory
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $outRoot = Join-Path $PWD "dist-portable"
+          $appDir = Join-Path $outRoot "ocr-to-doc"
+          New-Item -ItemType Directory -Force -Path $appDir | Out-Null
+
+          # Pick the built exe
+          $releaseDir = Join-Path $PWD "ui/src-tauri/target/release"
+          if (-not (Test-Path $releaseDir)) { throw "release dir not found: $releaseDir" }
+          $exeCandidates = Get-ChildItem -Path $releaseDir -Filter "*.exe" -File
+          if (-not $exeCandidates) { throw "no exe found in $releaseDir" }
+
+          $picked = $exeCandidates | Where-Object { $_.Name -eq "ocr-to-doc.exe" } | Select-Object -First 1
+          if (-not $picked) { $picked = $exeCandidates | Select-Object -First 1 }
+
+          Copy-Item -Force -Path $picked.FullName -Destination (Join-Path $appDir "ocr-to-doc.exe")
+
+          # Copy side-by-side dlls if any (some builds need these next to the exe)
+          Get-ChildItem -Path $releaseDir -Filter "*.dll" -File | ForEach-Object {
+            Copy-Item -Force -Path $_.FullName -Destination $appDir
+          }
+
+          # App configs (UI settings)
+          if (Test-Path "configs") {
+            Copy-Item -Recurse -Force -Path "configs" -Destination $appDir
+          }
+
+          # Python scripts are placed under resources/py to reduce user accidents
+          $pyDir = Join-Path $appDir "resources/py"
+          New-Item -ItemType Directory -Force -Path $pyDir | Out-Null
+          Copy-Item -Force -Path "*.py" -Destination $pyDir
+
+          # Templates used by markdown_cleanup.py
+          @("formatting_templates.json","formula_templates.json","icon_config.json") | ForEach-Object {
+            if (Test-Path $_) { Copy-Item -Force -Path $_ -Destination $pyDir }
+          }
+
+          # Python-side configs (icon profiles)
+          $pyConfigsDir = Join-Path $pyDir "configs"
+          New-Item -ItemType Directory -Force -Path $pyConfigsDir | Out-Null
+          if (Test-Path "configs/icon_profiles") {
+            Copy-Item -Recurse -Force -Path "configs/icon_profiles" -Destination $pyConfigsDir
+          }
+
+          # Poppler is bundled (PDF rendering)
+          if (Test-Path "poppler") {
+            Copy-Item -Recurse -Force -Path "poppler" -Destination $pyDir
+          } else {
+            throw "poppler directory not found at repo root"
+          }
+
+      - name: (Optional) Build and bundle Python venv runtime
+        if: ${{ inputs.with_runtime }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: (Optional) Install deps into bundled venv
+        if: ${{ inputs.with_runtime }}
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          python -m pip install --upgrade pip
+          python -m pip install poetry
+          poetry self add poetry-plugin-export
+
+          # Export requirements (Poetry-style dependency spec in pyproject.toml needs this)
+          poetry export --without-hashes -f requirements.txt -o requirements-runtime.txt
+
+          $appDir = Join-Path $PWD "dist-portable/ocr-to-doc"
+          $venvDir = Join-Path $appDir "resources/.venv"
+
+          python -m venv $venvDir
+          & "$venvDir/Scripts/python.exe" -m pip install --upgrade pip
+          & "$venvDir/Scripts/python.exe" -m pip install -r requirements-runtime.txt
+
+      - name: Create zip
+        run: |
+          $ErrorActionPreference = "Stop"
+          $zip = "ocr-to-doc-portable-windows.zip"
+          if (Test-Path $zip) { Remove-Item -Force $zip }
+          Compress-Archive -Path "dist-portable/ocr-to-doc" -DestinationPath $zip
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ocr-to-doc-portable-windows
+          path: ocr-to-doc-portable-windows.zip

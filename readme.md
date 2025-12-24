@@ -26,3 +26,4 @@ poetry run python dispatcher.py sample.pdf -- --start 11 --end 20
 - タスク（未完のみ）: `docs/Tasks.md`
 - アーキテクチャ（責務分割）: `docs/architectured.md`
 - 実行環境/制約: `docs/env_and_limits.md`
+- 配布設計（暫定）: `docs/distribution.md`

@@ -1,8 +1,15 @@
 {
   "formats": [
-    "md"
+    "xlsx"
   ],
   "imageAsPdf": true,
   "enableFigure": true,
-  "outputRoot": null
+  "useGpu": false,
+  "outputRoot": null,
+  "chunkSize": null,
+  "enableRest": false,
+  "restSeconds": null,
+  "pdfDpi": 300,
+  "windowWidth": 771,
+  "windowHeight": 927
 }

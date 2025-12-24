@@ -35,6 +35,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--start", type=int, default=1, help="開始ページ (1 起点)")
     parser.add_argument("--end", type=int, default=None, help="終了ページ (指定なしは最終ページ)")
     parser.add_argument(
+        "--dpi",
+        type=int,
+        default=300,
+        help="PDF→画像変換の DPI (default: 300)",
+    )
+    parser.add_argument(
         "--chunk-size",
         type=int,
         default=10,
@@ -58,8 +64,19 @@ def parse_args() -> argparse.Namespace:
         help="YomiToku のモード (lite or full)",
     )
     parser.add_argument(
+        "--device",
+        default="cpu",
+        help="YomiToku に渡すデバイス指定 (例: cpu / cuda / mps)",
+    )
+    parser.add_argument(
         "--label",
-        help="追加ラベル。出力ディレクトリ名 (result/<PDF名>_<label>) に付与されます",
+        help="追加ラベル。出力ディレクトリ名 (<output-root>/<PDF名>_<label>) に付与されます",
+    )
+    parser.add_argument(
+        "--output-root",
+        type=Path,
+        default=Path("result"),
+        help="出力ルート (default: result)",
     )
     parser.add_argument(
         "--math-refiner",
@@ -144,6 +161,10 @@ def parse_args() -> argparse.Namespace:
         default=False,
         help="YomiToku 結果に関わらず pytesseract の結果を追記する",
     )
+    parser.add_argument(
+        "--crop",
+        help="正規化トリミング範囲（left,top,width,height / 0〜1）。全ページに適用されます。",
+    )
     return parser.parse_args()
 
 
@@ -190,6 +211,44 @@ def resolve_poppler_path(base_dir: Path) -> Path:
 POPPLER_PATH = resolve_poppler_path(BASE_DIR)
 os.environ["PATH"] = str(POPPLER_PATH) + os.pathsep + os.environ.get("PATH", "")
 
+CropRect = tuple[float, float, float, float]
+
+
+def parse_crop(value: str | None) -> CropRect | None:
+    if not value:
+        return None
+    parts = [p.strip() for p in value.split(",")]
+    if len(parts) != 4:
+        raise SystemExit("エラー: --crop は left,top,width,height の4要素が必要です")
+    try:
+        left, top, width, height = (float(p) for p in parts)
+    except ValueError:
+        raise SystemExit("エラー: --crop の値は数値で指定してください")
+    left = max(0.0, min(1.0, left))
+    top = max(0.0, min(1.0, top))
+    width = max(0.0, min(1.0 - left, width))
+    height = max(0.0, min(1.0 - top, height))
+    if width <= 0 or height <= 0:
+        return None
+    return (left, top, width, height)
+
+
+def apply_crop(img, crop: CropRect | None):
+    if not crop:
+        return img
+    left, top, width, height = crop
+    w, h = img.size
+    lpx = int(round(left * w))
+    tpx = int(round(top * h))
+    rpx = int(round((left + width) * w))
+    bpx = int(round((top + height) * h))
+    if rpx <= lpx or bpx <= tpx:
+        return img
+    return img.crop((lpx, tpx, rpx, bpx))
+
+
+CROP = parse_crop(args.crop)
+
 
 def page_has_math(md_paths: list[Path]) -> bool:
     """簡易判定: 数式らしき記号/記法があれば True。
@@ -221,7 +280,7 @@ def page_has_math(md_paths: list[Path]) -> bool:
 
 OPTIONS = OcrOptions(
     mode=args.mode,
-    device="cpu",
+    device=args.device,
     enable_figure=True,
     fallback_tesseract=args.fallback_tesseract,
     force_tesseract_merge=args.force_tesseract_merge,
@@ -320,7 +379,7 @@ def run_merger(base_name: str):
     print("\n--- merged_md.py を実行 ---")
     subprocess.run(cmd, check=True)
 
-DPI = 150
+DPI = max(72, int(args.dpi))
 
 info = pdfinfo_from_path(str(PDF_PATH), poppler_path=str(POPPLER_PATH))
 num_pages = int(info["Pages"])
@@ -338,7 +397,7 @@ label_suffix = args.label
 if not label_suffix and (start_page_limit != 1 or end_page_limit != num_pages):
     label_suffix = f"p{start_page_limit}-{end_page_limit}"
 
-RESULT_ROOT = Path("result")
+RESULT_ROOT = args.output_root
 output_dir_name = PDF_PATH.stem if not label_suffix else f"{PDF_PATH.stem}_{label_suffix}"
 OUT_DIR = RESULT_ROOT / output_dir_name
 OUT_DIR.mkdir(parents=True, exist_ok=True)
@@ -367,7 +426,7 @@ while current <= end_page_limit:
     print(f"\n=== Chunk {chunk_index}: {chunk_start}〜{chunk_end} ===")
 
     for page in range(chunk_start, chunk_end + 1):
-        print(f"\n--- Page {page}/{num_pages} ---")
+        print(f"\n--- Page {page}/{end_page_limit} (abs {page}/{num_pages}) ---")
 
         images = convert_from_path(
             str(PDF_PATH),
@@ -377,7 +436,7 @@ while current <= end_page_limit:
             fmt="png",
             poppler_path=str(POPPLER_PATH),
         )
-        img = images[0]
+        img = apply_crop(images[0], CROP)
 
         img_path = PAGE_IMAGE_DIR / f"page_{page:03}.png"
         img.save(img_path)
@@ -428,6 +487,7 @@ while current <= end_page_limit:
             except FileNotFoundError:
                 pass
 
+        print(f"--- Done {page}/{end_page_limit} ---")
         time.sleep(1.0)  # ページごとの軽い休憩
 
     if REST_SECONDS > 0:

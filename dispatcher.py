@@ -18,6 +18,73 @@ CONVERTED_DIR_NAME = "converted"
 PREPROCESSED_DIR_NAME = "preprocessed"
 
 
+def _parse_cli_value(args: list[str] | None, name: str) -> str | None:
+    """CLI 引数リストから `--name value` または `--name=value` を抽出する。"""
+
+    if not args:
+        return None
+    for index, item in enumerate(args):
+        if item == name:
+            if index + 1 < len(args):
+                return args[index + 1]
+            return None
+        prefix = f"{name}="
+        if item.startswith(prefix):
+            return item[len(prefix) :]
+    return None
+
+
+def _parse_cli_int(args: list[str] | None, name: str) -> int | None:
+    value = _parse_cli_value(args, name)
+    if value is None:
+        return None
+    try:
+        return int(value)
+    except ValueError:
+        return None
+
+
+def _infer_pdf_output_dir(pdf_path: Path, *, output_root: Path, extra_args: list[str] | None) -> Path:
+    """ocr_chanked.py の出力ディレクトリ名ルールに合わせて output_dir を推定する。"""
+
+    stem = pdf_path.stem
+    label = _parse_cli_value(extra_args, "--label")
+    if label:
+        return output_root / f"{stem}_{label}"
+
+    start = _parse_cli_int(extra_args, "--start")
+    end = _parse_cli_int(extra_args, "--end")
+
+    candidates: list[Path] = []
+
+    if start is not None or end is not None:
+        start_value = start if start is not None else 1
+        if end is not None:
+            candidates.append(output_root / f"{stem}_p{start_value}-{end}")
+        else:
+            # end が未指定の場合、ocr_chanked は num_pages を使って suffix を作るため、
+            # ここでは実際に作成されたディレクトリを探索して補完する。
+            prefix = f"{stem}_p{start_value}-"
+            matches = [p for p in output_root.glob(f"{prefix}*") if p.is_dir()]
+            if matches:
+                matches.sort(key=lambda p: p.stat().st_mtime, reverse=True)
+                return matches[0]
+
+    candidates.append(output_root / stem)
+
+    for path in candidates:
+        if path.exists():
+            return path
+
+    # 最後の保険：stem_ で始まるディレクトリが 1 つでもあれば新しいものを拾う
+    matches = [p for p in output_root.glob(f"{stem}_*") if p.is_dir()]
+    if matches:
+        matches.sort(key=lambda p: p.stat().st_mtime, reverse=True)
+        return matches[0]
+
+    return candidates[-1]
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="入力ファイル自動判定 + OCR 実行")
     parser.add_argument("input_path", help="PDF / 画像ファイル")
@@ -96,8 +163,31 @@ def parse_args() -> argparse.Namespace:
         default=["md"],
         help="出力フォーマット (md, docx, etc.)",
     )
-    args, extra = parser.parse_known_args()
-    args.extra = extra
+    parser.add_argument(
+        "--excel-mode",
+        choices=["layout", "table"],
+        default="layout",
+        help="表出力モード（xlsx/csv）。layout=レイアウト優先、table=結合解除してテーブル化 (default: layout)",
+    )
+    parser.add_argument(
+        "--crop",
+        help="正規化トリミング範囲（left,top,width,height / 0〜1）。PDF/画像どちらにも適用されます。",
+    )
+    # `dispatcher.py <input> -- <ocr_chanked.py args...>` の形式で PDF 向け引数を透過させる。
+    # argparse の parse_known_args だと区切り `--` 自体も extra に混ざり、
+    # そのまま ocr_chanked.py に渡すと argparse がオプション解析を停止してしまうため、
+    # 明示的に `--` で分割してから parse_args する。
+    argv = sys.argv[1:]
+    passthrough: list[str] = []
+    if "--" in argv:
+        sep_index = argv.index("--")
+        known_argv = argv[:sep_index]
+        passthrough = argv[sep_index + 1 :]
+    else:
+        known_argv = argv
+
+    args = parser.parse_args(known_argv)
+    args.extra = passthrough
     return args
 
 
@@ -126,6 +216,8 @@ def run(
     fallback_tesseract: bool = False,
     force_tesseract_merge: bool = False,
     formats: list[str] | None = None,
+    crop: str | None = None,
+    excel_mode: str = "layout",
 ) -> Path:
     formats = formats or ["md"]
     meta = inspect(path)
@@ -134,13 +226,16 @@ def run(
         _run_pdf(
             meta.path,
             mode=mode,
+            device=device,
             use_math_refiner=use_math_refiner,
+            output_root=output_root,
             extra_args=_append_force_flags(extra_pdf_args, fallback_tesseract, force_tesseract_merge),
             force_tesseract_merge=force_tesseract_merge,
             emit_csv=False,  # CSV is no longer needed for Excel, assuming user didn't ask explicitly for CSV
-            emit_json=("xlsx" in formats),
+            emit_json=("xlsx" in formats or "csv" in formats),
+            crop=crop,
         )
-        output_dir = output_root / meta.path.stem
+        output_dir = _infer_pdf_output_dir(meta.path, output_root=output_root, extra_args=extra_pdf_args)
     elif meta.is_image:
         output_dir = _run_image(
             meta.path,
@@ -156,7 +251,8 @@ def run(
             fallback_tesseract=fallback_tesseract,
             force_tesseract_merge=force_tesseract_merge,
             emit_csv=False,
-            emit_json=("xlsx" in formats),
+            emit_json=("xlsx" in formats or "csv" in formats),
+            crop=crop,
         )
     else:
         raise IngestError(f"未対応の入力種別です: {path}")
@@ -194,7 +290,11 @@ def run(
     if "xlsx" in formats and output_dir:
         # json -> xlsx
         print("[dispatcher] processing excel_via=json")
-        _convert_to_excel(output_dir, output_root)
+        _convert_to_excel(output_dir, output_root, excel_mode=excel_mode)
+
+    if "csv" in formats and output_dir:
+        print("[dispatcher] processing csv_via=json")
+        _convert_to_csv(output_dir, excel_mode=excel_mode)
 
     return output_dir
 
@@ -203,14 +303,28 @@ def _run_pdf(
     pdf_path: Path,
     *,
     mode: str,
+    device: str,
     use_math_refiner: bool,
+    output_root: Path,
     extra_args: list[str] | None,
     force_tesseract_merge: bool,
     emit_csv: bool = False,
     emit_json: bool = False,
+    crop: str | None = None,
 ) -> None:
     script = Path(__file__).resolve().parent / "ocr_chanked.py"
-    cmd = [sys.executable, str(script), str(pdf_path), "--mode", mode]
+    cmd = [
+        sys.executable,
+        "-u",
+        str(script),
+        str(pdf_path),
+        "--mode",
+        mode,
+        "--device",
+        device,
+        "--output-root",
+        str(output_root),
+    ]
     # ocr_chanked.py 側は --math-refiner オプションのみ持つため、有効時だけ付与する
     if use_math_refiner:
         cmd.append("--math-refiner")
@@ -218,6 +332,8 @@ def _run_pdf(
         cmd.append("--emit-csv")
     if emit_json:
         cmd.extend(["--emit-json", "on"])
+    if crop:
+        cmd.extend(["--crop", crop])
     if force_tesseract_merge and "--force-tesseract-merge" not in (extra_args or []):
         extra_args = (extra_args or []) + ["--force-tesseract-merge"]
     if extra_args:
@@ -242,6 +358,7 @@ def _run_image(
     force_tesseract_merge: bool,
     emit_csv: bool = False,
     emit_json: bool = False,
+    crop: str | None = None,
 ) -> Path:
     # 画像処理に必要なモジュールはここで遅延インポートして、PDF 経路では Pillow 未インストールでも動くようにする
     from image_preprocessor import (
@@ -257,6 +374,45 @@ def _run_image(
     except ImageConversionError as exc:
         raise IngestError(str(exc)) from exc
 
+    if crop:
+        try:
+            from PIL import Image, ImageOps
+        except ImportError as exc:
+            raise IngestError("Pillow がインストールされていません（トリミングに必要）") from exc
+        from image_normalizer import ImageConversionResult
+
+        def _parse_crop(value: str) -> tuple[float, float, float, float]:
+            parts = [p.strip() for p in value.split(",")]
+            if len(parts) != 4:
+                raise ValueError("crop は left,top,width,height の4要素が必要です")
+            left, top, width, height = (float(p) for p in parts)
+            return left, top, width, height
+
+        try:
+            left, top, width, height = _parse_crop(crop)
+        except ValueError as exc:
+            raise IngestError(f"--crop の指定が不正です: {exc}") from exc
+        left = max(0.0, min(1.0, left))
+        top = max(0.0, min(1.0, top))
+        width = max(0.0, min(1.0 - left, width))
+        height = max(0.0, min(1.0 - top, height))
+        if width > 0 and height > 0:
+            cropped_path = convert_dir / f"{image_path.stem}_cropped.png"
+            with Image.open(conversion.converted) as img:
+                img = ImageOps.exif_transpose(img)
+                w, h = img.size
+                lpx = int(round(left * w))
+                tpx = int(round(top * h))
+                rpx = int(round((left + width) * w))
+                bpx = int(round((top + height) * h))
+                if rpx > lpx and bpx > tpx:
+                    img.crop((lpx, tpx, rpx, bpx)).save(cropped_path, format="PNG", optimize=True)
+                    conversion = ImageConversionResult(
+                        source=conversion.source,
+                        converted=cropped_path,
+                        performed=True,
+                    )
+
     if image_as_pdf:
         pdf_path = convert_dir / f"{image_path.stem}.pdf"
         _convert_image_to_pdf(conversion.converted, pdf_path, dpi=image_dpi)
@@ -265,10 +421,13 @@ def _run_image(
         _run_pdf(
             pdf_path,
             mode=mode,
+            device=device,
             use_math_refiner=False,
+            output_root=output_root,
             extra_args=_append_force_flags(extra_pdf_args, fallback_tesseract, force_tesseract_merge),
             force_tesseract_merge=force_tesseract_merge,
             emit_json=emit_json,  # PDF経由もJSONを出す
+            crop=crop,
         )
         return output_dir
 
@@ -299,8 +458,10 @@ def _run_image(
     return output_dir
 
 
-def _convert_to_excel(output_dir: Path, output_root: Path) -> None:
+def _convert_to_excel(output_dir: Path, output_root: Path, *, excel_mode: str) -> None:
     """yomi_formats/json 内の JSON を集めて Excel に変換する。"""
+
+    import re
 
     json_dir = output_dir / "yomi_formats" / "json"
     json_files: list[Path] = []
@@ -322,7 +483,19 @@ def _convert_to_excel(output_dir: Path, output_root: Path) -> None:
     # ページ順に読み込む
     for json_path in json_files:
         try:
-            tables = load_tables_from_json(json_path)
+            page_image_path = None
+            match = re.search(r"page_(\d{3})", json_path.name)
+            if match:
+                page_no = int(match.group(1))
+                candidate = output_dir / "page_images" / f"page_{page_no:03}.png"
+                if candidate.exists():
+                    page_image_path = candidate
+
+            tables = load_tables_from_json(
+                json_path,
+                page_image_path=page_image_path,
+                enable_symbol_fallback=True,
+            )
             all_tables.extend(tables)
         except ValueError:
             # tables が無い（または空）ページは通常あり得るのでスキップ
@@ -339,6 +512,7 @@ def _convert_to_excel(output_dir: Path, output_root: Path) -> None:
             sheet_prefix="Page",
             review_columns=False,
             auto_format=True,
+            excel_mode=excel_mode,
         )
     else:
         merged_md = output_dir / f"{output_dir.name}_merged.md"
@@ -369,6 +543,85 @@ def _convert_to_excel(output_dir: Path, output_root: Path) -> None:
     
     wb.save(xlsx_path)
     print(f"[dispatcher] Saved Excel: {xlsx_path}")
+
+
+def _convert_to_csv(output_dir: Path, *, excel_mode: str) -> None:
+    """yomi_formats/json 内の JSON を集めて CSV（結合解除＋分割）に変換する。"""
+
+    import csv
+    import re
+
+    json_dir = output_dir / "yomi_formats" / "json"
+    json_files: list[Path] = []
+    if json_dir.exists():
+        json_files = sorted(list(json_dir.glob("*.json")))
+    else:
+        print(f"[dispatcher] JSON dir not found: {json_dir}")
+
+    from export_excel_poc import (
+        load_tables_from_json,
+        split_text_to_paragraphs,
+        write_tables_to_csv_files,
+    )
+
+    all_tables = []
+
+    # ページ順に読み込む
+    for json_path in json_files:
+        try:
+            page_image_path = None
+            match = re.search(r"page_(\d{3})", json_path.name)
+            if match:
+                page_no = int(match.group(1))
+                candidate = output_dir / "page_images" / f"page_{page_no:03}.png"
+                if candidate.exists():
+                    page_image_path = candidate
+
+            tables = load_tables_from_json(
+                json_path,
+                page_image_path=page_image_path,
+                enable_symbol_fallback=True,
+            )
+            all_tables.extend(tables)
+        except ValueError:
+            continue
+        except Exception as exc:
+            print(f"[dispatcher] Failed to parse JSON tables: {json_path.name}: {exc}")
+
+    if all_tables:
+        outputs = write_tables_to_csv_files(
+            all_tables,
+            output_dir=output_dir,
+            base_name=output_dir.name,
+            excel_mode=excel_mode,
+        )
+        if outputs:
+            print(f"[dispatcher] Saved CSVs: {len(outputs)}")
+        else:
+            print("[dispatcher] CSV export requested, but no table segments produced")
+        return
+
+    # tables が無い場合は Markdown を本文 CSV として出す
+    merged_md = output_dir / f"{output_dir.name}_merged.md"
+    md_candidates = [merged_md] if merged_md.exists() else sorted(output_dir.glob("page_*.md"))
+    if not md_candidates:
+        print("[dispatcher] No tables extracted, and no markdown found to export as CSV")
+        return
+
+    text_parts: list[str] = []
+    for md_path in md_candidates:
+        try:
+            text_parts.append(md_path.read_text(encoding="utf-8"))
+        except OSError as exc:
+            print(f"[dispatcher] Failed to read markdown: {md_path.name}: {exc}")
+    paragraphs = split_text_to_paragraphs("\n\n".join(text_parts))
+    csv_path = output_dir / f"{output_dir.name}.csv"
+    with csv_path.open("w", encoding="utf-8", newline="") as fp:
+        writer = csv.writer(fp)
+        writer.writerow(["本文"])
+        for para in paragraphs:
+            writer.writerow([para])
+    print(f"[dispatcher] Saved CSV: {csv_path}")
 
 
 def _ensure_output_dir(source: Path, output_root: Path) -> Path:
@@ -406,6 +659,8 @@ def main() -> None:
             "fallback_tesseract": args.fallback_tesseract,
             "force_tesseract_merge": args.force_tesseract_merge,
             "formats": args.formats,
+            "excel_mode": args.excel_mode,
+            "crop": args.crop,
             "extra": args.extra,
         },
     )
@@ -425,6 +680,8 @@ def main() -> None:
             fallback_tesseract=args.fallback_tesseract,
             force_tesseract_merge=args.force_tesseract_merge,
             formats=args.formats,
+            crop=args.crop,
+            excel_mode=args.excel_mode,
         )
     except (IngestError, ImageConversionError, subprocess.CalledProcessError) as exc:
         print(f"[dispatcher] エラー: {exc}")

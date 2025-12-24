@@ -8,8 +8,8 @@
 - CPU: Intel i5-8500 クラス
 - メモリ: 16GB
 - GPU: なし
-- Python: 3.10〜3.12
-- Poetry を用いた仮想環境管理
+- Python: 3.10〜3.12（ただし配布では Python 同梱を前提にし、ユーザーにインストールを求めない方針）
+- Poetry を用いた仮想環境管理（開発/検証用）
 - 外部ツール:
   - Poppler for Windows（プロジェクト内 `poppler/Library/bin` に配置）
   - 必要に応じて Pandoc（補助用途）。Word 出力の既定は `python-docx` 実装。
@@ -50,6 +50,16 @@ CPU 環境で安定運用するため、基本は lite モードを前提に設�
 - Windows 版 Poppler を `poppler/Library/bin` に同梱し、Windows 実行時はこのディレクトリを PATH に追加する。
 - macOS では Homebrew 版 Poppler を利用し、`POPPLER_PATH` で `/opt/homebrew/opt/poppler/bin` を指定するか、起動スクリプトから PATH を通す。
 - 将来的に GitHub Actions (Windows) で smoke test を走らせ、Windows バイナリが破損していないかチェックする（当面は手動確認）。
+
+補足（portable 配布）:
+- Python スクリプト群を `resources/py` 配下にまとめる場合、Poppler も `resources/py/poppler/Library/bin` に配置する。
+
+## 6. 配布（Teams 100MB 制約への対応）
+
+- Teams のチャット添付上限（100MB）を踏まえ、配布物は「アプリ本体」と「Python ランタイム」を分割する（暫定方針）。
+- Poppler はアプリ本体側に同梱する（PDF 変換の安定性を優先）。
+- Python ランタイム（依存/モデル含む）は初回のみネット接続で取得できる前提で、GitHub Releases 配布を第一候補とする。
+- 詳細は `docs/python_runtime.md` を参照。
 
 ### macOS での Poppler 準備手順
 1. `brew install poppler`

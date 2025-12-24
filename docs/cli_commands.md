@@ -24,8 +24,21 @@ poetry run python dispatcher.py sample.pdf --formats md docx
 # xlsx（JSON 経由の PoC）
 poetry run python dispatcher.py sample.pdf --formats md xlsx
 
+# xlsx（テーブルモード: 結合解除＋構造変化ごとに別シート）
+poetry run python dispatcher.py sample.pdf --formats md xlsx --excel-mode table
+
+# csv（JSON tables から結合解除して、構造変化ごとに分割）
+poetry run python dispatcher.py sample.pdf --formats md csv
+
+# NOTE: csv 出力は `result/<name>/` 直下に `<name>__<table_name>.csv` を複数作成します。
+# - 通常（レイアウト）: `<name>__table_01.csv` など
+# - テーブル（結合解除）: `<name>__<table_name>.csv`（例: `...__神奈川.csv`）
+
+# NOTE: xlsx 出力では、JSON tables の空セルに対して page_images から記号（主に ○/□）を補完する場合があります（PoC）。
+
 # PDF のページ範囲などを ocr_chanked.py に渡す（-- 以降が透過されます）
-poetry run python dispatcher.py sample.pdf -- --start 11 --end 20
+# NOTE: Poetry 経由で `--` を使う場合は、Poetry 側の区切り `--` も必要です。
+poetry run -- python dispatcher.py sample.pdf -- --start 11 --end 20
 ```
 
 ### オプション
@@ -37,10 +50,12 @@ poetry run python dispatcher.py sample.pdf -- --start 11 --end 20
 - `--figure / --no-figure`: 図表抽出の ON/OFF（既定 ON）
 - `--image-as-pdf / --no-image-as-pdf`: 画像を PDF 化して PDF 経路で処理（既定 OFF）
 - `--image-dpi <int>`: 画像→PDF の DPI（既定 `300`）
+- `--crop <left,top,width,height>`: 正規化トリミング範囲（0〜1）。PDF/画像どちらにも適用（例: `--crop 0.05,0.08,0.90,0.85`）
 - `--fallback-tesseract / --no-fallback-tesseract`: pytesseract フォールバック（既定 OFF）
 - `--force-tesseract-merge / --no-force-tesseract-merge`: tesseract 結果を追記（既定 OFF）
 - `--math-refiner / --no-math-refiner`: PDF 経路で Pix2Text を有効化（既定 OFF）
-- `--formats <list>`: 生成物（既定 `md`、例: `--formats md docx`）
+- `--formats <list>`: 生成物（既定 `md`、例: `--formats md docx xlsx csv`）
+- `--excel-mode {layout,table}`: xlsx 出力モード（既定 `layout`、`table` は結合解除＋テーブル化）
 - 追加引数透過: `--` 以降は `ocr_chanked.py` の引数として解釈されます（例: `--start/--end` 等）。
   - UI で PDF ごとにページ範囲を変えたい場合は、PDF ファイル単位で `dispatcher.py` を実行し、各 PDF に対応する `-- --start/--end` を付与します（未指定=全ページ）。
 
@@ -68,16 +83,19 @@ poetry run python ocr_chanked.py input.pdf --emit-json auto
 
 ### オプション（主要）
 - `--start <int>` / `--end <int>`: 処理ページ範囲（1 起点）
+- `--dpi <int>`: PDF→画像変換の DPI（既定 `300`）
 - `--chunk-size <int>`: チャンクサイズ（既定 `10`）
 - `--enable-rest`: 休憩を有効化（既定 無効）
 - `--rest-seconds <int>`: チャンク休憩秒（既定 `10`）
 - `--mode {lite,full}`: YomiToku モード（既定 `lite`）
-- `--label <str>`: 出力ディレクトリのラベル（`result/<PDF名>_<label>/`）
+- `--label <str>`: 出力ディレクトリのラベル（`<output-root>/<PDF名>_<label>/`）
+- `--output-root <dir>`: 出力ルート（既定 `result`）
 - `--drop-page-images`: `page_images` を保存しない（既定は保存）
 - `--emit-json {off,on,auto}`: JSON 出力（既定 `off`）
 - `--emit-csv / --no-emit-csv`: CSV 出力（既定 OFF）
 - `--fallback-tesseract / --no-fallback-tesseract`: pytesseract フォールバック（既定 OFF）
 - `--force-tesseract-merge / --no-force-tesseract-merge`: tesseract 結果を追記（既定 OFF）
+- `--crop <left,top,width,height>`: 正規化トリミング範囲（0〜1）。全ページに適用（例: `--crop 0.05,0.08,0.90,0.85`）
 
 ### オプション（上級: アイコン/数式）
 - アイコンフィルタ:
@@ -128,6 +146,7 @@ poetry run python export_excel_poc.py <input> <output.xlsx> --format json
 - `--meta / --no-meta`: メタシート（既定 ON）
 - `--review-columns / --no-review-columns`: レビュー列（既定 OFF）
 - `--auto-format / --no-auto-format`: 自動書式（既定 ON）
+- `--excel-mode {layout,table}`: xlsx 出力モード（既定 `layout`、`table` は結合解除＋テーブル化）
 
 ## 6. JSON 追い出し（OCR 済み画像から）: `export_yomi_json.py`
 

@@ -5,7 +5,7 @@ PoC や将来案（未確定）は `docs/Tasks.md` / `docs/poc_results/` / `docs
 
 ## 1. 対象範囲
 
-- 対象: ローカル実行の OCR → Markdown（→ docx / xlsx）パイプライン
+- 対象: ローカル実行の OCR → Markdown（→ docx / xlsx / csv）パイプライン
 - 推奨エントリポイント: `dispatcher.py`
 - 中核スクリプト:
   - PDF チャンク OCR: `ocr_chanked.py`
@@ -13,6 +13,7 @@ PoC や将来案（未確定）は `docs/Tasks.md` / `docs/poc_results/` / `docs
   - Markdown マージ: `postprocess.py`（`poppler/merged_md.py` は互換ラッパ）
   - Word 変換: `export_docx.py`
   - Excel 変換（PoC）: `export_excel_poc.py`（`dispatcher.py --formats xlsx` から利用）
+  - CSV 変換: `dispatcher.py`（`--formats csv`。JSON tables から結合解除して分割）
 
 ## 2. 入力仕様
 
@@ -42,6 +43,7 @@ PoC や将来案（未確定）は `docs/Tasks.md` / `docs/poc_results/` / `docs
   - `page_001.md`（ページ Markdown。マージ後にデフォルトで削除）
   - `figures/`（図表抽出画像、候補ログなど）
   - `<base>_merged.md`（結合済み Markdown。`base` は出力ディレクトリ名）
+  - `<base>__<table_name>.csv`（`--formats csv` の場合。JSON tables から結合解除して分割）
   - `math_review.csv`（数式崩れ疑いの簡易ログ）
   - `yomi_formats/json/*.json`（`--emit-json on/auto` の場合）
   - `yomi_formats/csv/*.csv`（`--emit-csv` の場合）
