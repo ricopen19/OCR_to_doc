@@ -1840,6 +1840,18 @@ files = [
 ]
 
 [[package]]
+name = "latex2mathml"
+version = "3.78.1"
+description = "Pure Python library for LaTeX to MathML conversion"
+optional = false
+python-versions = ">=3.9"
+groups = ["main"]
+files = [
+    {file = "latex2mathml-3.78.1-py3-none-any.whl", hash = "sha256:f089b6d75e85b937f99693c93e8c16c0804008672c3dd2a3d25affd36f238100"},
+    {file = "latex2mathml-3.78.1.tar.gz", hash = "sha256:f941db80bf41db33f31df87b304e8b588f8166b813b0257c11c98f7a9d0aac71"},
+]
+
+[[package]]
 name = "lazy-loader"
 version = "0.4"
 description = "Makes it easy to load subpackages and functions on demand."
@@ -6435,4 +6447,4 @@ requests = "*"
 [metadata]
 lock-version = "2.1"
 python-versions = ">=3.12,<3.13"
-content-hash = "fe483e657a13e33cd092a71453411e23032e33fcb91bd57b321459a7292b040a"
+content-hash = "3ffcda2cca1b728c58725a208ce1f38f7c8c824aff22c6183e3c96983f30ec3c"
