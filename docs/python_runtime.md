@@ -13,19 +13,22 @@
 poetry install            # ルートで依存を入れる
 poetry env info -p        # 仮想環境のパスを確認
 ```
-確認した .venv をリポジトリ直下にコピー（例: `./.venv`）。Windows/macOS 両対応のため、コピーは必ず Python 本体と site-packages を含める。
+確認した .venv をリポジトリ直下に配置（例: `./.venv`）。  
+注意: `.venv` は OS/アーキテクチャ依存のため、**配布用に同梱する場合は配布対象 OS 上で作ったもの**を同梱します（Windows 用 `.venv` を macOS からそのままコピーしても動きません）。
 
 ## 2. Tauri からの実行パス解決
-`src-tauri/src/lib.rs` の `resolve_python_bin` で、以下の優先順位で python を探す:
+`ui/src-tauri/src/lib.rs` の `resolve_python_bin` で、以下の優先順位で python を探す:
 1. 環境変数 `PYTHON_BIN`
-2. `project_root/resources/.venv/(Scripts|bin)/python`
-3. `project_root/.venv/(Scripts|bin)/python`
-4. 最後のフォールバック: `python`
+2. `project_root/resources/python/python.exe`（Windows / portable runtime）
+3. `project_root/resources/python/bin/python`（macOS/Linux / portable runtime）
+4. `project_root/resources/.venv/(Scripts|bin)/python(.exe)`（互換）
+5. `project_root/.venv/(Scripts|bin)/python(.exe)`
+6. 最後のフォールバック: `python`
 
-配布時は `resources/.venv` に同梱しておけば、追加設定なしで動く。
+配布時は `resources/python` に同梱しておけば、追加設定なしで動く（互換として `resources/.venv` も探索する）。
 
 補足:
-- 配布では Python スクリプト群を `project_root/resources/py/` にまとめる想定（誤操作リスク低減）。
+- Python スクリプト（`dispatcher.py` 等）は `project_root/resources/py/` を優先して探索し、見つからない場合は `project_root/` 直下を参照します（`resolve_python_entry`）。
 
 ## 3. 配布サイズの目安
 - 同梱 .venv: Python本体 + 依存を含め 40〜80MB が多い。100MB 目標なら削減が必要。  

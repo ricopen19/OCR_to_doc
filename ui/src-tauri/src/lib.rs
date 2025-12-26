@@ -761,13 +761,31 @@ fn resolve_python_entry(project_root: &std::path::Path, filename: &str) -> PathB
 
 /// Resolve python binary path with priority:
 /// 1) env PYTHON_BIN
-/// 2) project_root/.venv/bin/python (Unix) or Scripts/python.exe (Windows)
-/// 3) "python"
+/// 2) project_root/resources/python/python(.exe) (portable runtime)
+/// 3) project_root/resources/.venv/(Scripts|bin)/python(.exe) (legacy)
+/// 4) project_root/.venv/(Scripts|bin)/python(.exe)
+/// 5) "python"
 fn resolve_python_bin(project_root: &std::path::Path) -> String {
     if let Ok(bin) = std::env::var("PYTHON_BIN") {
         if !bin.is_empty() {
             return bin;
         }
+    }
+
+    // resources/python (portable runtime)
+    #[cfg(target_os = "windows")]
+    let res_python = project_root
+        .join("resources")
+        .join("python")
+        .join("python.exe");
+    #[cfg(not(target_os = "windows"))]
+    let res_python = project_root
+        .join("resources")
+        .join("python")
+        .join("bin")
+        .join("python");
+    if res_python.exists() {
+        return res_python.to_string_lossy().to_string();
     }
 
     // resources/.venv (配布用に同梱する場合)

@@ -12,7 +12,7 @@
 
 - Tauri のビルド成果物（実行ファイル + 付随ファイル）
 - Python スクリプト群（`dispatcher.py` など）
-- `poppler/Library/bin`（Windows 用。PDF→画像化で必須）
+- `poppler/Library/bin`（Windows 用。PDF→画像化で必須。※将来 `poppler/win/bin` へ整理してもよい）
 - 依存（`.venv` / embeddable Python / モデル等）は含めない
 
 ### 2) Python ランタイム（初回のみ取得）
@@ -29,6 +29,7 @@
 
 - `project_root/dispatcher.py` または `project_root/resources/py/dispatcher.py` が見つからないと GUI から Python を呼べない
 - Python の探索優先度（要点）
+  - `project_root/resources/python/python(.exe)`（portable runtime）
   - `project_root/resources/.venv/.../python(.exe)`
   - `project_root/.venv/.../python(.exe)`
   - 最後に `python`（システム依存。配布では使わない）
@@ -59,15 +60,16 @@ ocr-to-doc/
         Library/
           bin/
             pdfinfo.exe ...
-    .venv/
-      Scripts/
-        python.exe
+    python/
+      python.exe
       Lib/
-        site-packages/
+      DLLs/
+      Scripts/
 ```
 
 メモ:
 - `resources/py` 配下の Python から見て、`resources/py/poppler/Library/bin` に Poppler がある前提（Python 側は `__file__` 基準で解決するため）。
+  - `ocr_chanked.py` は候補として `poppler/win/bin` も探すため、整理する場合はそちらに置いてもよい（現状リポジトリ同梱は `Library/bin`）。
 - Poppler は `ocr_chanked.py` 側で PATH を一時的に追加して使うため、ユーザーに PATH 設定は要求しない。
 - 出力先 `result/` は `project_root` 配下に作られる想定（既定動作）。
 
@@ -91,18 +93,18 @@ ocr-to-doc/
 - workflow: `.github/workflows/windows_portable.yml`
 - 使い方（概要）:
   - GitHub の Actions から `windows-portable` を `Run workflow` で実行
-    - `with_runtime` を ON にすると `resources/.venv` まで同梱する（サイズ/時間が大きい）
+    - `with_runtime` を ON にすると `resources/python` まで同梱する（サイズ/時間が大きい）
   - 実行後、Artifacts から `ocr-to-doc-portable-windows.zip` をダウンロード
-  - 職場PCで zip を展開して起動（必要なら `resources/.venv` を同梱/配置）
+  - 職場PCで zip を展開して起動（必要なら `resources/python` を同梱/配置）
 
 自動化（タグ運用）:
 - `v*` タグを push すると自動で workflow が走る（例: `v0.1.0`）
-- タグ起動時は runtime 同梱を前提に実行される（`resources/.venv` を作成して zip に含める）
+- タグ起動時は runtime 同梱を前提に実行される（`resources/python` を作成して zip に含める）
 
 ### 手順（手動コピーでの試用：最短）
 
 1. 職場PCに `ocr-to-doc/` フォルダをコピー（USB/ネットワーク共有など）
-2. `ocr-to-doc/resources/.venv/` に Windows 用ランタイム一式を配置
+2. `ocr-to-doc/resources/python/` に Windows 用ランタイム一式を配置
    - GitHub Releases に置く前は、手元の zip を展開して配置してOK
 3. `ocr-to-doc/ocr-to-doc.exe` を起動
 4. PDF を入力にして 1〜2 ページで smoke test（OCR→md、可能なら docx）

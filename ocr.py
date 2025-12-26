@@ -13,6 +13,7 @@ from __future__ import annotations
 import json
 import re
 import subprocess
+import sys
 from dataclasses import dataclass, replace, fields
 from pathlib import Path
 from typing import Iterable, Sequence, Dict, Any
@@ -108,7 +109,9 @@ class OcrOptions:
 
 def build_command(image_path: Path, output_dir: Path, options: OcrOptions) -> list[str]:
     cmd = [
-        "yomitoku",
+        sys.executable,
+        "-m",
+        "yomitoku.cli.main",
         str(image_path),
         "-f",
         "md",
@@ -130,7 +133,9 @@ def build_json_command(image_path: Path, output_dir: Path, options: OcrOptions) 
     json_dir.mkdir(parents=True, exist_ok=True)
 
     cmd = [
-        "yomitoku",
+        sys.executable,
+        "-m",
+        "yomitoku.cli.main",
         str(image_path),
         "-f",
         "json",
@@ -652,7 +657,9 @@ def build_csv_command(image_path: Path, output_dir: Path, options: OcrOptions) -
     csv_dir.mkdir(parents=True, exist_ok=True)
 
     cmd = [
-        "yomitoku",
+        sys.executable,
+        "-m",
+        "yomitoku.cli.main",
         str(image_path),
         "-f",
         "csv",

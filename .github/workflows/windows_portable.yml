@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       with_runtime:
-        description: "Bundle Python runtime (.venv) into the portable zip (large)"
+        description: "Bundle Python runtime (resources/python) into the portable zip (large)"
         type: boolean
         default: false
   push:
@@ -90,30 +90,39 @@ jobs:
             throw "poppler directory not found at repo root"
           }
 
-      - name: (Optional) Build and bundle Python venv runtime
+      - name: (Optional) Setup Python for runtime bundling
         if: ${{ github.event_name == 'push' || github.event.inputs.with_runtime == 'true' }}
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
 
-      - name: (Optional) Install deps into bundled venv
+      - name: (Optional) Bundle portable Python runtime
         if: ${{ github.event_name == 'push' || github.event.inputs.with_runtime == 'true' }}
         run: |
           $ErrorActionPreference = "Stop"
 
+          # 1) Copy Python runtime itself into the portable directory (no user PATH required)
+          $appDir = Join-Path $PWD "dist-portable/ocr-to-doc"
+          $runtimeDir = Join-Path $appDir "resources/python"
+          New-Item -ItemType Directory -Force -Path $runtimeDir | Out-Null
+
+          $pyExe = (python -c "import sys; print(sys.executable)").Trim()
+          if (-not (Test-Path $pyExe)) { throw "python.exe not found: $pyExe" }
+          $pyHome = Split-Path -Parent $pyExe
+
+          Copy-Item -Recurse -Force -Path "$pyHome/*" -Destination $runtimeDir
+
+          # 2) Generate requirements from Poetry (do NOT bundle Poetry into runtime)
           python -m pip install --upgrade pip
           python -m pip install poetry
           poetry self add poetry-plugin-export
-
-          # Export requirements (Poetry-style dependency spec in pyproject.toml needs this)
           poetry export --without-hashes -f requirements.txt -o requirements-runtime.txt
 
-          $appDir = Join-Path $PWD "dist-portable/ocr-to-doc"
-          $venvDir = Join-Path $appDir "resources/.venv"
-
-          python -m venv $venvDir
-          & "$venvDir/Scripts/python.exe" -m pip install --upgrade pip
-          & "$venvDir/Scripts/python.exe" -m pip install -r requirements-runtime.txt
+          # 3) Install runtime dependencies into the bundled Python
+          $runtimePy = Join-Path $runtimeDir "python.exe"
+          if (-not (Test-Path $runtimePy)) { throw "bundled python.exe not found: $runtimePy" }
+          & $runtimePy -m pip install --upgrade pip
+          & $runtimePy -m pip install -r requirements-runtime.txt
 
       - name: Create zip
         run: |

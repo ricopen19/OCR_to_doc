@@ -33,7 +33,7 @@ PoC や将来案（未確定）は `docs/Tasks.md` / `docs/poc_results/` / `docs
 
 出力ルートは原則 `result/` です。
 
-### 3.1 PDF 入力（`ocr_chanked.py` 経路）
+### 3.1 PDF 入力（`dispatcher.py` → `ocr_chanked.py` 経路）
 
 - 出力先: `result/<pdf_stem>/`
   - ページ範囲が全ページ以外の場合は自動で `result/<pdf_stem>_p<start>-<end>/`
@@ -42,15 +42,19 @@ PoC や将来案（未確定）は `docs/Tasks.md` / `docs/poc_results/` / `docs
   - `page_images/page_001.png`（デフォルト保持。`--drop-page-images` で削除）
   - `page_001.md`（ページ Markdown。マージ後にデフォルトで削除）
   - `figures/`（図表抽出画像、候補ログなど）
+    - `figures/icon_candidates.json`（小型アイコン候補ログ。条件により生成）
+    - `figures/all_fig_stats.json`（全図版統計ログ。`--icon-log-all` 指定時）
   - `<base>_merged.md`（結合済み Markdown。`base` は出力ディレクトリ名）
+  - `<base>_merged.docx`（`--formats docx` の場合）
+  - `<base>.xlsx`（`--formats xlsx` の場合）
   - `<base>__<table_name>.csv`（`--formats csv` の場合。JSON tables から結合解除して分割）
   - `math_review.csv`（数式崩れ疑いの簡易ログ）
   - `yomi_formats/json/*.json`（`--emit-json on/auto` の場合）
   - `yomi_formats/csv/*.csv`（`--emit-csv` の場合）
 
-マージは `ocr_chanked.py` の最後で自動実行されます（`postprocess.py` を呼び出し）。マージ後、ページ単位の `.md` はデフォルトで削除されます。
+マージは `ocr_chanked.py` の最後で自動実行されます（`poppler/merged_md.py` 経由で `postprocess.py` を呼び出し）。マージ後、ページ単位の `.md` はデフォルトで削除されます。
 
-### 3.2 画像入力（`dispatcher.py` の image 経路）
+### 3.2 画像入力（`dispatcher.py` → `ocr.py` 経路）
 
 - 出力先: `result/<image_stem>/`
 - 生成物（代表例）:
@@ -60,7 +64,7 @@ PoC や将来案（未確定）は `docs/Tasks.md` / `docs/poc_results/` / `docs
   - `figures/`（図表抽出画像、候補ログなど）
   - `yomi_formats/json/*.json`（`--formats xlsx` などで JSON を出す場合）
 
-※ 画像単体では自動マージは走りません（`page_001.md` が成果物になります）。
+※ 画像単体では自動マージは走りません（`page_001.md` が成果物になります）。ただし `--image-as-pdf` を指定した場合は PDF 経路へ回るため、`<base>_merged.md` が生成されます。
 
 ## 4. コマンド一覧
 
@@ -69,7 +73,7 @@ PoC や将来案（未確定）は `docs/Tasks.md` / `docs/poc_results/` / `docs
 ## 5. 既定の方針（確定）
 
 - ローカル完結（クラウド送信なし）
-- PDF 経路は CPU 前提（`ocr_chanked.py` は `device=cpu` 固定）
+- 既定は CPU 前提（`--device` は指定可能だが、職場PC相当の環境では `cpu` 運用を推奨）
 - ページ画像はデフォルト保持（検証用）。不要なら `--drop-page-images`
 - マージ後はページ Markdown をデフォルト削除（中間生成物を減らす）
 

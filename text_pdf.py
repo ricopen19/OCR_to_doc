@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import subprocess
+import sys
 from pathlib import Path
 
 
@@ -18,6 +19,8 @@ def convert_with_markitdown(pdf_path: Path, output_path: Path | None = None) -> 
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
     cmd = [
+        sys.executable,
+        "-m",
         "markitdown",
         str(pdf_path),
         "-o",

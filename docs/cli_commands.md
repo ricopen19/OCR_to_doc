@@ -88,6 +88,7 @@ poetry run python ocr_chanked.py input.pdf --emit-json auto
 - `--enable-rest`: 休憩を有効化（既定 無効）
 - `--rest-seconds <int>`: チャンク休憩秒（既定 `10`）
 - `--mode {lite,full}`: YomiToku モード（既定 `lite`）
+- `--device <str>`: YomiToku に渡すデバイス指定（既定 `cpu`）
 - `--label <str>`: 出力ディレクトリのラベル（`<output-root>/<PDF名>_<label>/`）
 - `--output-root <dir>`: 出力ルート（既定 `result`）
 - `--drop-page-images`: `page_images` を保存しない（既定は保存）

@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import argparse
 import subprocess
+import sys
 from pathlib import Path
 from typing import Iterable, List
 
@@ -51,7 +52,9 @@ def list_targets(page_image_dir: Path, pages: Iterable[int] | None) -> List[tupl
 
 def run_yomitoku(img_path: Path, output_dir: Path, mode: str) -> None:
     cmd = [
-        "yomitoku",
+        sys.executable,
+        "-m",
+        "yomitoku.cli.main",
         str(img_path),
         "-f",
         "json",
