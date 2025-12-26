@@ -126,7 +126,8 @@ jobs:
               raise SystemExit("no dependencies found in [project].dependencies")
           
           def normalize(dep: str) -> str:
-              m = re.match(r"^([^ ]+)(?: \\(([^)]+)\\))?$", dep.strip())
+              # e.g. "yomitoku (>=0.10.1,<0.11.0)" -> ("yomitoku", ">=0.10.1,<0.11.0")
+              m = re.match(r"^([^ ]+)(?: \(([^)]+)\))?$", dep.strip())
               if not m:
                   return dep.strip()
               name = m.group(1)
@@ -141,7 +142,7 @@ jobs:
                   seen.add(n)
                   out.append(n)
           
-          Path("requirements-runtime.txt").write_text("\\n".join(out) + "\\n", encoding="utf-8")
+          Path("requirements-runtime.txt").write_text("\n".join(out) + "\n", encoding="utf-8")
           print("wrote requirements-runtime.txt with", len(out), "lines")
           '@
           python -c $py
