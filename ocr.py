@@ -602,6 +602,9 @@ def run_ocr(
         encoding="utf-8",
     )
     if result.returncode != 0:
+        print(f"[ocr] yomitoku failed (exit={result.returncode}). see: {log_path}", file=sys.stderr)
+        if result.stderr:
+            print(result.stderr, file=sys.stderr)
         raise subprocess.CalledProcessError(
             result.returncode, cmd, output=result.stdout, stderr=result.stderr
         )
@@ -629,6 +632,9 @@ def export_json(
     with log_path.open("a", encoding="utf-8") as fp:
         fp.write(f"cmd: {' '.join(cmd)}\n\nstdout:\n{result.stdout}\nstderr:\n{result.stderr}\n\n")
     if result.returncode != 0:
+        print(f"[ocr] yomitoku(json) failed (exit={result.returncode}). see: {log_path}", file=sys.stderr)
+        if result.stderr:
+            print(result.stderr, file=sys.stderr)
         raise subprocess.CalledProcessError(
             result.returncode, cmd, output=result.stdout, stderr=result.stderr
         )
@@ -691,6 +697,9 @@ def export_csv(
     with log_path.open("a", encoding="utf-8") as fp:
         fp.write(f"cmd: {' '.join(cmd)}\n\nstdout:\n{result.stdout}\nstderr:\n{result.stderr}\n\n")
     if result.returncode != 0:
+        print(f"[ocr] yomitoku(csv) failed (exit={result.returncode}). see: {log_path}", file=sys.stderr)
+        if result.stderr:
+            print(result.stderr, file=sys.stderr)
         raise subprocess.CalledProcessError(
             result.returncode, cmd, output=result.stdout, stderr=result.stderr
         )

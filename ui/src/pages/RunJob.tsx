@@ -78,6 +78,7 @@ export function RunJob({
 }: RunJobProps) {
     const fileInputRef = useRef<HTMLInputElement | null>(null)
     const logBoxRef = useRef<HTMLDivElement | null>(null)
+    const filePathsRef = useRef<string[]>([])
     const [cropTarget, setCropTarget] = useState<string | null>(null)
     const deriveDpiPreset = (dpi: number) =>
         ([200, 300, 400].includes(dpi) ? String(dpi) : 'custom') as '200' | '300' | '400' | 'custom'
@@ -99,16 +100,40 @@ export function RunJob({
     }, [log.length])
 
     useEffect(() => {
+        filePathsRef.current = filePaths
+    }, [filePaths])
+
+    useEffect(() => {
         if (!hasTauriRuntime()) return
         let unlisten: (() => void) | null = null
         void (async () => {
-            unlisten = await listen<string[]>('tauri://file-drop', (event) => {
-                const paths = event.payload ?? []
-                if (paths.length > 0) {
-                    setFilePaths(paths)
+            const handler = (event: { payload: unknown }) => {
+                const payload = event.payload
+                let dropped: string[] = []
+                if (Array.isArray(payload)) {
+                    dropped = payload.filter((p): p is string => typeof p === 'string')
+                } else if (payload && typeof payload === 'object' && 'paths' in payload) {
+                    const maybe = (payload as { paths?: unknown }).paths
+                    if (Array.isArray(maybe)) dropped = maybe.filter((p): p is string => typeof p === 'string')
+                } else if (typeof payload === 'string') {
+                    dropped = [payload]
+                }
+                if (dropped.length > 0) {
+                    const merged = Array.from(new Set([...filePathsRef.current, ...dropped]))
+                    setFilePaths(merged)
                     setError(null)
                 }
-            })
+            }
+
+            // Tauri v2 drag & drop events
+            unlisten = await listen<unknown>('tauri://drag-drop', handler as any)
+            // Backward compatibility / older event name (no-op if never emitted)
+            const unlistenLegacy = await listen<unknown>('tauri://file-drop', handler as any)
+            const prev = unlisten
+            unlisten = () => {
+                prev()
+                unlistenLegacy()
+            }
         })()
         return () => {
             if (unlisten) unlisten()
@@ -127,7 +152,8 @@ export function RunJob({
         if (!selected) return
         const paths = Array.isArray(selected) ? selected : [selected]
         if (paths.length > 0) {
-            setFilePaths(paths)
+            const merged = Array.from(new Set([...filePathsRef.current, ...paths]))
+            setFilePaths(merged)
             setError(null)
         }
     }
@@ -180,7 +206,7 @@ export function RunJob({
                                     e.preventDefault()
                                     e.currentTarget.style.borderColor = 'var(--mantine-color-gray-3)'
                                     e.currentTarget.style.backgroundColor = 'var(--mantine-color-gray-0)'
-                                    // In Tauri, file system paths are provided via `tauri://file-drop` event.
+                                    // In Tauri, file system paths are provided via `tauri://drag-drop` event.
                                     if (hasTauriRuntime()) return
                                     const files = Array.from(e.dataTransfer?.files || [])
                                     const paths = files.map((f) => {

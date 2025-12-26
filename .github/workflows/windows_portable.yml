@@ -112,22 +112,86 @@ jobs:
 
           Copy-Item -Recurse -Force -Path "$pyHome/*" -Destination $runtimeDir
 
-          # 2) Generate requirements from Poetry (do NOT bundle Poetry into runtime)
-          python -m pip install --upgrade pip
-          python -m pip install poetry
-          poetry self add poetry-plugin-export
-          poetry export --without-hashes -f requirements.txt -o requirements-runtime.txt
+          # 2) Generate requirements from pyproject.toml (avoid poetry.lock mismatch issues)
+          $py = @'
+          import re
+          import tomllib
+          from pathlib import Path
+          
+          with open("pyproject.toml", "rb") as f:
+              data = tomllib.load(f)
+          
+          deps = data.get("project", {}).get("dependencies", [])
+          if not deps:
+              raise SystemExit("no dependencies found in [project].dependencies")
+          
+          def normalize(dep: str) -> str:
+              m = re.match(r"^([^ ]+)(?: \\(([^)]+)\\))?$", dep.strip())
+              if not m:
+                  return dep.strip()
+              name = m.group(1)
+              spec = m.group(2)
+              return f"{name}{spec}" if spec else name
+          
+          seen = set()
+          out = []
+          for d in deps:
+              n = normalize(d)
+              if n not in seen:
+                  seen.add(n)
+                  out.append(n)
+          
+          Path("requirements-runtime.txt").write_text("\\n".join(out) + "\\n", encoding="utf-8")
+          print("wrote requirements-runtime.txt with", len(out), "lines")
+          '@
+          python -c $py
 
           # 3) Install runtime dependencies into the bundled Python
           $runtimePy = Join-Path $runtimeDir "python.exe"
           if (-not (Test-Path $runtimePy)) { throw "bundled python.exe not found: $runtimePy" }
+          & $runtimePy -m ensurepip --upgrade
           & $runtimePy -m pip install --upgrade pip
           & $runtimePy -m pip install -r requirements-runtime.txt
 
           # Quick sanity checks for optional deps used by the app
           & $runtimePy -c "import latex2mathml; import yomitoku; import markitdown; print('runtime imports ok')"
 
+      - name: Prepare fixture
+        if: ${{ github.event_name == 'push' || github.event.inputs.with_runtime == 'true' }}
+        run: |
+          $ErrorActionPreference = "Stop"
+          $appDir = Join-Path $PWD "dist-portable/ocr-to-doc"
+          $fixtureDir = Join-Path $appDir "resources/fixtures"
+          New-Item -ItemType Directory -Force -Path $fixtureDir | Out-Null
+
+          $b64 = (Get-Content "tests/fixtures/sample.png.b64" -Raw).Trim()
+          $bytes = [Convert]::FromBase64String($b64)
+          [IO.File]::WriteAllBytes((Join-Path $fixtureDir "sample.png"), $bytes)
+
+      - name: Self-test portable exe
+        if: ${{ github.event_name == 'push' || github.event.inputs.with_runtime == 'true' }}
+        run: |
+          $ErrorActionPreference = "Stop"
+          $appDir = Join-Path $PWD "dist-portable/ocr-to-doc"
+          $exe = Join-Path $appDir "ocr-to-doc.exe"
+          if (-not (Test-Path $exe)) { throw "exe not found: $exe" }
+          & $exe --self-test
+          $code = $LASTEXITCODE
+          if ($code -ne 0) {
+            $ciDir = Join-Path $appDir "result_ci"
+            if (Test-Path (Join-Path $ciDir "self_test.stderr.txt")) {
+              Write-Host "=== self_test.stderr.txt (tail) ==="
+              Get-Content (Join-Path $ciDir "self_test.stderr.txt") -Tail 200
+            }
+            if (Test-Path (Join-Path $ciDir "self_test.stdout.txt")) {
+              Write-Host "=== self_test.stdout.txt (tail) ==="
+              Get-Content (Join-Path $ciDir "self_test.stdout.txt") -Tail 200
+            }
+            throw "self-test failed with exit code $code"
+          }
+
       - name: Create zip
+        if: ${{ github.event_name == 'push' || github.event.inputs.with_runtime == 'true' }}
         run: |
           $ErrorActionPreference = "Stop"
           $zip = "ocr-to-doc-portable-windows.zip"
@@ -135,6 +199,7 @@ jobs:
           Compress-Archive -Path "dist-portable/ocr-to-doc" -DestinationPath $zip
 
       - name: Upload artifact
+        if: ${{ github.event_name == 'push' || github.event.inputs.with_runtime == 'true' }}
         uses: actions/upload-artifact@v4
         with:
           name: ocr-to-doc-portable-windows
