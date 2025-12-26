@@ -176,8 +176,9 @@ jobs:
           $appDir = Join-Path $PWD "dist-portable/ocr-to-doc"
           $exe = Join-Path $appDir "ocr-to-doc.exe"
           if (-not (Test-Path $exe)) { throw "exe not found: $exe" }
-          & $exe --self-test
-          $code = $LASTEXITCODE
+          $proc = Start-Process -FilePath $exe -ArgumentList "--self-test" -Wait -PassThru
+          $code = $proc.ExitCode
+          if ($null -eq $code) { $code = 1 }
           if ($code -ne 0) {
             $ciDir = Join-Path $appDir "result_ci"
             if (Test-Path (Join-Path $ciDir "self_test.stderr.txt")) {

@@ -13,6 +13,12 @@ use tauri::{Manager, State};
 use tauri_plugin_dialog;
 use uuid::Uuid;
 
+fn apply_python_env(cmd: &mut Command) {
+    // Prevent UnicodeEncodeError on Windows where stdout/stderr encoding can be non-UTF-8 (e.g. cp1252).
+    cmd.env("PYTHONUTF8", "1");
+    cmd.env("PYTHONIOENCODING", "utf-8");
+}
+
 pub fn run_cli_if_requested() -> Option<i32> {
     let args: Vec<String> = std::env::args().collect();
     let is_self_test = args.iter().any(|a| a == "--self-test");
@@ -68,6 +74,7 @@ pub fn run_cli_if_requested() -> Option<i32> {
         }
 
         let mut cmd = Command::new(&python_bin);
+        apply_python_env(&mut cmd);
         cmd.arg("-u").arg(&dispatcher).arg(&input);
         for a in passthrough {
             cmd.arg(a);
@@ -154,22 +161,24 @@ pub fn run_cli_if_requested() -> Option<i32> {
         output_root.display()
     );
 
-    let output = match Command::new(&python_bin)
-        .arg("-u")
-        .arg(&dispatcher)
-        .arg(&fixture)
-        .args(["--formats", "md", "docx"])
-        .args(["--mode", "lite"])
-        .args(["--device", "cpu"])
-        .args(["--no-figure"])
-        .args(["--output-root", &output_root_arg])
-        .current_dir(&project_root)
-        .output()
-    {
-        Ok(o) => o,
-        Err(e) => {
-            eprintln!("[self-test] failed to spawn dispatcher: {e}");
-            return Some(1);
+    let output = {
+        let mut cmd = Command::new(&python_bin);
+        apply_python_env(&mut cmd);
+        cmd.arg("-u")
+            .arg(&dispatcher)
+            .arg(&fixture)
+            .args(["--formats", "md", "docx"])
+            .args(["--mode", "lite"])
+            .args(["--device", "cpu"])
+            .args(["--no-figure"])
+            .args(["--output-root", &output_root_arg])
+            .current_dir(&project_root);
+        match cmd.output() {
+            Ok(o) => o,
+            Err(e) => {
+                eprintln!("[self-test] failed to spawn dispatcher: {e}");
+                return Some(1);
+            }
         }
     };
 
@@ -537,6 +546,7 @@ fn run_job(
         let paths_len = paths_cloned.len();
         for (idx, p) in paths_cloned.iter().enumerate() {
             let mut cmd = Command::new(&python_bin_cloned);
+            apply_python_env(&mut cmd);
             // Force unbuffered output for Python
             cmd.arg("-u");
 
@@ -927,6 +937,7 @@ fn render_preview(
     }
 
     let mut cmd = Command::new(&python_bin);
+    apply_python_env(&mut cmd);
     cmd.arg("-u")
         .arg(helper)
         .arg("--input")
