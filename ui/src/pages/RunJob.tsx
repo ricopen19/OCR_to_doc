@@ -23,8 +23,14 @@ import { IconUpload, IconPlayerPlay, IconFile, IconX, IconAlertTriangle, IconCro
 import { useEffect, useRef, useState, type Dispatch, type SetStateAction } from 'react'
 import type { CropRect } from '../types/crop'
 import { CropModal } from '../components/CropModal'
+import { open } from '@tauri-apps/plugin-dialog'
+import { listen } from '@tauri-apps/api/event'
 
 type FileWithPath = File & { path?: string }
+
+function hasTauriRuntime() {
+    return typeof window !== 'undefined' && ('__TAURI__' in window || '__TAURI_INTERNALS__' in window)
+}
 
 export interface RunJobOptions {
     formats: string[]
@@ -92,6 +98,40 @@ export function RunJob({
         })
     }, [log.length])
 
+    useEffect(() => {
+        if (!hasTauriRuntime()) return
+        let unlisten: (() => void) | null = null
+        void (async () => {
+            unlisten = await listen<string[]>('tauri://file-drop', (event) => {
+                const paths = event.payload ?? []
+                if (paths.length > 0) {
+                    setFilePaths(paths)
+                    setError(null)
+                }
+            })
+        })()
+        return () => {
+            if (unlisten) unlisten()
+        }
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [])
+
+    const chooseFiles = async () => {
+        if (!hasTauriRuntime()) return
+        const selected = await open({
+            multiple: true,
+            filters: [
+                { name: 'Input', extensions: ['pdf', 'heic', 'heif', 'jpg', 'jpeg', 'png'] },
+            ],
+        })
+        if (!selected) return
+        const paths = Array.isArray(selected) ? selected : [selected]
+        if (paths.length > 0) {
+            setFilePaths(paths)
+            setError(null)
+        }
+    }
+
     const formatEta = (secs: number) => {
         const s = Math.max(0, Math.floor(secs))
         const m = Math.floor(s / 60)
@@ -119,7 +159,13 @@ export function RunJob({
                             </Text>
 
                             <Box
-                                onClick={() => fileInputRef.current?.click()}
+                                onClick={() => {
+                                    if (hasTauriRuntime()) {
+                                        void chooseFiles()
+                                    } else {
+                                        fileInputRef.current?.click()
+                                    }
+                                }}
                                 onDragOver={(e) => {
                                     e.preventDefault()
                                     e.currentTarget.style.borderColor = 'var(--mantine-color-blue-5)'
@@ -134,6 +180,8 @@ export function RunJob({
                                     e.preventDefault()
                                     e.currentTarget.style.borderColor = 'var(--mantine-color-gray-3)'
                                     e.currentTarget.style.backgroundColor = 'var(--mantine-color-gray-0)'
+                                    // In Tauri, file system paths are provided via `tauri://file-drop` event.
+                                    if (hasTauriRuntime()) return
                                     const files = Array.from(e.dataTransfer?.files || [])
                                     const paths = files.map((f) => {
                                         const file = f as FileWithPath
@@ -166,24 +214,26 @@ export function RunJob({
                                         PDF, HEIC, JPG, PNG
                                     </Text>
                                 </Stack>
-                                <input
-                                    ref={fileInputRef}
-                                    type="file"
-                                    multiple
-                                    accept=".pdf,.heic,.jpg,.jpeg,.png"
-                                    style={{ display: 'none' }}
-                                    onChange={(e) => {
-                                        const files = Array.from(e.target.files || [])
-                                        const paths = files.map((f) => {
-                                            const file = f as FileWithPath
-                                            return file.path ?? file.name
-                                        })
-                                        if (paths.length > 0) {
-                                            setFilePaths(paths)
-                                            setError(null)
-                                        }
-                                    }}
-                                />
+                                {!hasTauriRuntime() && (
+                                    <input
+                                        ref={fileInputRef}
+                                        type="file"
+                                        multiple
+                                        accept=".pdf,.heic,.heif,.jpg,.jpeg,.png"
+                                        style={{ display: 'none' }}
+                                        onChange={(e) => {
+                                            const files = Array.from(e.target.files || [])
+                                            const paths = files.map((f) => {
+                                                const file = f as FileWithPath
+                                                return file.path ?? file.name
+                                            })
+                                            if (paths.length > 0) {
+                                                setFilePaths(paths)
+                                                setError(null)
+                                            }
+                                        }}
+                                    />
+                                )}
                             </Box>
 
                             {filePaths.length > 0 && (

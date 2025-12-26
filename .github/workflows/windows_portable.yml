@@ -124,6 +124,9 @@ jobs:
           & $runtimePy -m pip install --upgrade pip
           & $runtimePy -m pip install -r requirements-runtime.txt
 
+          # Quick sanity checks for optional deps used by the app
+          & $runtimePy -c "import latex2mathml; import yomitoku; import markitdown; print('runtime imports ok')"
+
       - name: Create zip
         run: |
           $ErrorActionPreference = "Stop"
