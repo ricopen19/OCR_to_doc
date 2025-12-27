@@ -197,6 +197,14 @@ def rename_figure_assets(
     if not figure_dir.exists():
         return
 
+    # 既存の正規化済みファイル（fig_page...）が残っていると Windows では rename が失敗するため、
+    # 対象ページ分だけ先に削除して上書きできるようにする。
+    for stale in figure_dir.glob(f"fig_page{page_number:03d}_*"):
+        try:
+            stale.unlink()
+        except FileNotFoundError:
+            pass
+
     entries = []
     for fig_path in figure_dir.glob("*"):
         match = RAW_FIG_PATTERN.match(fig_path.name)
@@ -215,10 +223,16 @@ def rename_figure_assets(
     entries.sort()
     mapping: Dict[str, str] = {}
     for new_idx, (_, _, fig_path) in enumerate(entries, start=1):
+        old_name = fig_path.name
         new_name = f"fig_page{page_number:03d}_{new_idx:02d}{fig_path.suffix.lower()}"
         new_path = figure_dir / new_name
+        if new_path.exists():
+            try:
+                new_path.unlink()
+            except FileNotFoundError:
+                pass
         fig_path.rename(new_path)
-        mapping[fig_path.name] = new_name
+        mapping[old_name] = new_name
 
     _update_markdown_figure_links(output_dir, page_number, mapping)
     remove_icon_figures(output_dir, page_number, icon_config, page_metrics)

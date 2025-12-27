@@ -6,6 +6,7 @@ export interface AppSettings {
     imageAsPdf: boolean
     enableFigure: boolean
     outputRoot?: string
+    excelMetaSheet?: boolean
     chunkSize?: number
     enableRest: boolean
     restSeconds?: number
@@ -19,6 +20,7 @@ const DEFAULT_SETTINGS: AppSettings = {
     formats: ['md'],
     imageAsPdf: false,
     enableFigure: true,
+    excelMetaSheet: true,
     chunkSize: 10,
     enableRest: false,
     restSeconds: 10,

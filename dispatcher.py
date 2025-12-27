@@ -164,10 +164,23 @@ def parse_args() -> argparse.Namespace:
         help="出力フォーマット (md, docx, etc.)",
     )
     parser.add_argument(
+        "--docx-math",
+        choices=["text", "image"],
+        default="text",
+        help="docx 出力時の数式の扱い。text=本文としてそのまま、image=検出した数式領域を画像で貼る",
+    )
+    parser.add_argument(
         "--excel-mode",
         choices=["layout", "table"],
         default="layout",
         help="表出力モード（xlsx/csv）。layout=レイアウト優先、table=結合解除してテーブル化 (default: layout)",
+    )
+    parser.add_argument(
+        "--excel-meta",
+        dest="excel_meta_sheet",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="xlsx 出力時にメタ情報シートを付与する",
     )
     parser.add_argument(
         "--crop",
@@ -216,12 +229,15 @@ def run(
     fallback_tesseract: bool = False,
     force_tesseract_merge: bool = False,
     formats: list[str] | None = None,
+    docx_math: str = "text",
     crop: str | None = None,
     excel_mode: str = "layout",
+    excel_meta_sheet: bool = True,
 ) -> Path:
     formats = formats or ["md"]
     meta = inspect(path)
     output_dir = None
+    needs_json = ("xlsx" in formats or "csv" in formats) or ("docx" in formats and docx_math == "image")
     if meta.is_pdf:
         _run_pdf(
             meta.path,
@@ -232,7 +248,7 @@ def run(
             extra_args=_append_force_flags(extra_pdf_args, fallback_tesseract, force_tesseract_merge),
             force_tesseract_merge=force_tesseract_merge,
             emit_csv=False,  # CSV is no longer needed for Excel, assuming user didn't ask explicitly for CSV
-            emit_json=("xlsx" in formats or "csv" in formats),
+            emit_json=needs_json,
             crop=crop,
         )
         output_dir = _infer_pdf_output_dir(meta.path, output_root=output_root, extra_args=extra_pdf_args)
@@ -251,7 +267,7 @@ def run(
             fallback_tesseract=fallback_tesseract,
             force_tesseract_merge=force_tesseract_merge,
             emit_csv=False,
-            emit_json=("xlsx" in formats or "csv" in formats),
+            emit_json=needs_json,
             crop=crop,
         )
     else:
@@ -264,7 +280,7 @@ def run(
         merged_md = output_dir / f"{output_dir.name}_merged.md"
         if merged_md.exists():
             print(f"[dispatcher] Converting to docx: {merged_md}")
-            convert_file(merged_md)
+            convert_file(merged_md, math_mode=docx_math)
         else:
             # 2. Single page markdown (Image)
             # For single image, it might be page_001.md. 
@@ -276,21 +292,24 @@ def run(
             page_md = output_dir / "page_001.md"
             target_md = output_dir / f"{path.stem}.md"
             
-            if page_md.exists() and not target_md.exists():
+            if page_md.exists():
                 # Rename for consistency if it's the only file
-                # But be careful not to overwrite if we processed multiple images? 
+                # But be careful not to overwrite if we processed multiple images?
                 # _run_image processes one image.
-                import shutil
-                shutil.copy(page_md, target_md)
-                print(f"[dispatcher] Copied {page_md} to {target_md}")
-            
-                convert_file(target_md)
-                print(f"[dispatcher] Converting to docx: {target_md}")
+                if not target_md.exists():
+                    import shutil
+
+                    shutil.copy(page_md, target_md)
+                    print(f"[dispatcher] Copied {page_md} to {target_md}")
+
+                md_to_convert = target_md if target_md.exists() else page_md
+                convert_file(md_to_convert, math_mode=docx_math)
+                print(f"[dispatcher] Converting to docx: {md_to_convert}")
 
     if "xlsx" in formats and output_dir:
         # json -> xlsx
         print("[dispatcher] processing excel_via=json")
-        _convert_to_excel(output_dir, output_root, excel_mode=excel_mode)
+        _convert_to_excel(output_dir, output_root, excel_mode=excel_mode, excel_meta_sheet=excel_meta_sheet)
 
     if "csv" in formats and output_dir:
         print("[dispatcher] processing csv_via=json")
@@ -458,7 +477,13 @@ def _run_image(
     return output_dir
 
 
-def _convert_to_excel(output_dir: Path, output_root: Path, *, excel_mode: str) -> None:
+def _convert_to_excel(
+    output_dir: Path,
+    output_root: Path,
+    *,
+    excel_mode: str,
+    excel_meta_sheet: bool,
+) -> None:
     """yomi_formats/json 内の JSON を集めて Excel に変換する。"""
 
     import re
@@ -477,6 +502,7 @@ def _convert_to_excel(output_dir: Path, output_root: Path, *, excel_mode: str) -
         write_tables_to_workbook,
         write_text_to_workbook,
     )
+    from plain_text import to_plain_text
 
     all_tables = []
 
@@ -524,7 +550,7 @@ def _convert_to_excel(output_dir: Path, output_root: Path, *, excel_mode: str) -
         text_parts: list[str] = []
         for md_path in md_candidates:
             try:
-                text_parts.append(md_path.read_text(encoding="utf-8"))
+                text_parts.append(to_plain_text(md_path.read_text(encoding="utf-8")))
             except OSError as exc:
                 print(f"[dispatcher] Failed to read markdown: {md_path.name}: {exc}")
         paragraphs = split_text_to_paragraphs("\n\n".join(text_parts))
@@ -539,7 +565,8 @@ def _convert_to_excel(output_dir: Path, output_root: Path, *, excel_mode: str) -
         format = "json"
         output = xlsx_path
     
-    add_meta_sheet(wb, args=MockArgs(), sheet_names=sheet_names)
+    if excel_meta_sheet:
+        add_meta_sheet(wb, args=MockArgs(), sheet_names=sheet_names)
     
     wb.save(xlsx_path)
     print(f"[dispatcher] Saved Excel: {xlsx_path}")
@@ -563,6 +590,7 @@ def _convert_to_csv(output_dir: Path, *, excel_mode: str) -> None:
         split_text_to_paragraphs,
         write_tables_to_csv_files,
     )
+    from plain_text import to_plain_text
 
     all_tables = []
 
@@ -611,7 +639,7 @@ def _convert_to_csv(output_dir: Path, *, excel_mode: str) -> None:
     text_parts: list[str] = []
     for md_path in md_candidates:
         try:
-            text_parts.append(md_path.read_text(encoding="utf-8"))
+            text_parts.append(to_plain_text(md_path.read_text(encoding="utf-8")))
         except OSError as exc:
             print(f"[dispatcher] Failed to read markdown: {md_path.name}: {exc}")
     paragraphs = split_text_to_paragraphs("\n\n".join(text_parts))
@@ -660,6 +688,8 @@ def main() -> None:
             "force_tesseract_merge": args.force_tesseract_merge,
             "formats": args.formats,
             "excel_mode": args.excel_mode,
+            "excel_meta_sheet": args.excel_meta_sheet,
+            "docx_math": args.docx_math,
             "crop": args.crop,
             "extra": args.extra,
         },
@@ -680,8 +710,10 @@ def main() -> None:
             fallback_tesseract=args.fallback_tesseract,
             force_tesseract_merge=args.force_tesseract_merge,
             formats=args.formats,
+            docx_math=args.docx_math,
             crop=args.crop,
             excel_mode=args.excel_mode,
+            excel_meta_sheet=args.excel_meta_sheet,
         )
     except (IngestError, ImageConversionError, subprocess.CalledProcessError) as exc:
         print(f"[dispatcher] エラー: {exc}")

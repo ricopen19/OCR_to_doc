@@ -25,6 +25,10 @@ export type SettingsHandle = {
     save: () => Promise<boolean>
 }
 
+type SettingsProps = {
+    onSaved?: (settings: AppSettings) => void
+}
+
 function settingsSnapshot(settings: AppSettings): string {
     const formats = Array.isArray(settings.formats) ? [...settings.formats].sort() : []
     const outputRoot = settings.outputRoot?.trim()
@@ -35,7 +39,7 @@ function settingsSnapshot(settings: AppSettings): string {
     })
 }
 
-export const Settings = forwardRef<SettingsHandle>(function Settings(_props, ref) {
+export const Settings = forwardRef<SettingsHandle, SettingsProps>(function Settings(props, ref) {
     const [settings, setSettings] = useState<AppSettings | null>(null)
     const [initialSnapshot, setInitialSnapshot] = useState<string | null>(null)
     const [loading, setLoading] = useState(false)
@@ -76,9 +80,10 @@ export const Settings = forwardRef<SettingsHandle>(function Settings(_props, ref
             await saveSettings(toSave)
             setSettings(toSave)
             setInitialSnapshot(settingsSnapshot(toSave))
+            props.onSaved?.(toSave)
             notifications.show({
                 title: '保存しました',
-                message: '設定を保存しました（次回起動時に反映されます）',
+                message: '設定を保存しました',
                 color: 'green',
             })
             return true
@@ -235,6 +240,19 @@ export const Settings = forwardRef<SettingsHandle>(function Settings(_props, ref
                             <Checkbox value="csv" label="CSV" />
                         </Group>
                     </Checkbox.Group>
+
+                    <Divider my="md" />
+
+                    <Switch
+                        label="Excelのメタシートを付与"
+                        description="xlsx出力時にシート一覧や変換条件などの情報を追加します"
+                        checked={settings.excelMetaSheet ?? true}
+                        onChange={() =>
+                            setSettings((prev) =>
+                                prev ? { ...prev, excelMetaSheet: !(prev.excelMetaSheet ?? true) } : prev
+                            )
+                        }
+                    />
                 </Card>
 
                 {/* Processing Options */}

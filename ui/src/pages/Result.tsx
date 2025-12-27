@@ -12,10 +12,10 @@ import {
     Container,
     SegmentedControl,
 } from '@mantine/core'
-import { IconDownload, IconCopy, IconCheck, IconExternalLink, IconFolderOpen } from '@tabler/icons-react'
+import { IconDownload, IconCopy, IconCheck, IconExternalLink, IconFolderOpen, IconFile } from '@tabler/icons-react'
 import { useEffect, useMemo, useState } from 'react'
 import { save } from '@tauri-apps/plugin-dialog'
-import { openOutput, openOutputDir, saveFile } from '../api/runJob'
+import { openInputFile, openOutput, openOutputDir, saveFile } from '../api/runJob'
 import { notifications } from '@mantine/notifications'
 
 interface ResultProps {
@@ -23,22 +23,27 @@ interface ResultProps {
     resultText: string
     error: string | null
     jobId?: string | null
+    inputPaths?: string[]
 }
 
-export function Result({ outputs, resultText, error, jobId }: ResultProps) {
+export function Result({ outputs, resultText, error, jobId, inputPaths }: ResultProps) {
     const [copied, setCopied] = useState(false)
     const [saving, setSaving] = useState(false)
     const [opening, setOpening] = useState(false)
     const [selectedFile, setSelectedFile] = useState<string | null>(null)
+    const [selectedInput, setSelectedInput] = useState<string | null>(null)
     const [previewMode, setPreviewMode] = useState<'markdown' | 'plain'>('markdown')
 
     const toPlainText = (md: string) => {
         let text = md || ''
+        text = text.replace(/<br\s*\/?>/gi, '\n')
         // code fences: keep contents, drop markers
         text = text.replace(/```[^\n]*\n/g, '')
         text = text.replace(/```/g, '')
-        // images: ![alt](url) -> alt
-        text = text.replace(/!\[([^\]]*)\]\([^\)]*\)/g, '$1')
+        // images (html): <img src="..."> -> [画像: path]
+        text = text.replace(/<img[^>]*src="([^"]+)"[^>]*>/gi, '[画像: $1]')
+        // images (md): ![alt](url) -> [画像: url]
+        text = text.replace(/!\[[^\]]*\]\(([^)]+)\)/g, '[画像: $1]')
         // links: [text](url) -> text
         text = text.replace(/\[([^\]]+)\]\([^\)]*\)/g, '$1')
         // headings: "# Title" -> "Title"
@@ -47,8 +52,14 @@ export function Result({ outputs, resultText, error, jobId }: ResultProps) {
         text = text.replace(/^\s{0,3}>\s?/gm, '')
         // horizontal rules
         text = text.replace(/^\s{0,3}(-{3,}|\*{3,}|_{3,})\s*$/gm, '')
-        // table separator lines (e.g. |---|---|)
+        // tables: drop separator lines, convert row lines to TSV
         text = text.replace(/^\s*\|?(?:\s*:?[-]{2,}:?\s*\|)+\s*:?[-]{2,}:?\s*\|?\s*$/gm, '')
+        text = text.replace(/^\s*\|(.+)\|\s*$/gm, (_m, body) => {
+            const cells = String(body)
+                .split('|')
+                .map((c) => c.trim())
+            return cells.join('\t')
+        })
         // inline code
         text = text.replace(/`([^`]+)`/g, '$1')
         // emphasis markers
@@ -60,7 +71,15 @@ export function Result({ outputs, resultText, error, jobId }: ResultProps) {
         text = text.replace(/^\s*[-*+]\s+/gm, '• ')
         // ordered list markers
         text = text.replace(/^\s*\d+\.\s+/gm, '')
-        // html tags
+        // strip math delimiters ($$...$$, $...$, \(..\), \[..\]) and keep body
+        const stripMathOnce = (s: string) =>
+            s
+                .replace(/\$\$([\s\S]+?)\$\$/g, '$1')
+                .replace(/\$([^$]+)\$/g, '$1')
+                .replace(/\\\(([\s\S]+?)\\\)/g, '$1')
+                .replace(/\\\[([\s\S]+?)\\\]/g, '$1')
+        for (let i = 0; i < 3; i++) text = stripMathOnce(text)
+        // html tags (after img conversion)
         text = text.replace(/<\/?[^>]+>/g, '')
         // normalize blank lines
         text = text.replace(/\n{3,}/g, '\n\n')
@@ -98,6 +117,16 @@ export function Result({ outputs, resultText, error, jobId }: ResultProps) {
         setSelectedFile(picked ?? outputs[0])
     }, [outputs, selectedFile])
 
+    useEffect(() => {
+        const paths = inputPaths ?? []
+        if (!paths.length) {
+            setSelectedInput(null)
+            return
+        }
+        if (selectedInput && paths.includes(selectedInput)) return
+        setSelectedInput(paths[0])
+    }, [inputPaths, selectedInput])
+
     const handleOpenFile = async () => {
         if (!jobId) {
             notifications.show({ title: 'エラー', message: 'Job ID missing', color: 'red' })
@@ -114,6 +143,34 @@ export function Result({ outputs, resultText, error, jobId }: ResultProps) {
         try {
             setOpening(true)
             await openOutput(jobId, selectedFile)
+        } catch (e) {
+            const msg = String(e)
+            if (msg.includes('invoke') || msg.includes('undefined')) {
+                notifications.show({
+                    title: '環境エラー',
+                    message: 'Tauri 環境外では開けません。Tauri アプリで実行してください。',
+                    color: 'red',
+                })
+            } else {
+                notifications.show({ title: '起動エラー', message: msg, color: 'red' })
+            }
+        } finally {
+            setOpening(false)
+        }
+    }
+
+    const handleOpenInputFile = async () => {
+        if (!selectedInput) {
+            notifications.show({
+                title: 'エラー',
+                message: '元ファイルが選択されていません',
+                color: 'red',
+            })
+            return
+        }
+        try {
+            setOpening(true)
+            await openInputFile(selectedInput)
         } catch (e) {
             const msg = String(e)
             if (msg.includes('invoke') || msg.includes('undefined')) {
@@ -223,6 +280,30 @@ export function Result({ outputs, resultText, error, jobId }: ResultProps) {
 
                 <Card withBorder shadow="sm" radius="lg" padding="lg">
                     <Stack gap="lg">
+                        {Array.isArray(inputPaths) && inputPaths.length > 0 && (
+                            <div>
+                                <Text fw={600} size="sm" c="dimmed" tt="uppercase" mb="sm" style={{ letterSpacing: '0.5px' }}>
+                                    元ファイル
+                                </Text>
+                                <Group gap="xs">
+                                    {inputPaths.map((p) => (
+                                        <Badge
+                                            key={p}
+                                            component="button"
+                                            type="button"
+                                            color={selectedInput === p ? 'blue' : 'gray'}
+                                            variant={selectedInput === p ? 'filled' : 'light'}
+                                            size="lg"
+                                            radius="sm"
+                                            onClick={() => setSelectedInput(p)}
+                                            style={{ cursor: 'pointer', maxWidth: '100%' }}
+                                        >
+                                            {p}
+                                        </Badge>
+                                    ))}
+                                </Group>
+                            </div>
+                        )}
                         <div>
                             <Text fw={600} size="sm" c="dimmed" tt="uppercase" mb="sm" style={{ letterSpacing: '0.5px' }}>
                                 生成されたファイル
@@ -292,6 +373,18 @@ export function Result({ outputs, resultText, error, jobId }: ResultProps) {
                 </Card>
 
                 <Group>
+                    {Array.isArray(inputPaths) && inputPaths.length > 0 && (
+                        <Button
+                            leftSection={<IconFile size={18} />}
+                            variant="light"
+                            color="gray"
+                            onClick={handleOpenInputFile}
+                            loading={opening}
+                            disabled={!selectedInput}
+                        >
+                            元ファイルを開く
+                        </Button>
+                    )}
                     <Button
                         leftSection={<IconFolderOpen size={18} />}
                         variant="light"

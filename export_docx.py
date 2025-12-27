@@ -1,72 +1,27 @@
 from __future__ import annotations
 
+import argparse
+import json
 import re
 import sys
+from dataclasses import dataclass
 from pathlib import Path
 
 from docx import Document
 from docx.shared import Inches, Cm, Mm
-from docx.oxml import OxmlElement
-from latex2mathml.converter import convert as latex_to_mathml
-from lxml import etree
 
-"""
-使い方:
-    poetry run python export_docx.py          # merged.md -> merged.docx
-    poetry run python export_docx.py foo.md   # foo.md   -> foo.docx
-"""
+TEX_INLINE_PATTERN = re.compile(r"\$(?P<body>[^$]+)\$")
+TEX_BLOCK_INLINE_PATTERN = re.compile(r"\$\$(?P<body>[\s\S]+?)\$\$")
+TEX_TEXT_COMMAND_PATTERN = re.compile(r"\\text\{([^}]*)\}")
+TEX_COMMAND_PATTERN = re.compile(r"\\[A-Za-z]+")
+TEX_FRACTION_PATTERN = re.compile(r"\\frac\{([^{}]+)\}\{([^{}]+)\}")
+TEX_SUB_SUP_PATTERN = re.compile(r"([A-Za-z]+)\s*[_^]\s*\{?(\d+)\}?")
 
 TABLE_RULE = re.compile(r"^:?-{3,}:?$")
 IMG_HTML_PATTERN = re.compile(r"<img[^>]*src=\"([^\"]+)\"[^>]*>")
 IMG_MD_PATTERN = re.compile(r"!\[[^\]]*\]\(([^)]+)\)")
 WIDTH_PATTERN = re.compile(r"width\s*=\s*\"?([0-9]+(?:\.[0-9]+)?)(px|cm|mm)?\"?")
-INLINE_LATEX_PATTERN = re.compile(r"\\\(|\\\)|\\\[|\\\]")
-
-OMML_NS = "http://schemas.openxmlformats.org/officeDocument/2006/math"
-XML_NS = "http://www.w3.org/XML/1998/namespace"
-MATHML_NS = "http://www.w3.org/1998/Math/MathML"
-
-ALLOWED_FORMULA_CHARS = set("0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ+-*/=×÷().,^_:%$ {}\\")
-ESCAPED_SYMBOLS = {
-    r"\-": "-",
-    r"\+": "+",
-    r"\=": "=",
-    r"\(": "(",
-    r"\)": ")",
-    r"\{": "{",
-    r"\}": "}",
-}
-SIMPLE_LATEX_REPLACEMENTS = {
-    r"\times": "×",
-    r"\cdot": "·",
-    r"\div": "÷",
-    r"\pm": "±",
-    r"\le": "≤",
-    r"\ge": "≥",
-    r"\neq": "≠",
-}
-TEXT_CMD_PATTERN = re.compile(r"\\text\{([^}]*)\}")
-PLAIN_FRAC_PATTERN = re.compile(r"\\frac\{([^{}]+)\}\{([^{}]+)\}")
-
-
-def normalize_math_markers(text: str) -> str:
-    if not text:
-        return ""
-    result = INLINE_LATEX_PATTERN.sub(
-        lambda m: "$$" if m.group(0) in {r"\[", r"\]"} else "$",
-        text,
-    )
-    result = re.sub(r"\$\s+\$", "$$", result)
-    result = re.sub(r"\$\$\s+\$\$", "$$ $$", result)
-    return result
-
-
-def extract_inline_block(text: str) -> str | None:
-    stripped = text.strip()
-    if not stripped.startswith("$$") or not stripped.endswith("$$"):
-        return None
-    inner = stripped[2:-2].strip()
-    return inner if inner else None
+PAGE_HEADING_PATTERN = re.compile(r"^#\s+Page\s+(?P<page>\d+)\s*$")
 
 
 def read_markdown(path: Path) -> list[str]:
@@ -137,85 +92,41 @@ def flush_paragraph(document: Document, buffer: list[str], base_dir: Path | None
     if not text:
         return
     paragraph = document.add_paragraph()
-    render_inline_content(paragraph, text)
+    render_text_content(paragraph, text)
 
 
-def split_inline_math_segments(text: str) -> list[tuple[str, str]]:
-    segments: list[tuple[str, str]] = []
-    current: list[str] = []
-    mode = "text"
-    i = 0
-    length = len(text)
+def strip_tex_math_delimiters(text: str) -> str:
+    """docx 出力向けに、TeX デリミタだけ除去して中身をそのまま残す。"""
 
-    def append_segment(kind: str, value: str) -> None:
-        if not value:
-            return
-        if kind == "text" and segments and segments[-1][0] == "text":
-            segments[-1] = ("text", segments[-1][1] + value)
-        else:
-            segments.append((kind, value))
+    def strip_inline(match: re.Match[str]) -> str:
+        return match.group("body")
 
-    def flush_text_buffer() -> None:
-        nonlocal current
-        if current:
-            append_segment("text", "".join(current))
-            current = []
+    stripped = text.strip()
+    if stripped == "$$":
+        return ""
 
-    while i < length:
-        ch = text[i]
-        if ch == "$":
-            if i + 1 < length and text[i + 1] == "$":
-                current.append("$")
-                current.append("$")
-                i += 2
-                continue
+    text = text.replace("\\[", "").replace("\\]", "")
+    text = text.replace("\\(", "").replace("\\)", "")
+    text = TEX_BLOCK_INLINE_PATTERN.sub(lambda m: m.group("body").strip(), text)
+    prev = None
+    while prev != text:
+        prev = text
+        text = TEX_INLINE_PATTERN.sub(strip_inline, text)
 
-            backslashes = 0
-            j = i - 1
-            while j >= 0 and text[j] == "\\":
-                backslashes += 1
-                j -= 1
-            if backslashes % 2 == 1:
-                current.append("$")
-                i += 1
-                continue
-
-            if mode == "text":
-                flush_text_buffer()
-                mode = "math"
-                current = []
-                i += 1
-                continue
-
-            latex = "".join(current).strip()
-            current = []
-            if latex:
-                append_segment("math", latex)
-            mode = "text"
-            i += 1
-            continue
-
-        current.append(ch)
-        i += 1
-
-    if mode == "math":
-        append_segment("text", "$" + "".join(current))
-    else:
-        flush_text_buffer()
-
-    return segments
+    text = TEX_TEXT_COMMAND_PATTERN.sub(lambda m: m.group(1), text)
+    text = TEX_FRACTION_PATTERN.sub(lambda m: f"({m.group(1)})/({m.group(2)})", text)
+    text = TEX_SUB_SUP_PATTERN.sub(lambda m: f"{m.group(1)}_{m.group(2)}", text)
+    text = text.replace("{", "").replace("}", "")
+    text = TEX_COMMAND_PATTERN.sub("", text)
+    return text
 
 
-def render_inline_content(paragraph, text: str) -> None:
+def render_text_content(paragraph, text: str) -> None:
     working = text.replace("<br>", "\n")
-    for kind, value in split_inline_math_segments(working):
-        if not value:
-            continue
-        if kind == "text":
-            paragraph.add_run(value)
-        else:
-            if not append_math_element(paragraph, value, inline=True):
-                paragraph.add_run(format_plain_latex_text(value))
+    working = strip_tex_math_delimiters(working)
+    if not working:
+        return
+    paragraph.add_run(working)
 
 
 def to_width(value: str | None):
@@ -251,265 +162,235 @@ def add_image(document: Document, base_dir: Path, src: str, width_token: str | N
     kwargs = {"width": width} if width else {}
     run.add_picture(str(src_path), **kwargs)
 
-
-def add_math_block(document: Document, latex: str) -> None:
-    latex = latex.strip()
-    if not latex:
-        return
-    paragraph = document.add_paragraph()
-    if not append_math_element(paragraph, latex, inline=False):
-        paragraph.add_run(format_plain_latex_text(latex))
+@dataclass
+class MathRegion:
+    page: int
+    box: tuple[int, int, int, int]  # left, top, right, bottom
+    score: float
+    text: str
 
 
-def append_math_element(paragraph, latex: str, inline: bool) -> bool:
-    element = latex_to_omml_element(latex, inline=inline)
-    if element is None:
+JSON_PAGE_PATTERN = re.compile(r"(?:^|_)page_(\d{3})(?:_|$)")
+URL_PATTERN = re.compile(r"https?://", re.IGNORECASE)
+BASE_PATTERN = re.compile(r"\([0-9]{1,3}\)\s*[0-9]{0,3}")  # (10), (12) 等
+SUB_SUP_PATTERN = re.compile(r"[_^][0-9]+")
+MATH_KEYWORDS = ("比率", "割合", "分数", "率", "比")
+
+
+def _extract_page_number(name: str) -> int | None:
+    match = JSON_PAGE_PATTERN.search(name)
+    if match:
+        return int(match.group(1))
+    match = re.search(r"page(?:_images)?_page_(\d{3})", name)
+    if match:
+        return int(match.group(1))
+    match = re.search(r"page_(\d{3})", name)
+    if match:
+        return int(match.group(1))
+    return None
+
+
+def _math_features(text: str) -> tuple[int, int, float, bool]:
+    """Return (ops, digits, digit_ratio, has_base_marker)."""
+    ops = sum(text.count(ch) for ch in "+-×÷=/%^·")
+    digits = sum(ch.isdigit() for ch in text)
+    length = max(1, len(text))
+    digit_ratio = digits / length
+    has_base = bool(BASE_PATTERN.search(text) or SUB_SUP_PATTERN.search(text))
+    return ops, digits, digit_ratio, has_base
+
+
+def _looks_math(text: str) -> bool:
+    if URL_PATTERN.search(text):
         return False
-    if inline:
-        run = paragraph.add_run()
-        run._r.append(element)
-    else:
-        paragraph._p.append(element)
-    return True
+    if any(kw in text for kw in MATH_KEYWORDS):
+        return True
+    ops, digits, digit_ratio, has_base = _math_features(text)
+    if has_base and digits >= 4:
+        return True
+    if ops >= 1 and digits >= 2:
+        return True
+    if digit_ratio >= 0.4 and digits >= 6:
+        return True
+    return False
 
 
-def latex_to_omml_element(latex: str, inline: bool) -> OxmlElement | None:
-    latex = latex.strip()
-    if not latex:
-        return None
-    try:
-        mathml = latex_to_mathml(latex)
-    except Exception:
-        return None
-    try:
-        root = etree.fromstring(mathml.encode("utf-8"))
-    except etree.XMLSyntaxError:
-        return None
+def _load_regions(
+    json_path: Path,
+    *,
+    page: int,
+    min_score: float,
+    max_chars: int,
+    max_aspect: float,
+) -> list[MathRegion]:
+    data = json.loads(json_path.read_text(encoding="utf-8"))
+    regions: list[MathRegion] = []
 
-    omml_children = convert_mathml_children(root)
-    if not omml_children:
-        return None
+    def add_region(box: list[int] | tuple[int, int, int, int] | None, score: float, text: str) -> None:
+        if not box or len(box) != 4:
+            return
+        left, top, right, bottom = (int(v) for v in box)
+        if right < left:
+            left, right = right, left
+        if bottom < top:
+            top, bottom = bottom, top
+        width = max(1, right - left)
+        height = max(1, bottom - top)
+        aspect = max(width / height, height / width)
+        if aspect > max_aspect:
+            return
+        if len(text) > max_chars:
+            return
+        ops, digits, digit_ratio, has_base = _math_features(text)
+        if ops < 1 and not (has_base or digit_ratio >= 0.4):
+            return
+        if score < min_score:
+            return
+        regions.append(MathRegion(page=page, box=(left, top, right, bottom), score=score, text=text))
 
-    math_element = OxmlElement("m:oMath")
-    for child in omml_children:
-        math_element.append(child)
-
-    if inline:
-        return math_element
-    math_para = OxmlElement("m:oMathPara")
-    math_para.append(math_element)
-    return math_para
-
-
-def convert_mathml_children(node) -> list[OxmlElement]:
-    tag = strip_namespace(node.tag)
-    if tag == "semantics":
-        for child in node:
-            if strip_namespace(child.tag).startswith("annotation"):
-                continue
-            return convert_mathml_children(child)
-        return []
-    if tag in {"math", "mrow", "mstyle"}:
-        elements: list[OxmlElement] = []
-        if node.text and node.text.strip():
-            elements.extend(text_to_math_runs(node.text.strip()))
-        for child in node:
-            if strip_namespace(child.tag).startswith("annotation"):
-                continue
-            elements.extend(convert_mathml_children(child))
-            if child.tail and child.tail.strip():
-                elements.extend(text_to_math_runs(child.tail.strip()))
-        return elements
-    return convert_mathml_node(node)
-
-
-def convert_mathml_node(node) -> list[OxmlElement]:
-    tag = strip_namespace(node.tag)
-
-    if tag in {"math", "mrow", "mstyle"}:
-        return convert_mathml_children(node)
-    if tag == "semantics":
-        return convert_mathml_children(node)
-    if tag in {"mi", "mn", "mo", "mtext", "mspace"}:
-        text = (node.text or "").strip()
-        if not text:
-            return []
-        return text_to_math_runs(text)
-    if tag == "mfrac":
-        children = list(iter_math_children(node))
-        if len(children) < 2:
-            return []
-        frac = OxmlElement("m:f")
-        num = wrap_math_container("m:num", convert_mathml_node(children[0]))
-        den = wrap_math_container("m:den", convert_mathml_node(children[1]))
-        frac.append(num)
-        frac.append(den)
-        return [frac]
-    if tag == "msup":
-        children = list(iter_math_children(node))
-        sup = OxmlElement("m:sSup")
-        base = wrap_math_container("m:e", convert_mathml_node(children[0]) if len(children) > 0 else [])
-        power = wrap_math_container("m:sup", convert_mathml_node(children[1]) if len(children) > 1 else [])
-        sup.append(base)
-        sup.append(power)
-        return [sup]
-    if tag == "msub":
-        children = list(iter_math_children(node))
-        sub = OxmlElement("m:sSub")
-        base = wrap_math_container("m:e", convert_mathml_node(children[0]) if len(children) > 0 else [])
-        lower = wrap_math_container("m:sub", convert_mathml_node(children[1]) if len(children) > 1 else [])
-        sub.append(base)
-        sub.append(lower)
-        return [sub]
-    if tag == "msubsup":
-        children = list(iter_math_children(node))
-        node_el = OxmlElement("m:sSubSup")
-        base = wrap_math_container("m:e", convert_mathml_node(children[0]) if len(children) > 0 else [])
-        lower = wrap_math_container("m:sub", convert_mathml_node(children[1]) if len(children) > 1 else [])
-        upper = wrap_math_container("m:sup", convert_mathml_node(children[2]) if len(children) > 2 else [])
-        node_el.append(base)
-        node_el.append(lower)
-        node_el.append(upper)
-        return [node_el]
-    if tag == "msqrt":
-        children = list(iter_math_children(node))
-        if not children:
-            return []
-        rad = OxmlElement("m:rad")
-        body = wrap_math_container("m:e", convert_mathml_node(children[0]))
-        rad.append(body)
-        return [rad]
-    if tag == "mroot":
-        children = list(iter_math_children(node))
-        if not children:
-            return []
-        rad = OxmlElement("m:rad")
-        if len(children) > 1:
-            degree = wrap_math_container("m:deg", convert_mathml_node(children[1]))
-            rad.append(degree)
-        body = wrap_math_container("m:e", convert_mathml_node(children[0]))
-        rad.append(body)
-        return [rad]
-    if tag == "mfenced":
-        return convert_mfenced(node)
-
-    elements: list[OxmlElement] = []
-    for child in iter_math_children(node):
-        elements.extend(convert_mathml_node(child))
-    return elements
-
-
-def convert_mfenced(node) -> list[OxmlElement]:
-    open_char = node.get("open", "(") or "("
-    close_char = node.get("close", ")") or ")"
-    separators = (node.get("separators") or ",")
-    children = list(iter_math_children(node))
-    elements: list[OxmlElement] = []
-    if open_char.strip():
-        elements.extend(text_to_math_runs(open_char.strip()))
-    for idx, child in enumerate(children):
-        elements.extend(convert_mathml_node(child))
-        if idx < len(children) - 1 and separators:
-            elements.extend(text_to_math_runs(separators[0]))
-    if close_char.strip():
-        elements.extend(text_to_math_runs(close_char.strip()))
-    return elements
-
-
-def iter_math_children(node):
-    for child in node:
-        if strip_namespace(child.tag).startswith("annotation"):
+    for para in data.get("paragraphs", []):
+        text = (para.get("contents") or "").strip()
+        if not text or not _looks_math(text):
             continue
-        yield child
+        add_region(para.get("box"), float(para.get("score", 0.5)), text)
+
+    for det in data.get("detections", []):
+        text = (det.get("content") or "").strip()
+        if not text or not _looks_math(text):
+            continue
+        points = det.get("points")
+        if points and isinstance(points, list) and len(points) >= 4:
+            xs = [p[0] for p in points]
+            ys = [p[1] for p in points]
+            box = [min(xs), min(ys), max(xs), max(ys)]
+        else:
+            box = det.get("box")
+        score = float(det.get("rec_score", det.get("det_score", 0.5)))
+        add_region(box, score, text)
+
+    regions.sort(key=lambda r: (-r.score, r.box[1], r.box[0]))
+    return regions
 
 
-def strip_namespace(tag: str) -> str:
-    return tag.split("}")[-1] if "}" in tag else tag
+def _resolve_page_image(base_dir: Path, page: int) -> Path | None:
+    candidate = base_dir / "page_images" / f"page_{page:03}.png"
+    if candidate.exists():
+        return candidate
+
+    preprocessed = base_dir / "preprocessed"
+    if preprocessed.exists():
+        matches = sorted(preprocessed.glob(f"**/page_{page:03}.png"))
+        if matches:
+            return matches[0]
+
+    converted = base_dir / "converted" / f"page_{page:03}.png"
+    if converted.exists():
+        return converted
+
+    return None
 
 
-def wrap_math_container(tag: str, children: list[OxmlElement]) -> OxmlElement:
-    element = OxmlElement(tag)
-    content = children if children else [create_math_run(" ")]
-    for child in content:
-        element.append(child)
-    return element
+def _build_formula_images(
+    base_dir: Path,
+    *,
+    min_score: float,
+    max_per_page: int,
+    padding: int,
+    max_chars: int,
+    max_aspect: float,
+) -> dict[int, list[Path]]:
+    json_dir = base_dir / "yomi_formats" / "json"
+    if not json_dir.exists():
+        return {}
+    json_files = sorted(json_dir.glob("*.json"))
+    if not json_files:
+        return {}
+
+    figure_dir = base_dir / "figures"
+    figure_dir.mkdir(parents=True, exist_ok=True)
+
+    def crop_region(img_path: Path, region: MathRegion):
+        from PIL import Image
+
+        with Image.open(img_path) as img:
+            left, top, right, bottom = region.box
+            left = max(0, left - padding)
+            top = max(0, top - padding)
+            right = min(img.width, right + padding)
+            bottom = min(img.height, bottom + padding)
+            return img.crop((left, top, right, bottom)).copy()
+
+    pages: dict[int, list[Path]] = {}
+    for path in json_files:
+        page = _extract_page_number(path.stem)
+        if page is None and len(json_files) == 1:
+            page = 1
+        if page is None:
+            continue
+        page_image = _resolve_page_image(base_dir, page)
+        if page_image is None:
+            continue
+        regions = _load_regions(
+            path,
+            page=page,
+            min_score=min_score,
+            max_chars=max_chars,
+            max_aspect=max_aspect,
+        )
+        if not regions:
+            continue
+        picked = regions[:max_per_page]
+        for idx, region in enumerate(picked, start=1):
+            out_path = figure_dir / f"eq_page{page:03}_{idx:02}.png"
+            cropped = crop_region(page_image, region)
+            cropped.save(out_path)
+            pages.setdefault(page, []).append(out_path)
+    return pages
 
 
-def format_plain_latex_text(latex: str) -> str:
-    if not latex:
-        return ""
-    text = TEXT_CMD_PATTERN.sub(lambda m: m.group(1), latex)
-    text = PLAIN_FRAC_PATTERN.sub(lambda m: f"({m.group(1)})/({m.group(2)})", text)
-    for src, dst in SIMPLE_LATEX_REPLACEMENTS.items():
-        text = text.replace(src, dst)
-    text = re.sub(r"\\[a-zA-Z]+", "", text)
-    text = text.replace("{", "").replace("}", "")
-    return text.strip() or latex
+def convert_markdown(
+    document: Document,
+    lines: list[str],
+    base_dir: Path,
+    *,
+    math_mode: str = "text",
+) -> None:
+    formula_images: dict[int, list[Path]] = {}
+    if math_mode == "image":
+        try:
+            formula_images = _build_formula_images(
+                base_dir,
+                min_score=0.6,
+                max_per_page=12,
+                padding=6,
+                max_chars=120,
+                max_aspect=6.0,
+            )
+        except Exception:
+            formula_images = {}
 
-
-def text_to_math_runs(text: str) -> list[OxmlElement]:
-    if not text:
-        return []
-    if not text.strip():
-        return []
-    return [create_math_run(text)]
-
-
-def create_math_run(text: str) -> OxmlElement:
-    run = OxmlElement("m:r")
-    t = OxmlElement("m:t")
-    if text.startswith(" ") or text.endswith(" "):
-        t.set(f"{{{XML_NS}}}space", "preserve")
-    t.text = text
-    run.append(t)
-    return run
-
-
-def convert_markdown(document: Document, lines: list[str], base_dir: Path) -> None:
     paragraph_buffer: list[str] = []
     i = 0
 
     while i < len(lines):
         raw_line = lines[i].rstrip("\n")
-        normalized = normalize_math_markers(raw_line.strip())
-
-        if normalized == "$$":
-            flush_paragraph(document, paragraph_buffer, base_dir)
-            block_lines: list[str] = []
-            j = i + 1
-            closed = False
-            while j < len(lines):
-                candidate_raw = lines[j].rstrip("\n")
-                candidate_norm = normalize_math_markers(candidate_raw.strip())
-                if candidate_norm == "$$":
-                    closed = True
-                    break
-                block_lines.append(candidate_norm)
-                j += 1
-            if closed:
-                latex = "\n".join(block_lines).strip()
-                if latex:
-                    add_math_block(document, latex)
-                i = j + 1
-                continue
-            else:
-                # 閉じ記号が見つからなければテキストとして扱う
-                paragraph_buffer.append(normalized)
-                i += 1
-                continue
-
-        single_line_block = extract_inline_block(normalized)
-        if single_line_block is not None:
-            flush_paragraph(document, paragraph_buffer, base_dir)
-            add_math_block(document, single_line_block)
-            i += 1
-            continue
+        normalized = raw_line.strip()
 
         if not normalized:
             flush_paragraph(document, paragraph_buffer, base_dir)
             i += 1
             continue
 
+        page_heading = PAGE_HEADING_PATTERN.match(normalized)
+        if page_heading:
+            flush_paragraph(document, paragraph_buffer, base_dir)
+            page = int(page_heading.group("page"))
+            document.add_heading(f"Page {page}", level=1)
+            if math_mode == "image":
+                for img_path in formula_images.get(page, []):
+                    add_image(document, base_dir, str(img_path.relative_to(base_dir)))
+            i += 1
+            continue
         if normalized.startswith("#"):
             flush_paragraph(document, paragraph_buffer, base_dir)
             level = len(normalized) - len(normalized.lstrip("#"))
@@ -530,7 +411,7 @@ def convert_markdown(document: Document, lines: list[str], base_dir: Path) -> No
         if normalized.startswith("- ") or normalized.startswith("* "):
             flush_paragraph(document, paragraph_buffer, base_dir)
             paragraph = document.add_paragraph(style="List Bullet")
-            render_inline_content(paragraph, normalized[2:].strip())
+            render_text_content(paragraph, normalized[2:].strip())
             i += 1
             continue
 
@@ -541,7 +422,7 @@ def convert_markdown(document: Document, lines: list[str], base_dir: Path) -> No
             body_text = ordered_match.group(2).strip()
             paragraph = document.add_paragraph()
             paragraph.add_run(f"{number_text}. ")
-            render_inline_content(paragraph, body_text)
+            render_text_content(paragraph, body_text)
             i += 1
             continue
 
@@ -568,26 +449,31 @@ def convert_markdown(document: Document, lines: list[str], base_dir: Path) -> No
     flush_paragraph(document, paragraph_buffer, base_dir)
 
 
-def convert_file(md_path: Path) -> Path:
+def convert_file(md_path: Path, *, math_mode: str = "text") -> Path:
     if not md_path.exists():
         raise FileNotFoundError(f"Markdown ファイルが見つかりません: {md_path}")
 
     docx_path = md_path.with_suffix(".docx")
     document = Document()
     lines = read_markdown(md_path)
-    convert_markdown(document, lines, base_dir=md_path.parent)
+    convert_markdown(document, lines, base_dir=md_path.parent, math_mode=math_mode)
     document.save(docx_path)
     return docx_path
 
 
-def main():
-    if len(sys.argv) >= 2:
-        md_path = Path(sys.argv[1])
-    else:
-        md_path = Path("merged.md")
-
+def main() -> None:
+    parser = argparse.ArgumentParser(description="Markdown を docx に変換する")
+    parser.add_argument("markdown", nargs="?", default="merged.md", help="入力 Markdown ファイル")
+    parser.add_argument(
+        "--math",
+        choices=["text", "image"],
+        default="text",
+        help="数式の扱い。text=本文としてそのまま出力（既定）、image=検出した数式領域を画像で貼る",
+    )
+    args = parser.parse_args()
+    md_path = Path(args.markdown)
     try:
-        docx_path = convert_file(md_path)
+        docx_path = convert_file(md_path, math_mode=args.math)
         print(f"Word ファイルを出力しました: {docx_path}")
     except Exception as e:
         print(f"エラー: {e}")

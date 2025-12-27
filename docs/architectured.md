@@ -72,6 +72,7 @@
 
 ### export_docx.py
 - Markdown → docx 変換（`python-docx` 実装）。
+- 数式は既定で「本文テキストとしてそのまま出力」。必要なら JSON + ページ画像から検出した数式領域を画像として貼り付ける。
 
 ### export_excel_poc.py（PoC）
 - YomiToku の出力（json/csv/html）を xlsx に変換する PoC。

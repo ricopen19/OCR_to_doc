@@ -14,6 +14,7 @@ export type RunOptions = {
   useGpu?: boolean
   mode: 'lite' | 'full'
   excelMode?: 'layout' | 'table'
+  excelMetaSheet?: boolean
   chunkSize?: number
   enableRest: boolean
   restSeconds?: number
@@ -87,4 +88,12 @@ export async function openOutputDir(jobId: string): Promise<void> {
     return invoke('open_output_dir', { jobId })
   }
   console.log('Mock open dir for job:', jobId)
+}
+
+export async function openInputFile(path: string): Promise<void> {
+  const hasTauri = typeof window !== 'undefined' && '__TAURI__' in window
+  if (hasTauri) {
+    return invoke('open_input_file', { path })
+  }
+  console.log('Mock open input file:', path)
 }

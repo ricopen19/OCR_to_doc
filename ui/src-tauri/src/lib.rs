@@ -285,6 +285,8 @@ struct RunOptions {
     #[serde(default)]
     excel_mode: Option<String>,
     #[serde(default)]
+    excel_meta_sheet: Option<bool>,
+    #[serde(default)]
     file_options: Option<HashMap<String, FileSpecificOptions>>,
 }
 
@@ -370,6 +372,8 @@ struct AppSettings {
     use_gpu: bool,
     #[serde(default)]
     output_root: Option<String>,
+    #[serde(default = "default_excel_meta_sheet")]
+    excel_meta_sheet: bool,
     #[serde(default)]
     chunk_size: Option<u32>,
     #[serde(default)]
@@ -382,6 +386,10 @@ struct AppSettings {
     window_width: Option<u32>,
     #[serde(default)]
     window_height: Option<u32>,
+}
+
+fn default_excel_meta_sheet() -> bool {
+    true
 }
 
 fn load_settings_from_disk(project_root: &std::path::Path) -> Result<AppSettings, String> {
@@ -404,6 +412,7 @@ fn load_settings_from_disk(project_root: &std::path::Path) -> Result<AppSettings
             enable_figure: true,
             use_gpu: false,
             output_root: None,
+            excel_meta_sheet: true,
             chunk_size: Some(10),
             enable_rest: false,
             rest_seconds: Some(10),
@@ -507,6 +516,7 @@ fn run_job(
         rest_seconds,
         pdf_dpi,
         excel_mode,
+        excel_meta_sheet,
         file_opts_map,
     ) = match options {
         Some(o) => (
@@ -520,6 +530,7 @@ fn run_job(
             o.rest_seconds,
             o.pdf_dpi,
             o.excel_mode,
+            o.excel_meta_sheet,
             o.file_options,
         ),
         None => (
@@ -530,6 +541,7 @@ fn run_job(
             None,
             None,
             false,
+            None,
             None,
             None,
             None,
@@ -562,6 +574,13 @@ fn run_job(
             if let Some(em) = &excel_mode {
                 if !em.is_empty() {
                     cmd.arg("--excel-mode").arg(em);
+                }
+            }
+            if let Some(v) = excel_meta_sheet {
+                if v {
+                    cmd.arg("--excel-meta");
+                } else {
+                    cmd.arg("--no-excel-meta");
                 }
             }
             if image_as_pdf {
@@ -1467,6 +1486,19 @@ fn open_output_dir(job_id: String, state: State<Arc<AppState>>) -> Result<(), St
 }
 
 #[tauri::command]
+fn open_input_file(path: String) -> Result<(), String> {
+    let trimmed = path.trim();
+    if trimmed.is_empty() {
+        return Err("path is empty".into());
+    }
+    let p = PathBuf::from(trimmed);
+    if !p.exists() {
+        return Err(format!("file not found: {}", p.display()));
+    }
+    open_path_with_default_app(&p)
+}
+
+#[tauri::command]
 fn list_recent_results(limit: Option<u32>) -> Result<Vec<RecentResultEntry>, String> {
     let exe_dir = std::env::current_exe().map_err(|e| format!("failed to get exe path: {e}"))?;
     let project_root = resolve_project_root(&exe_dir).ok_or("failed to resolve project root")?;
@@ -1619,6 +1651,7 @@ pub fn run() {
             save_file,
             open_output,
             open_output_dir,
+            open_input_file,
             list_recent_results,
             open_result_dir,
             open_result_file,

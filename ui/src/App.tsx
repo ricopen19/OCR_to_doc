@@ -17,7 +17,7 @@ import { Home } from './pages/Home'
 import { RunJob } from './pages/RunJob'
 import { Result } from './pages/Result'
 import { Settings, type SettingsHandle } from './pages/Settings'
-import { loadSettings } from './api/settings'
+import { loadSettings, type AppSettings } from './api/settings'
 import type { CropRect } from './types/crop'
 
 function App() {
@@ -43,6 +43,7 @@ function App() {
   const [currentMessage, setCurrentMessage] = useState<string>('')
   const [etaSeconds, setEtaSeconds] = useState<number | null>(null)
   const [outputs, setOutputs] = useState<string[]>([])
+  const [jobInputPaths, setJobInputPaths] = useState<string[]>([])
   const settingsRef = useRef<SettingsHandle | null>(null)
   const [navConfirmOpen, setNavConfirmOpen] = useState(false)
   const [navPendingPage, setNavPendingPage] = useState<PageKey | null>(null)
@@ -54,6 +55,7 @@ function App() {
     useGpu: boolean
     mode: 'lite' | 'full'
     excelMode: 'layout' | 'table'
+    excelMetaSheet: boolean
     chunkSize: number
     enableRest: boolean
     restSeconds: number
@@ -66,6 +68,7 @@ function App() {
     useGpu: false,
     mode: 'lite',
     excelMode: 'layout',
+    excelMetaSheet: true,
     chunkSize: 10,
     enableRest: false,
     restSeconds: 10,
@@ -93,17 +96,18 @@ function App() {
   useEffect(() => {
     // initialize options from settings
     loadSettings().then((s) => {
-      setOptions((prev) => ({
-        ...prev,
-        formats: s.formats,
-        imageAsPdf: s.imageAsPdf,
-        enableFigure: s.enableFigure,
-        useGpu: Boolean(s.useGpu),
-        chunkSize: s.chunkSize ?? 10,
-        enableRest: s.enableRest,
-        restSeconds: s.restSeconds ?? 10,
-        pdfDpi: s.pdfDpi ?? 300,
-      }))
+        setOptions((prev) => ({
+          ...prev,
+          formats: s.formats,
+          imageAsPdf: s.imageAsPdf,
+          enableFigure: s.enableFigure,
+          useGpu: Boolean(s.useGpu),
+          excelMetaSheet: s.excelMetaSheet ?? true,
+          chunkSize: s.chunkSize ?? 10,
+          enableRest: s.enableRest,
+          restSeconds: s.restSeconds ?? 10,
+          pdfDpi: s.pdfDpi ?? 300,
+        }))
     }).catch(console.error)
   }, [])
 
@@ -118,25 +122,20 @@ function App() {
     if (shouldAutoCollapse) setOpened(false)
   }, [shouldAutoCollapse])
 
-  useEffect(() => {
-    if (page !== 'run') return
-    if (status === 'running') return
-    loadSettings()
-      .then((s) => {
-        setOptions((prev) => ({
-          ...prev,
-          formats: s.formats,
-          imageAsPdf: s.imageAsPdf,
-          enableFigure: s.enableFigure,
-          useGpu: Boolean(s.useGpu),
-          chunkSize: s.chunkSize ?? 10,
-          enableRest: s.enableRest,
-          restSeconds: s.restSeconds ?? 10,
-          pdfDpi: s.pdfDpi ?? 300,
-        }))
-      })
-      .catch(console.error)
-  }, [page, status])
+  const handleSettingsSaved = (s: AppSettings) => {
+    setOptions((prev) => ({
+      ...prev,
+      formats: s.formats,
+      imageAsPdf: s.imageAsPdf,
+      enableFigure: s.enableFigure,
+      useGpu: Boolean(s.useGpu),
+      excelMetaSheet: s.excelMetaSheet ?? true,
+      chunkSize: s.chunkSize ?? 10,
+      enableRest: s.enableRest,
+      restSeconds: s.restSeconds ?? 10,
+      pdfDpi: s.pdfDpi ?? 300,
+    }))
+  }
 
   useEffect(() => {
     if (!jobId || status !== 'running') return
@@ -176,6 +175,7 @@ function App() {
 
   const handleRun = async () => {
     if (filePaths.length === 0) return
+    setJobInputPaths(filePaths.slice())
     setStatus('running')
     setResultText('')
     setError(null)
@@ -314,10 +314,11 @@ function App() {
                 resultText={resultText}
                 error={error}
                 jobId={jobId}
+                inputPaths={jobInputPaths}
               />
             )}
             {page === 'settings' && (
-              <Settings ref={settingsRef} />
+              <Settings ref={settingsRef} onSaved={handleSettingsSaved} />
             )}
           </Container>
         </AppShell.Main>

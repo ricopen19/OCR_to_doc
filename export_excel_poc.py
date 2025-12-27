@@ -17,6 +17,8 @@ from openpyxl.utils import get_column_letter
 from openpyxl.worksheet.table import Table, TableStyleInfo
 from openpyxl.worksheet.datavalidation import DataValidation
 
+from plain_text import to_plain_text
+
 
 @dataclass
 class TableCell:
@@ -853,14 +855,14 @@ def write_tables_to_workbook_table_mode(
             # ヘッダー
             for c, text in enumerate(header, start=1):
                 cell = ws.cell(row=1, column=c)
-                cell.value = text
+                cell.value = to_plain_text(text)
                 cell.alignment = align_center
 
             # データ
             out_row = 2
             for r in data_rows:
                 for c in range(1, block_max_col + 1):
-                    raw = values[r - 1][c - 1]
+                    raw = to_plain_text(values[r - 1][c - 1])
                     target = ws.cell(row=out_row, column=c)
                     if not apply_auto_format(target, raw, enable=auto_format):
                         target.value = raw
@@ -983,7 +985,10 @@ def write_tables_to_csv_files(
             with out_path.open("w", encoding="utf-8", newline="") as fp:
                 writer = csv.writer(fp)
                 for r in range(1, last_row + 1):
-                    row = [values[r - 1][c - 1] for c in range(1, block_max_col + 1)]
+                    row = [
+                        to_plain_text(values[r - 1][c - 1])
+                        for c in range(1, block_max_col + 1)
+                    ]
                     writer.writerow(row)
             outputs.append(out_path)
             continue
@@ -1013,9 +1018,12 @@ def write_tables_to_csv_files(
 
             with out_path.open("w", encoding="utf-8", newline="") as fp:
                 writer = csv.writer(fp)
-                writer.writerow(header)
+                writer.writerow([to_plain_text(h) for h in header])
                 for r in data_rows:
-                    row = [values[r - 1][c - 1] for c in range(1, block_max_col + 1)]
+                    row = [
+                        to_plain_text(values[r - 1][c - 1])
+                        for c in range(1, block_max_col + 1)
+                    ]
                     writer.writerow(row)
 
             outputs.append(out_path)
@@ -1055,8 +1063,9 @@ def write_tables_to_workbook(
         max_col = 0
         for cell in cells:
             target = ws.cell(row=cell.row, column=cell.col)
-            if not apply_auto_format(target, cell.text, enable=auto_format):
-                target.value = cell.text
+            raw = to_plain_text(cell.text)
+            if not apply_auto_format(target, raw, enable=auto_format):
+                target.value = raw
             target.alignment = align
             if cell.row_span > 1 or cell.col_span > 1:
                 ws.merge_cells(

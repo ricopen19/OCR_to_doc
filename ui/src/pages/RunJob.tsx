@@ -39,6 +39,7 @@ export interface RunJobOptions {
     useGpu: boolean
     mode: 'lite' | 'full'
     excelMode: 'layout' | 'table'
+    excelMetaSheet: boolean
     chunkSize: number
     enableRest: boolean
     restSeconds: number
@@ -485,6 +486,15 @@ export function RunJob({
                                             テーブルモードはセル結合を解除し、構造変化ごとに分割します。
                                         </Text>
                                     </Stack>
+                                )}
+
+                                {options.formats.includes('xlsx') && (
+                                    <Switch
+                                        label="Excelのメタシートを付与"
+                                        description="シート一覧や変換条件などの情報を追加します"
+                                        checked={options.excelMetaSheet}
+                                        onChange={() => setOptions((prev) => ({ ...prev, excelMetaSheet: !prev.excelMetaSheet }))}
+                                    />
                                 )}
 
                                 <Divider />
