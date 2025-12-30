@@ -8,12 +8,10 @@ import {
     Button,
     Group,
     TextInput,
-    Checkbox,
     Switch,
     Divider,
     NumberInput,
     Collapse,
-    SegmentedControl,
 } from '@mantine/core'
 import { IconDeviceFloppy, IconFolder } from '@tabler/icons-react'
 import { open } from '@tauri-apps/plugin-dialog'
@@ -43,15 +41,11 @@ export const Settings = forwardRef<SettingsHandle, SettingsProps>(function Setti
     const [settings, setSettings] = useState<AppSettings | null>(null)
     const [initialSnapshot, setInitialSnapshot] = useState<string | null>(null)
     const [loading, setLoading] = useState(false)
-    const [dpiPreset, setDpiPreset] = useState<'200' | '300' | '400' | 'custom'>('300')
 
     useEffect(() => {
         loadSettings().then((s) => {
             setSettings(s)
             setInitialSnapshot(settingsSnapshot(s))
-            const dpi = s.pdfDpi ?? 300
-            const preset = [200, 300, 400].includes(dpi) ? String(dpi) : 'custom'
-            setDpiPreset(preset as typeof dpiPreset)
         }).catch((err) => {
             console.error(err)
             notifications.show({
@@ -124,8 +118,6 @@ export const Settings = forwardRef<SettingsHandle, SettingsProps>(function Setti
     }
 
     if (!settings) return <Text>設定を読み込み中...</Text>
-
-    const dpiValue = settings.pdfDpi ?? 300
 
     return (
         <Stack gap="xl">
@@ -224,25 +216,22 @@ export const Settings = forwardRef<SettingsHandle, SettingsProps>(function Setti
                     </Group>
                 </Card>
 
-                {/* Default Formats */}
+                {/* Note */}
                 <Card withBorder shadow="sm" radius="lg" padding="lg">
                     <Text fw={600} size="sm" c="dimmed" tt="uppercase" mb="sm" style={{ letterSpacing: '0.5px' }}>
-                        デフォルト出力形式
+                        実行画面で保存する項目
                     </Text>
-                    <Checkbox.Group
-                        value={settings.formats}
-                        onChange={(vals) => setSettings({ ...settings, formats: vals })}
-                    >
-                        <Group mt="xs">
-                            <Checkbox value="md" label="Markdown" />
-                            <Checkbox value="docx" label="Word (docx)" />
-                            <Checkbox value="xlsx" label="Excel (xlsx)" />
-                            <Checkbox value="csv" label="CSV" />
-                        </Group>
-                    </Checkbox.Group>
+                    <Text size="sm" c="dimmed">
+                        出力形式 / 表出力モード / 処理モード / PDF DPI のデフォルトは「実行」画面で設定し、
+                        「デフォルトに保存」から保存してください。
+                    </Text>
+                </Card>
 
-                    <Divider my="md" />
-
+                {/* Excel Settings */}
+                <Card withBorder shadow="sm" radius="lg" padding="lg">
+                    <Text fw={600} size="sm" c="dimmed" tt="uppercase" mb="sm" style={{ letterSpacing: '0.5px' }}>
+                        Excel
+                    </Text>
                     <Switch
                         label="Excelのメタシートを付与"
                         description="xlsx出力時にシート一覧や変換条件などの情報を追加します"
@@ -299,45 +288,9 @@ export const Settings = forwardRef<SettingsHandle, SettingsProps>(function Setti
                 {/* Stability / Expert Settings */}
                 <Card withBorder shadow="sm" radius="lg" padding="lg">
                     <Text fw={600} size="sm" c="dimmed" tt="uppercase" mb="sm" style={{ letterSpacing: '0.5px' }}>
-                        安定運用設定 (PDF)
+                        安定運用設定
                     </Text>
                     <Stack gap="md">
-                        <Stack gap={6}>
-                            <Text size="sm" fw={500}>PDF→画像変換 DPI</Text>
-                            <Text size="xs" c="dimmed">
-                                DPI を上げるほど細部の認識精度は上がりますが、処理時間/メモリ使用量が増えます
-                            </Text>
-                            <SegmentedControl
-                                value={dpiPreset}
-                                onChange={(v) => {
-                                    setDpiPreset(v as typeof dpiPreset)
-                                    if (v === 'custom') return
-                                    const parsed = Number(v)
-                                    if (!Number.isFinite(parsed)) return
-                                    setSettings((prev) => (prev ? { ...prev, pdfDpi: parsed } : prev))
-                                }}
-                                data={[
-                                    { label: '低 (200)', value: '200' },
-                                    { label: '標準 (300)', value: '300' },
-                                    { label: '高精細 (400)', value: '400' },
-                                    { label: 'カスタム', value: 'custom' },
-                                ]}
-                            />
-                            {dpiPreset === 'custom' && (
-                                <NumberInput
-                                    label="カスタム DPI"
-                                    min={72}
-                                    max={600}
-                                    value={dpiValue}
-                                    onChange={(v) => {
-                                        const parsed = typeof v === 'number' ? v : null
-                                        if (!parsed) return
-                                        setSettings((prev) => (prev ? { ...prev, pdfDpi: parsed } : prev))
-                                    }}
-                                />
-                            )}
-                        </Stack>
-                        <Divider />
                         <NumberInput
                             label="チャンクサイズ"
                             description="1回に処理するページ数（メモリ不足対策）"

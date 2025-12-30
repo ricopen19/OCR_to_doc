@@ -469,17 +469,43 @@ def auto_adjust_columns(ws) -> None:
 def split_text_to_paragraphs(text: str) -> list[str]:
     """空行区切りで段落配列にする（Markdown/プレーンテキスト想定）。"""
 
+    raw_lines = (text or "").splitlines()
+
     paragraphs: list[str] = []
     buffer: list[str] = []
-    for line in (text or "").splitlines():
+    saw_blank = False
+    for line in raw_lines:
         if line.strip():
             buffer.append(line.rstrip())
             continue
+        saw_blank = True
         if buffer:
             paragraphs.append("\n".join(buffer).strip())
             buffer = []
     if buffer:
         paragraphs.append("\n".join(buffer).strip())
+
+    # OCR の Markdown は空行がほぼ無いことがあり、その場合は 1 セルに全行が入ってしまう。
+    # Excel 側で編集しやすいよう、空行が無くて複数行ある場合は「行単位」にフォールバックする。
+    if len(paragraphs) <= 1 and not saw_blank:
+        non_empty = [ln.strip() for ln in raw_lines if ln.strip()]
+        if len(non_empty) >= 3:
+            return non_empty
+
+    # 極端に長い段落は、改行単位で分割してセル肥大化を避ける（全体が 1 段落扱いになる保険）
+    MAX_CELL_CHARS = 800
+    if any(len(p) > MAX_CELL_CHARS for p in paragraphs):
+        flattened: list[str] = []
+        for para in paragraphs:
+            if len(para) <= MAX_CELL_CHARS:
+                flattened.append(para)
+                continue
+            for ln in para.splitlines():
+                chunk = ln.strip()
+                if chunk:
+                    flattened.append(chunk)
+        return flattened
+
     return paragraphs
 
 

@@ -10,7 +10,6 @@ import {
     CheckboxGroup,
     Checkbox,
     Divider,
-    Switch,
     Group,
     Badge,
     Progress,
@@ -19,12 +18,14 @@ import {
     SegmentedControl,
     NumberInput,
 } from '@mantine/core'
-import { IconUpload, IconPlayerPlay, IconFile, IconX, IconAlertTriangle, IconCrop } from '@tabler/icons-react'
+import { IconUpload, IconPlayerPlay, IconFile, IconX, IconAlertTriangle, IconCrop, IconDeviceFloppy } from '@tabler/icons-react'
 import { useEffect, useRef, useState, type Dispatch, type SetStateAction } from 'react'
 import type { CropRect } from '../types/crop'
 import { CropModal } from '../components/CropModal'
 import { open } from '@tauri-apps/plugin-dialog'
 import { listen } from '@tauri-apps/api/event'
+import { notifications } from '@mantine/notifications'
+import { loadSettings, saveSettings, type AppSettings } from '../api/settings'
 
 type FileWithPath = File & { path?: string }
 
@@ -81,15 +82,16 @@ export function RunJob({
     const logBoxRef = useRef<HTMLDivElement | null>(null)
     const filePathsRef = useRef<string[]>([])
     const [cropTarget, setCropTarget] = useState<string | null>(null)
+    const [savingDefaults, setSavingDefaults] = useState(false)
     const deriveDpiPreset = (dpi: number) =>
         ([200, 300, 400].includes(dpi) ? String(dpi) : 'custom') as '200' | '300' | '400' | 'custom'
 
     const [dpiPreset, setDpiPreset] = useState<'200' | '300' | '400' | 'custom'>(() =>
-        deriveDpiPreset(options.pdfDpi ?? 300)
+        deriveDpiPreset(options.pdfDpi ?? 200)
     )
 
     useEffect(() => {
-        setDpiPreset(deriveDpiPreset(options.pdfDpi ?? 300))
+        setDpiPreset(deriveDpiPreset(options.pdfDpi ?? 200))
     }, [options.pdfDpi])
 
     useEffect(() => {
@@ -141,6 +143,36 @@ export function RunJob({
         }
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [])
+
+    const handleSaveDefaults = async () => {
+        if (savingDefaults) return
+        setSavingDefaults(true)
+        try {
+            const current = await loadSettings()
+            const toSave: AppSettings = {
+                ...current,
+                formats: options.formats,
+                excelMode: options.excelMode,
+                mode: options.mode,
+                pdfDpi: options.pdfDpi,
+            }
+            await saveSettings(toSave)
+            notifications.show({
+                title: '保存しました',
+                message: '実行画面の設定をデフォルトとして保存しました',
+                color: 'green',
+            })
+        } catch (err) {
+            console.error(err)
+            notifications.show({
+                title: 'エラー',
+                message: 'デフォルト設定の保存に失敗しました: ' + String(err),
+                color: 'red',
+            })
+        } finally {
+            setSavingDefaults(false)
+        }
+    }
 
     const chooseFiles = async () => {
         if (!hasTauriRuntime()) return
@@ -448,9 +480,20 @@ export function RunJob({
                         )}
 
                         <Card withBorder shadow="sm" radius="lg" padding="lg">
-                            <Text fw={600} size="sm" c="dimmed" tt="uppercase" mb="sm" style={{ letterSpacing: '0.5px' }}>
-                                オプション
-                            </Text>
+                            <Group justify="space-between" align="center" mb="sm">
+                                <Text fw={600} size="sm" c="dimmed" tt="uppercase" style={{ letterSpacing: '0.5px' }}>
+                                    オプション
+                                </Text>
+                                <Button
+                                    size="xs"
+                                    variant="light"
+                                    leftSection={<IconDeviceFloppy size={16} />}
+                                    loading={savingDefaults}
+                                    onClick={handleSaveDefaults}
+                                >
+                                    デフォルトに保存
+                                </Button>
+                            </Group>
 
                             <Stack gap="md">
                                 <CheckboxGroup
@@ -488,15 +531,6 @@ export function RunJob({
                                     </Stack>
                                 )}
 
-                                {options.formats.includes('xlsx') && (
-                                    <Switch
-                                        label="Excelのメタシートを付与"
-                                        description="シート一覧や変換条件などの情報を追加します"
-                                        checked={options.excelMetaSheet}
-                                        onChange={() => setOptions((prev) => ({ ...prev, excelMetaSheet: !prev.excelMetaSheet }))}
-                                    />
-                                )}
-
                                 <Divider />
 
                                 <Stack gap="xs">
@@ -519,9 +553,9 @@ export function RunJob({
                                 <Divider />
 
                                 <Stack gap="xs">
-                                    <Text size="sm" fw={500}>PDF DPI（今回のみ）</Text>
+                                    <Text size="sm" fw={500}>PDF DPI</Text>
                                     <Text size="xs" c="dimmed">
-                                        設定画面のデフォルト値を一時的に上書きします（PDF入力時のみ有効）
+                                        PDF 入力時の変換 DPI です。保存しない場合はアプリ終了までの一時設定になります。
                                     </Text>
                                     <SegmentedControl
                                         value={dpiPreset}
@@ -544,7 +578,7 @@ export function RunJob({
                                             label="カスタム DPI"
                                             min={72}
                                             max={600}
-                                            value={options.pdfDpi ?? 300}
+                                            value={options.pdfDpi ?? 200}
                                             onChange={(v) => {
                                                 const parsed = typeof v === 'number' ? v : null
                                                 if (!parsed) return
@@ -553,21 +587,6 @@ export function RunJob({
                                         />
                                     )}
                                 </Stack>
-
-                                <Divider />
-
-                                <Switch
-                                    label="画像をPDF化してから処理"
-                                    description="複数の画像を1つのPDFとしてまとめて処理します"
-                                    checked={options.imageAsPdf}
-                                    onChange={() => setOptions((prev) => ({ ...prev, imageAsPdf: !prev.imageAsPdf }))}
-                                />
-                                <Switch
-                                    label="図表抽出 (Experimental)"
-                                    description="図表を画像として切り出します"
-                                    checked={options.enableFigure}
-                                    onChange={() => setOptions((prev) => ({ ...prev, enableFigure: !prev.enableFigure }))}
-                                />
                             </Stack>
                         </Card>
                     </Stack>

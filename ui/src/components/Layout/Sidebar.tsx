@@ -4,9 +4,12 @@ import {
     IconPlayerPlay,
     IconSettings,
     IconFileDownload,
+    IconHelp,
+    IconInfoCircle,
+    IconBook,
 } from '@tabler/icons-react'
 
-export type PageKey = 'home' | 'run' | 'settings' | 'result'
+export type PageKey = 'home' | 'run' | 'settings' | 'result' | 'help_about' | 'help_howto'
 
 interface SidebarProps {
     activePage: PageKey
@@ -31,7 +34,7 @@ export function Sidebar({ activePage, setPage }: SidebarProps) {
                 tt="uppercase" 
                 style={{ letterSpacing: '0.5px' }}
             >
-                Menu
+                メニュー
             </Text>
             {navItems.map((item) => (
                 <NavLink
@@ -62,6 +65,43 @@ export function Sidebar({ activePage, setPage }: SidebarProps) {
                     })}
                 />
             ))}
+
+            <NavLink
+                label="ヘルプ"
+                leftSection={<IconHelp size={18} stroke={1.5} />}
+                mt="md"
+                defaultOpened
+                variant="light"
+                styles={(theme) => ({
+                    root: {
+                        borderRadius: theme.radius.md,
+                        fontWeight: 500,
+                        padding: '10px 12px',
+                        transition: 'all 0.2s ease',
+                        maxWidth: '100%',
+                        overflow: 'hidden',
+                        '&:hover': {
+                            backgroundColor: theme.colors.gray[0],
+                        },
+                    },
+                    label: {
+                        fontSize: theme.fontSizes.sm,
+                    },
+                })}
+            >
+                <NavLink
+                    label="このアプリの使い方"
+                    leftSection={<IconBook size={16} stroke={1.5} />}
+                    active={activePage === 'help_howto'}
+                    onClick={() => setPage('help_howto')}
+                />
+                <NavLink
+                    label="バージョン情報"
+                    leftSection={<IconInfoCircle size={16} stroke={1.5} />}
+                    active={activePage === 'help_about'}
+                    onClick={() => setPage('help_about')}
+                />
+            </NavLink>
         </Stack>
     )
 }

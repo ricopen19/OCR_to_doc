@@ -5,6 +5,8 @@ export interface AppSettings {
     formats: string[]
     imageAsPdf: boolean
     enableFigure: boolean
+    mode?: 'lite' | 'full'
+    excelMode?: 'layout' | 'table'
     outputRoot?: string
     excelMetaSheet?: boolean
     chunkSize?: number
@@ -20,11 +22,13 @@ const DEFAULT_SETTINGS: AppSettings = {
     formats: ['md'],
     imageAsPdf: false,
     enableFigure: true,
+    mode: 'lite',
+    excelMode: 'layout',
     excelMetaSheet: true,
     chunkSize: 10,
     enableRest: false,
     restSeconds: 10,
-    pdfDpi: 300,
+    pdfDpi: 200,
     windowWidth: 1200,
     windowHeight: 760,
     useGpu: false,

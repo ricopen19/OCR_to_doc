@@ -17,6 +17,8 @@ import { Home } from './pages/Home'
 import { RunJob } from './pages/RunJob'
 import { Result } from './pages/Result'
 import { Settings, type SettingsHandle } from './pages/Settings'
+import { HelpAbout } from './pages/HelpAbout'
+import { HelpHowToUse } from './pages/HelpHowToUse'
 import { loadSettings, type AppSettings } from './api/settings'
 import type { CropRect } from './types/crop'
 
@@ -62,7 +64,7 @@ function App() {
     pdfDpi: number
     fileOptions: Record<string, { start?: number; end?: number; crop?: CropRect }>
   }>({
-    formats: ['md', 'docx', 'xlsx'],
+    formats: ['md'],
     imageAsPdf: false,
     enableFigure: true,
     useGpu: false,
@@ -72,7 +74,7 @@ function App() {
     chunkSize: 10,
     enableRest: false,
     restSeconds: 10,
-    pdfDpi: 300,
+    pdfDpi: 200,
     fileOptions: {},
   })
 
@@ -102,11 +104,13 @@ function App() {
           imageAsPdf: s.imageAsPdf,
           enableFigure: s.enableFigure,
           useGpu: Boolean(s.useGpu),
+          mode: s.mode ?? 'lite',
+          excelMode: s.excelMode ?? 'layout',
           excelMetaSheet: s.excelMetaSheet ?? true,
           chunkSize: s.chunkSize ?? 10,
           enableRest: s.enableRest,
           restSeconds: s.restSeconds ?? 10,
-          pdfDpi: s.pdfDpi ?? 300,
+          pdfDpi: s.pdfDpi ?? 200,
         }))
     }).catch(console.error)
   }, [])
@@ -129,11 +133,13 @@ function App() {
       imageAsPdf: s.imageAsPdf,
       enableFigure: s.enableFigure,
       useGpu: Boolean(s.useGpu),
+      mode: s.mode ?? 'lite',
+      excelMode: s.excelMode ?? 'layout',
       excelMetaSheet: s.excelMetaSheet ?? true,
       chunkSize: s.chunkSize ?? 10,
       enableRest: s.enableRest,
       restSeconds: s.restSeconds ?? 10,
-      pdfDpi: s.pdfDpi ?? 300,
+      pdfDpi: s.pdfDpi ?? 200,
     }))
   }
 
@@ -320,6 +326,8 @@ function App() {
             {page === 'settings' && (
               <Settings ref={settingsRef} onSaved={handleSettingsSaved} />
             )}
+            {page === 'help_howto' && <HelpHowToUse />}
+            {page === 'help_about' && <HelpAbout />}
           </Container>
         </AppShell.Main>
       </AppShell>

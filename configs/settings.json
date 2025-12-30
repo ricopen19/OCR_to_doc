@@ -4,12 +4,14 @@
   ],
   "imageAsPdf": true,
   "enableFigure": true,
+  "mode": "lite",
+  "excelMode": "layout",
   "useGpu": false,
   "outputRoot": null,
   "chunkSize": null,
   "enableRest": false,
   "restSeconds": null,
-  "pdfDpi": 300,
+  "pdfDpi": 200,
   "windowWidth": 771,
   "windowHeight": 927
 }

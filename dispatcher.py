@@ -309,7 +309,13 @@ def run(
     if "xlsx" in formats and output_dir:
         # json -> xlsx
         print("[dispatcher] processing excel_via=json")
-        _convert_to_excel(output_dir, output_root, excel_mode=excel_mode, excel_meta_sheet=excel_meta_sheet)
+        _convert_to_excel(
+            output_dir,
+            output_root,
+            input_path=path,
+            excel_mode=excel_mode,
+            excel_meta_sheet=excel_meta_sheet,
+        )
 
     if "csv" in formats and output_dir:
         print("[dispatcher] processing csv_via=json")
@@ -388,6 +394,7 @@ def _run_image(
 
     output_dir = _ensure_output_dir(image_path, output_root)
     convert_dir = output_dir / CONVERTED_DIR_NAME
+    convert_dir.mkdir(parents=True, exist_ok=True)
     try:
         conversion = ensure_png_image(image_path, convert_dir=convert_dir, svg_dpi=svg_dpi)
     except ImageConversionError as exc:
@@ -481,6 +488,7 @@ def _convert_to_excel(
     output_dir: Path,
     output_root: Path,
     *,
+    input_path: Path,
     excel_mode: str,
     excel_meta_sheet: bool,
 ) -> None:
@@ -561,8 +569,8 @@ def _convert_to_excel(
     sheet_names = wb.sheetnames.copy()
     # Mock args for add_meta_sheet
     class MockArgs:
-        input = "merged_json_pipeline"
-        format = "json"
+        input = input_path
+        format = input_path.suffix.lower().lstrip(".")
         output = xlsx_path
     
     if excel_meta_sheet:

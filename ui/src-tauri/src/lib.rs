@@ -369,6 +369,10 @@ struct AppSettings {
     #[serde(default)]
     enable_figure: bool,
     #[serde(default)]
+    mode: Option<String>,
+    #[serde(default)]
+    excel_mode: Option<String>,
+    #[serde(default)]
     use_gpu: bool,
     #[serde(default)]
     output_root: Option<String>,
@@ -410,13 +414,15 @@ fn load_settings_from_disk(project_root: &std::path::Path) -> Result<AppSettings
             formats: vec!["md".into()],
             image_as_pdf: false,
             enable_figure: true,
+            mode: Some("lite".into()),
+            excel_mode: Some("layout".into()),
             use_gpu: false,
             output_root: None,
             excel_meta_sheet: true,
             chunk_size: Some(10),
             enable_rest: false,
             rest_seconds: Some(10),
-            pdf_dpi: Some(300),
+            pdf_dpi: Some(200),
             window_width: Some(1200),
             window_height: Some(760),
         })

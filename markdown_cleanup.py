@@ -29,6 +29,8 @@ TEX_TEXT_COMMAND_PATTERN = re.compile(r"\\text\{([^}]*)\}")
 TEX_COMMAND_PATTERN = re.compile(r"\\[A-Za-z]+")
 TEX_FRACTION_PATTERN = re.compile(r"\\frac\{([^{}]+)\}\{([^{}]+)\}")
 TEX_SUB_SUP_PATTERN = re.compile(r"([A-Za-z]+)\s*[_^]\s*\{?(\d+)\}?")
+TABLE_RULE_PATTERN = re.compile(r"^:?-{1,}:?$")
+DIVIDER_CELL_PATTERN = re.compile(r"^(?P<left>:)?(?P<dashes>-+)(?P<right>:)?$")
 
 
 def clean_text(line: str) -> str:
@@ -94,6 +96,171 @@ def sanitize_media_paths(text: str) -> str:
 
     return MEDIA_PATH_PATTERN.sub(repl, text)
 
+
+def _is_md_table_line(line: str) -> bool:
+    stripped = line.strip()
+    return stripped.startswith("|") and stripped.count("|") >= 1
+
+
+def _split_md_table_line(line: str) -> list[str]:
+    stripped = line.strip()
+    if not stripped:
+        return []
+    if stripped.startswith("|"):
+        stripped = stripped[1:]
+    if stripped.endswith("|"):
+        stripped = stripped[:-1]
+    return [cell.strip() for cell in stripped.split("|")]
+
+
+def _is_table_divider_line(line: str) -> bool:
+    if not _is_md_table_line(line):
+        return False
+    cells = _split_md_table_line(line)
+    return len(cells) >= 2 and all(TABLE_RULE_PATTERN.match(cell.replace(" ", "")) for cell in cells)
+
+
+def _normalize_table_row(row_text: str, expected_cols: int) -> str:
+    working = row_text.strip()
+    if not working.startswith("|"):
+        working = "|" + working
+    if not working.endswith("|"):
+        working = working + "|"
+
+    cells = _split_md_table_line(working)
+    if len(cells) < expected_cols:
+        cells = cells + [""] * (expected_cols - len(cells))
+    elif len(cells) > expected_cols:
+        merged_tail = "|".join(cells[expected_cols - 1 :])
+        cells = cells[: expected_cols - 1] + [merged_tail]
+    cells = [cell.strip() for cell in cells]
+    return "|" + "|".join(cells) + "|"
+
+
+def _normalize_divider_line(line: str, expected_cols: int) -> str:
+    cells = _split_md_table_line(line)
+    if len(cells) < expected_cols:
+        cells = cells + ["-"] * (expected_cols - len(cells))
+    elif len(cells) > expected_cols:
+        cells = cells[:expected_cols]
+
+    normalized: list[str] = []
+    for cell in cells:
+        compact = cell.replace(" ", "")
+        match = DIVIDER_CELL_PATTERN.match(compact)
+        if not match:
+            normalized.append("---")
+            continue
+        left = ":" if match.group("left") else ""
+        right = ":" if match.group("right") else ""
+        dashes = "-" * max(3, len(match.group("dashes")))
+        normalized.append(f"{left}{dashes}{right}")
+    return "|" + "|".join(normalized) + "|"
+
+
+def _row_is_flushable(row_text: str, expected_cols: int) -> bool:
+    working = row_text.strip()
+    if not working.endswith("|"):
+        return False
+    cells = _split_md_table_line(working)
+    return len(cells) >= expected_cols
+
+
+def normalize_broken_markdown_tables(text: str, *, max_header_lines: int = 12) -> str:
+    """Detect Markdown table blocks and join broken multi-line rows using <br>.
+
+    This runs on full text and only touches regions that look like tables
+    (a header row followed by a divider line).
+    """
+
+    lines = text.splitlines()
+    out: list[str] = []
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        if not _is_md_table_line(line) or _is_table_divider_line(line):
+            out.append(line)
+            i += 1
+            continue
+
+        header_buf = line.strip()
+        divider_index = None
+        j = i + 1
+        consumed = 0
+        while j < len(lines) and consumed < max_header_lines:
+            candidate = lines[j]
+            if candidate.strip() == "":
+                break
+            if _is_table_divider_line(candidate):
+                divider_index = j
+                break
+            header_buf = header_buf + "<br>" + candidate.strip()
+            j += 1
+            consumed += 1
+
+        if divider_index is None:
+            out.append(line)
+            i += 1
+            continue
+
+        expected_cols = len(_split_md_table_line(lines[divider_index]))
+        if expected_cols < 2:
+            out.append(line)
+            i += 1
+            continue
+
+        header_line = _normalize_table_row(header_buf, expected_cols)
+        divider_line = _normalize_divider_line(lines[divider_index], expected_cols)
+        body_lines: list[str] = []
+
+        current_row: str | None = None
+        k = divider_index + 1
+        aborted = False
+        while k < len(lines):
+            candidate = lines[k]
+            stripped = candidate.strip()
+            if stripped == "":
+                if current_row is not None:
+                    if not _row_is_flushable(current_row, expected_cols):
+                        aborted = True
+                        break
+                    body_lines.append(_normalize_table_row(current_row, expected_cols))
+                    current_row = None
+                break
+
+            if current_row is None:
+                if _is_md_table_line(candidate):
+                    current_row = candidate.strip()
+                    k += 1
+                    continue
+                break
+
+            if _row_is_flushable(current_row, expected_cols):
+                if _is_md_table_line(candidate):
+                    body_lines.append(_normalize_table_row(current_row, expected_cols))
+                    current_row = candidate.strip()
+                    k += 1
+                    continue
+                body_lines.append(_normalize_table_row(current_row, expected_cols))
+                current_row = None
+                break
+
+            current_row = current_row + "<br>" + stripped
+            k += 1
+
+        if aborted:
+            out.append(line)
+            i += 1
+            continue
+
+        out.append(header_line)
+        out.append(divider_line)
+        out.extend(body_lines)
+        i = k
+
+    return "\n".join(out)
+
+
 def cleanup_stray_markers(text: str) -> str:
     """Remove stray regex backreferences left around media tags and <br>."""
 
@@ -150,13 +317,11 @@ def finalize_html_tokens(text: str) -> str:
     }
     for pattern, repl in replacements.items():
         text = re.sub(pattern, repl, text, flags=re.IGNORECASE)
-    text = text.replace("<br>", "\n")
     return text
 
 
 def normalize_layout_marks(text: str) -> str:
-    text = re.sub(r"\s*<br>\s*", "\n", text)
-    text = re.sub(r"(<img[^>]+>)\s*\n+", r"\1\n", text)
+    text = re.sub(r"\s*<br>\s*", "<br>", text)
     text = PAGE_TAIL_PATTERN.sub(lambda m: f"（p.{m.group(1)}）", text)
     text = BULLET_PATTERN.sub(lambda m: f"{m.group(1)}- ", text)
     text = SECTION_ITEM_PATTERN.sub(lambda m: format_section_item(m), text)
@@ -219,6 +384,7 @@ def clean_file(path: Path, inplace: bool = True) -> Path:
             continue
         cleaned_lines.append(cleaned)
     cleaned = "\n".join(cleaned_lines)
+    cleaned = normalize_broken_markdown_tables(cleaned)
     cleaned = demote_inner_headings_between_pages(cleaned)
     cleaned = finalize_html_tokens(cleaned)
     if inplace:

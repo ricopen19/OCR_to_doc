@@ -20,7 +20,12 @@ class PlainTextTests(unittest.TestCase):
         md = "数学$mathematics$ と $x+y$"
         self.assertEqual(to_plain_text(md), "数学mathematics と x+y")
 
+    def test_split_text_to_paragraphs_fallbacks_to_lines_without_blank(self) -> None:
+        from export_excel_poc import split_text_to_paragraphs
+
+        text = "line1\nline2\nline3\n"
+        self.assertEqual(split_text_to_paragraphs(text), ["line1", "line2", "line3"])
+
 
 if __name__ == "__main__":
     unittest.main()
-

@@ -58,6 +58,33 @@ poetry run python dispatcher.py sample.pdf --formats md docx
 poetry run python dispatcher.py sample.pdf -- --start 11 --end 20
 ```
 
+## ライセンス / 利用条件（暫定）
+- 本アプリは **非営利（教育/研究/個人利用）向けに限定公開**します。
+- 金銭授受が発生する利用（有償PoC/受託/コンサル/業務利用など）は不可です。
+- 社内業務の効率化・コスト削減を目的とした利用は商用扱いの可能性が高いです。
+- 出力結果（OCRテキストや加工済みファイル）の外部提供は商用扱いとなる可能性があります。
+- 詳細・判断基準は YomiToku のガイドラインを参照してください。  
+  https://kotaro-kinoshita.github.io/yomitoku/commercial_use_guideline/
+
+## ビルド番号 / コミットの埋め込み
+ヘルプ画面の「ビルド番号」「コミット」は Vite の環境変数で埋め込みます。
+
+```bash
+cd ui
+VITE_BUILD_NUMBER=$(date +%Y%m%d.%H%M) \
+VITE_GIT_SHA=$(git rev-parse --short HEAD) \
+npm run build
+```
+
+Tauri ビルドにも渡す場合は同様に環境変数を付けて実行します。
+
+```bash
+cd ui
+VITE_BUILD_NUMBER=$(date +%Y%m%d.%H%M) \
+VITE_GIT_SHA=$(git rev-parse --short HEAD) \
+npm run tauri:build
+```
+
 ## 参考ドキュメント
 - 確定仕様（実装済み/入出力）: `docs/spec.md`
 - CLI コマンド一覧: `docs/cli_commands.md`

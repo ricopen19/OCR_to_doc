@@ -30,6 +30,34 @@ class MarkdownCleanupTests(unittest.TestCase):
         self.assertIn("log_2 n", cleaned)
         self.assertNotIn("$", cleaned)
 
+    def test_repair_broken_table_rows_with_br(self) -> None:
+        content = """# Page 1
+## 詳細情報
+|区間|道路|距離と時間|値段円:割引料金詳細|
+|-|-|-|-|
+|御殿場
+↓
+浜松|東名高速道路|146.3km
+95分|通常料金:3740円
+ETC料金:3740円
+ETC2.0料金:3740円
+- 深夜割引0-4時/30%:2620円
+- 休日割引:2620円|
+ルート3
+"""
+        expected_row = (
+            "|御殿場<br>↓<br>浜松|東名高速道路|146.3km<br>95分|"
+            "通常料金:3740円<br>ETC料金:3740円<br>ETC2.0料金:3740円<br>"
+            "- 深夜割引0-4時/30%:2620円<br>- 休日割引:2620円|"
+        )
+        with tempfile.TemporaryDirectory() as tmpdir:
+            md_path = Path(tmpdir) / "input.md"
+            md_path.write_text(content, encoding="utf-8")
+            clean_file(md_path, inplace=True)
+            cleaned = md_path.read_text(encoding="utf-8")
+            self.assertIn(expected_row, cleaned)
+            self.assertIn("\nルート3", cleaned)
+
 
 if __name__ == "__main__":
     unittest.main()
