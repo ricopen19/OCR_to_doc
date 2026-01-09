@@ -7,9 +7,10 @@ import {
     IconHelp,
     IconInfoCircle,
     IconBook,
+    IconAlertTriangle,
 } from '@tabler/icons-react'
 
-export type PageKey = 'home' | 'run' | 'settings' | 'result' | 'help_about' | 'help_howto'
+export type PageKey = 'home' | 'run' | 'settings' | 'result' | 'help_about' | 'help_howto' | 'help_troubleshooting'
 
 interface SidebarProps {
     activePage: PageKey
@@ -94,6 +95,12 @@ export function Sidebar({ activePage, setPage }: SidebarProps) {
                     leftSection={<IconBook size={16} stroke={1.5} />}
                     active={activePage === 'help_howto'}
                     onClick={() => setPage('help_howto')}
+                />
+                <NavLink
+                    label="トラブルシューティング"
+                    leftSection={<IconAlertTriangle size={16} stroke={1.5} />}
+                    active={activePage === 'help_troubleshooting'}
+                    onClick={() => setPage('help_troubleshooting')}
                 />
                 <NavLink
                     label="バージョン情報"

@@ -36,14 +36,17 @@ export function Result({ outputs, resultText, error, jobId, inputPaths }: Result
 
     const toPlainText = (md: string) => {
         let text = md || ''
+        text = text.replace(/(?:<+|＜+|〈+)\s*br\s*(?:>+|＞+|〉+)/gi, '<br>')
         text = text.replace(/<br\s*\/?>/gi, '\n')
         // code fences: keep contents, drop markers
         text = text.replace(/```[^\n]*\n/g, '')
         text = text.replace(/```/g, '')
-        // images (html): <img src="..."> -> [画像: path]
-        text = text.replace(/<img[^>]*src="([^"]+)"[^>]*>/gi, '[画像: $1]')
-        // images (md): ![alt](url) -> [画像: url]
-        text = text.replace(/!\[[^\]]*\]\(([^)]+)\)/g, '[画像: $1]')
+        // images (html): <img src="..."> -> removed for preview
+        text = text.replace(/<img[^>]*src="([^"]+)"[^>]*>/gi, ' ')
+        // images (md): ![alt](url) -> removed for preview
+        text = text.replace(/!\[[^\]]*\]\(([^)]+)\)/g, ' ')
+        // images (label): [画像: path] -> removed for preview
+        text = text.replace(/\[画像:\s*[^\]]+\]/g, ' ')
         // links: [text](url) -> text
         text = text.replace(/\[([^\]]+)\]\([^\)]*\)/g, '$1')
         // headings: "# Title" -> "Title"
@@ -81,6 +84,8 @@ export function Result({ outputs, resultText, error, jobId, inputPaths }: Result
         for (let i = 0; i < 3; i++) text = stripMathOnce(text)
         // html tags (after img conversion)
         text = text.replace(/<\/?[^>]+>/g, '')
+        // trailing backslashes at line end
+        text = text.replace(/\\+(\s*)$/gm, '$1')
         // normalize blank lines
         text = text.replace(/\n{3,}/g, '\n\n')
         return text.trim()

@@ -12,6 +12,7 @@ import {
     Divider,
     NumberInput,
     Collapse,
+    SegmentedControl,
 } from '@mantine/core'
 import { IconDeviceFloppy, IconFolder } from '@tabler/icons-react'
 import { open } from '@tauri-apps/plugin-dialog'
@@ -44,8 +45,12 @@ export const Settings = forwardRef<SettingsHandle, SettingsProps>(function Setti
 
     useEffect(() => {
         loadSettings().then((s) => {
-            setSettings(s)
-            setInitialSnapshot(settingsSnapshot(s))
+            const normalized: AppSettings = {
+                ...s,
+                previewQuality: s.previewQuality ?? 'light',
+            }
+            setSettings(normalized)
+            setInitialSnapshot(settingsSnapshot(normalized))
         }).catch((err) => {
             console.error(err)
             notifications.show({
@@ -70,6 +75,7 @@ export const Settings = forwardRef<SettingsHandle, SettingsProps>(function Setti
             const toSave: AppSettings = {
                 ...settings,
                 outputRoot: outputRootTrimmed ? outputRootTrimmed : undefined,
+                previewQuality: settings.previewQuality ?? 'light',
             }
             await saveSettings(toSave)
             setSettings(toSave)
@@ -275,14 +281,43 @@ export const Settings = forwardRef<SettingsHandle, SettingsProps>(function Setti
                     <Text fw={600} size="sm" c="dimmed" tt="uppercase" mb="sm" style={{ letterSpacing: '0.5px' }}>
                         パフォーマンス
                     </Text>
-                    <Switch
-                        label="GPU で処理する（対応環境のみ）"
-                        description="ON にすると GPU を優先して利用します。動作が不安定な場合は OFF を推奨します。"
-                        checked={Boolean(settings.useGpu)}
-                        onChange={() =>
-                            setSettings((prev) => (prev ? { ...prev, useGpu: !prev.useGpu } : prev))
-                        }
-                    />
+                    <Stack gap="md">
+                        <Stack gap={4}>
+                            <Text size="sm" fw={600}>
+                                トリミングプレビュー品質
+                            </Text>
+                            <Text size="xs" c="dimmed">
+                                プレビュー時の解像度を調整します（最終出力は影響しません）。
+                            </Text>
+                            <SegmentedControl
+                                value={settings.previewQuality ?? 'light'}
+                                onChange={(value) =>
+                                    setSettings((prev) =>
+                                        prev
+                                            ? {
+                                                  ...prev,
+                                                  previewQuality: value as AppSettings['previewQuality'],
+                                              }
+                                            : prev
+                                    )
+                                }
+                                data={[
+                                    { label: '軽量', value: 'light' },
+                                    { label: '標準', value: 'standard' },
+                                    { label: '高品質', value: 'high' },
+                                ]}
+                            />
+                        </Stack>
+                        <Divider />
+                        <Switch
+                            label="GPU で処理する（対応環境のみ）"
+                            description="ON にすると GPU を優先して利用します。動作が不安定な場合は OFF を推奨します。"
+                            checked={Boolean(settings.useGpu)}
+                            onChange={() =>
+                                setSettings((prev) => (prev ? { ...prev, useGpu: !prev.useGpu } : prev))
+                            }
+                        />
+                    </Stack>
                 </Card>
 
                 {/* Stability / Expert Settings */}

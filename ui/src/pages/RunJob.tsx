@@ -19,18 +19,42 @@ import {
     NumberInput,
 } from '@mantine/core'
 import { IconUpload, IconPlayerPlay, IconFile, IconX, IconAlertTriangle, IconCrop, IconDeviceFloppy } from '@tabler/icons-react'
-import { useEffect, useRef, useState, type Dispatch, type SetStateAction } from 'react'
+import { useCallback, useEffect, useRef, useState, type Dispatch, type SetStateAction } from 'react'
 import type { CropRect } from '../types/crop'
 import { CropModal } from '../components/CropModal'
 import { open } from '@tauri-apps/plugin-dialog'
 import { listen } from '@tauri-apps/api/event'
 import { notifications } from '@mantine/notifications'
 import { loadSettings, saveSettings, type AppSettings } from '../api/settings'
+import { saveClipboardImage } from '../api/clipboard'
 
 type FileWithPath = File & { path?: string }
 
 function hasTauriRuntime() {
     return typeof window !== 'undefined' && ('__TAURI__' in window || '__TAURI_INTERNALS__' in window)
+}
+
+function resolveImageExtension(mime: string) {
+    const lowered = mime.toLowerCase()
+    if (lowered.includes('png')) return 'png'
+    if (lowered.includes('jpeg') || lowered.includes('jpg')) return 'jpg'
+    if (lowered.includes('bmp')) return 'bmp'
+    if (lowered.includes('gif')) return 'gif'
+    if (lowered.includes('webp')) return 'webp'
+    if (lowered.includes('tiff') || lowered.includes('tif')) return 'tiff'
+    return 'png'
+}
+
+function findClipboardImages(items: DataTransferItemList | undefined | null) {
+    if (!items) return []
+    const files: File[] = []
+    for (const item of Array.from(items)) {
+        if (item.kind === 'file' && item.type.startsWith('image/')) {
+            const file = item.getAsFile()
+            if (file) files.push(file)
+        }
+    }
+    return files
 }
 
 export interface RunJobOptions {
@@ -51,6 +75,8 @@ export interface RunJobOptions {
 interface RunJobProps {
     filePaths: string[]
     setFilePaths: (paths: string[]) => void
+    addTempPaths: (paths: string[]) => void
+    clearTempPaths: () => void
     status: 'idle' | 'running' | 'done'
     setStatus: (status: 'idle' | 'running' | 'done') => void
     progress: number
@@ -62,11 +88,14 @@ interface RunJobProps {
     onRun: () => void
     options: RunJobOptions
     setOptions: Dispatch<SetStateAction<RunJobOptions>>
+    previewQuality: 'light' | 'standard' | 'high'
 }
 
 export function RunJob({
     filePaths,
     setFilePaths,
+    addTempPaths,
+    clearTempPaths,
     status,
     progress,
     currentMessage,
@@ -77,6 +106,7 @@ export function RunJob({
     onRun,
     options,
     setOptions,
+    previewQuality,
 }: RunJobProps) {
     const fileInputRef = useRef<HTMLInputElement | null>(null)
     const logBoxRef = useRef<HTMLDivElement | null>(null)
@@ -105,6 +135,60 @@ export function RunJob({
     useEffect(() => {
         filePathsRef.current = filePaths
     }, [filePaths])
+
+    const handleClipboardImages = useCallback(
+        async (files: File[]) => {
+            if (files.length === 0) return
+            if (!hasTauriRuntime()) {
+                notifications.show({
+                    title: 'クリップボード',
+                    message: 'クリップボード貼り付けはデスクトップ版で利用できます',
+                    color: 'yellow',
+                })
+                return
+            }
+            try {
+                const savedPaths: string[] = []
+                for (const file of files) {
+                    const buffer = await file.arrayBuffer()
+                    const ext = resolveImageExtension(file.type || 'image/png')
+                    const path = await saveClipboardImage(new Uint8Array(buffer), ext)
+                    savedPaths.push(path)
+                }
+                if (savedPaths.length > 0) {
+                    const merged = Array.from(new Set([...filePathsRef.current, ...savedPaths]))
+                    setFilePaths(merged)
+                    addTempPaths(savedPaths)
+                }
+                setError(null)
+            } catch (err) {
+                console.error(err)
+                notifications.show({
+                    title: '貼り付けに失敗しました',
+                    message: String(err),
+                    color: 'red',
+                })
+            }
+        },
+        [addTempPaths, setError, setFilePaths]
+    )
+
+    useEffect(() => {
+        if (!hasTauriRuntime()) return
+        const onPaste = (event: ClipboardEvent) => {
+            if (status === 'running') return
+            const target = event.target as HTMLElement | null
+            if (target && (target.isContentEditable || target.tagName === 'INPUT' || target.tagName === 'TEXTAREA')) {
+                return
+            }
+            const files = findClipboardImages(event.clipboardData?.items)
+            if (files.length === 0) return
+            event.preventDefault()
+            void handleClipboardImages(files)
+        }
+        window.addEventListener('paste', onPaste)
+        return () => window.removeEventListener('paste', onPaste)
+    }, [handleClipboardImages, status])
 
     useEffect(() => {
         if (!hasTauriRuntime()) return
@@ -268,7 +352,7 @@ export function RunJob({
                                     <ThemeIcon size={48} radius="xl" variant="light" color="blue">
                                         <IconUpload size={24} />
                                     </ThemeIcon>
-                                    <Text fw={600} size="md">クリック または ドラッグ＆ドロップ</Text>
+                                    <Text fw={600} size="md">クリック / ドラッグ＆ドロップ / 貼り付け (Ctrl/Cmd+V)</Text>
                                     <Text size="sm" c="dimmed">
                                         PDF, HEIC, JPG, PNG
                                     </Text>
@@ -306,6 +390,7 @@ export function RunJob({
                                             onClick={(e) => {
                                                 e.stopPropagation();
                                                 setFilePaths([]);
+                                                clearTempPaths();
                                                 setOptions(prev => ({ ...prev, fileOptions: {} }));
                                             }}
                                         >
@@ -390,6 +475,7 @@ export function RunJob({
                         opened={Boolean(cropTarget)}
                         filePath={cropTarget || ''}
                         initialCrop={cropTarget ? options.fileOptions[cropTarget]?.crop : undefined}
+                        previewQuality={previewQuality}
                         onClose={() => setCropTarget(null)}
                         onSave={(crop) => {
                             const p = cropTarget

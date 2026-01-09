@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Match
 
-UNESCAPE_PATTERN = re.compile(r"\\([\-\+\=\{\}\(\)\[\]<>\$\\])")
+UNESCAPE_PATTERN = re.compile(r"\\([\-\+\=\{\}\(\)\[\]<>\$\\!~])")
 EXTRA_BACKSLASH_PATTERN = re.compile(r"\\\\")
 TAG_PATTERN = re.compile(r"<[^>]+>")
 MEDIA_PATH_PATTERN = re.compile(r"(\./(?:(?:figures)|(?:page[_$]*images))/[^)\s]+)")
@@ -31,10 +31,18 @@ TEX_FRACTION_PATTERN = re.compile(r"\\frac\{([^{}]+)\}\{([^{}]+)\}")
 TEX_SUB_SUP_PATTERN = re.compile(r"([A-Za-z]+)\s*[_^]\s*\{?(\d+)\}?")
 TABLE_RULE_PATTERN = re.compile(r"^:?-{1,}:?$")
 DIVIDER_CELL_PATTERN = re.compile(r"^(?P<left>:)?(?P<dashes>-+)(?P<right>:)?$")
+OCR_BR_PATTERN = re.compile(r"(?:<+|＜+|〈+)\s*br\s*(?:>+|＞+|〉+)", re.IGNORECASE)
+TRAILING_BACKSLASH_PATTERN = re.compile(r"\\+(\s*)$")
+LEADING_DOT_PATTERN = re.compile(r"^(\s*)。\s*", re.MULTILINE)
+
+
+def strip_trailing_backslashes(text: str) -> str:
+    return TRAILING_BACKSLASH_PATTERN.sub(r"\1", text)
 
 
 def clean_text(line: str) -> str:
     text = line.rstrip("\n")
+    text = OCR_BR_PATTERN.sub("<br>", text)
     stripped = text.strip()
     if stripped == "$$":
         return ""
@@ -44,7 +52,7 @@ def clean_text(line: str) -> str:
     contains_url = bool(URL_PATTERN.search(text))
     if contains_url:
         cleaned = text.replace("<br>", "").replace("$", "")
-        return sanitize_media_paths(cleaned)
+        return strip_trailing_backslashes(sanitize_media_paths(cleaned))
 
     text = strip_tex_math_delimiters(text)
     text = apply_formatting_templates(text)
@@ -54,7 +62,7 @@ def clean_text(line: str) -> str:
     text = recover_html_tokens(text)
     text = sanitize_media_paths(text)
     text = strip_backrefs(text)
-    return text
+    return strip_trailing_backslashes(text)
 
 
 MEDIA_TOKENS = ("://", "./", ".png", ".jpg", ".jpeg", ".gif", "figures/", "page_images/")
@@ -324,6 +332,7 @@ def normalize_layout_marks(text: str) -> str:
     text = re.sub(r"\s*<br>\s*", "<br>", text)
     text = PAGE_TAIL_PATTERN.sub(lambda m: f"（p.{m.group(1)}）", text)
     text = BULLET_PATTERN.sub(lambda m: f"{m.group(1)}- ", text)
+    text = LEADING_DOT_PATTERN.sub(lambda m: f"{m.group(1)}- ", text)
     text = SECTION_ITEM_PATTERN.sub(lambda m: format_section_item(m), text)
     text = re.sub(r"\n{3,}", "\n\n", text)
     return text

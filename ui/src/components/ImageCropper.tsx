@@ -1,5 +1,5 @@
 import { Box } from '@mantine/core'
-import { useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 
 import type { CropRect } from '../types/crop'
 
@@ -23,10 +23,25 @@ type ImageCropperProps = {
 
 export function ImageCropper({ src, value, onChange }: ImageCropperProps) {
   const imgRef = useRef<HTMLImageElement | null>(null)
+  const dragLayerRef = useRef<HTMLDivElement | null>(null)
+  const dragRef = useRef<{
+    start: { x: number; y: number }
+    current: { x: number; y: number }
+  } | null>(null)
+  const lastPointerRef = useRef<{ x: number; y: number } | null>(null)
+  const scrollParentRef = useRef<HTMLElement | null>(null)
+  const autoScrollRef = useRef<number | null>(null)
+  const moveRafRef = useRef<number | null>(null)
+  const pendingMoveRef = useRef<{ x: number; y: number } | null>(null)
   const [drag, setDrag] = useState<{
     start: { x: number; y: number }
     current: { x: number; y: number }
   } | null>(null)
+
+  const setDragState = (next: typeof drag) => {
+    dragRef.current = next
+    setDrag(next)
+  }
 
   const activeRect = useMemo(() => {
     if (drag) return normalizeRect(drag.start, drag.current)
@@ -53,6 +68,107 @@ export function ImageCropper({ src, value, onChange }: ImageCropperProps) {
     return { x, y }
   }
 
+  const findScrollParent = (el: HTMLElement | null) => {
+    let current = el
+    while (current) {
+      const style = window.getComputedStyle(current)
+      const overflowY = style.overflowY
+      if (
+        (overflowY === 'auto' || overflowY === 'scroll') &&
+        current.scrollHeight > current.clientHeight + 1
+      ) {
+        return current
+      }
+      current = current.parentElement
+    }
+    return (document.scrollingElement as HTMLElement | null) ?? null
+  }
+
+  const stopAutoScroll = () => {
+    if (autoScrollRef.current != null) {
+      cancelAnimationFrame(autoScrollRef.current)
+      autoScrollRef.current = null
+    }
+  }
+
+  const stopMoveRaf = () => {
+    if (moveRafRef.current != null) {
+      cancelAnimationFrame(moveRafRef.current)
+      moveRafRef.current = null
+    }
+    pendingMoveRef.current = null
+  }
+
+  const scheduleDragMove = () => {
+    if (moveRafRef.current != null) return
+    moveRafRef.current = requestAnimationFrame(() => {
+      moveRafRef.current = null
+      const pending = pendingMoveRef.current
+      const dragState = dragRef.current
+      if (!pending || !dragState) return
+      const p = toNormalizedPoint(pending.x, pending.y)
+      if (!p) return
+      setDragState({ start: dragState.start, current: p })
+    })
+  }
+
+  const startAutoScroll = () => {
+    if (autoScrollRef.current != null) return
+    const threshold = 48
+    const maxSpeed = 16
+    const tick = () => {
+      const dragState = dragRef.current
+      const pointer = lastPointerRef.current
+      const scrollParent = scrollParentRef.current
+      if (!dragState || !pointer || !scrollParent) {
+        stopAutoScroll()
+        return
+      }
+
+      let top = 0
+      let bottom = 0
+      if (
+        scrollParent === document.scrollingElement ||
+        scrollParent === document.documentElement ||
+        scrollParent === document.body
+      ) {
+        top = 0
+        bottom = window.innerHeight
+      } else {
+        const rect = scrollParent.getBoundingClientRect()
+        top = rect.top
+        bottom = rect.bottom
+      }
+
+      const distanceTop = Math.max(0, threshold - (pointer.y - top))
+      const distanceBottom = Math.max(0, threshold - (bottom - pointer.y))
+      let delta = 0
+      if (distanceTop > 0) {
+        delta = -Math.ceil((distanceTop / threshold) * maxSpeed)
+      } else if (distanceBottom > 0) {
+        delta = Math.ceil((distanceBottom / threshold) * maxSpeed)
+      }
+
+      if (delta !== 0) {
+        scrollParent.scrollBy({ top: delta })
+        const p = toNormalizedPoint(pointer.x, pointer.y)
+        if (p) {
+          setDragState({ start: dragState.start, current: p })
+        }
+      }
+
+      autoScrollRef.current = requestAnimationFrame(tick)
+    }
+    autoScrollRef.current = requestAnimationFrame(tick)
+  }
+
+  useEffect(() => {
+    return () => {
+      stopAutoScroll()
+      stopMoveRaf()
+    }
+  }, [])
+
   return (
     <Box
       style={{
@@ -73,27 +189,38 @@ export function ImageCropper({ src, value, onChange }: ImageCropperProps) {
 
       {/* Drag layer */}
       <Box
+        ref={dragLayerRef}
         onPointerDown={(e) => {
           const p = toNormalizedPoint(e.clientX, e.clientY)
           if (!p) return
           e.currentTarget.setPointerCapture(e.pointerId)
-          setDrag({ start: p, current: p })
+          stopMoveRaf()
+          lastPointerRef.current = { x: e.clientX, y: e.clientY }
+          scrollParentRef.current = findScrollParent(dragLayerRef.current)
+          setDragState({ start: p, current: p })
           onChange(undefined)
+          startAutoScroll()
         }}
         onPointerMove={(e) => {
-          if (!drag) return
-          const p = toNormalizedPoint(e.clientX, e.clientY)
-          if (!p) return
-          const next = { start: drag.start, current: p }
-          setDrag(next)
+          if (!dragRef.current) return
+          lastPointerRef.current = { x: e.clientX, y: e.clientY }
+          pendingMoveRef.current = { x: e.clientX, y: e.clientY }
+          scheduleDragMove()
         }}
         onPointerUp={(e) => {
-          if (!drag) return
+          const dragState = dragRef.current
+          if (!dragState) return
           try {
-            const rect = normalizeRect(drag.start, drag.current)
+            const p = toNormalizedPoint(e.clientX, e.clientY)
+            const current = p ?? dragState.current
+            const rect = normalizeRect(dragState.start, current)
             if (rect.width > 0.005 && rect.height > 0.005) onChange(rect)
           } finally {
-            setDrag(null)
+            setDragState(null)
+            lastPointerRef.current = null
+            scrollParentRef.current = null
+            stopAutoScroll()
+            stopMoveRaf()
             try {
               e.currentTarget.releasePointerCapture(e.pointerId)
             } catch {

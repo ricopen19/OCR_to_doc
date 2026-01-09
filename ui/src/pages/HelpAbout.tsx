@@ -1,16 +1,16 @@
 import { useEffect, useMemo, useState } from 'react'
 import { Card, Group, Stack, Text, Title } from '@mantine/core'
 import { getName, getTauriVersion, getVersion } from '@tauri-apps/api/app'
+import { notifications } from '@mantine/notifications'
 
 import aboutMarkdownRaw from '../assets/about.md?raw'
+import { openReadme } from '../api/readme'
 import { HelpTextBlocks } from '../components/Help/HelpTextBlocks'
 
 type AppInfo = {
     appName: string
     appVersion: string
     tauriVersion: string
-    buildNumber: string
-    gitSha: string
 }
 
 function detectTauri(): boolean {
@@ -22,8 +22,6 @@ export function HelpAbout() {
         appName: 'OCR to Doc',
         appVersion: 'unknown',
         tauriVersion: 'unknown',
-        buildNumber: import.meta.env.VITE_BUILD_NUMBER ?? 'unknown',
-        gitSha: import.meta.env.VITE_GIT_SHA ?? 'unknown',
     })
 
     const hasTauri = useMemo(() => detectTauri(), [])
@@ -61,14 +59,6 @@ export function HelpAbout() {
                         <Text>{info.appVersion}</Text>
                     </Group>
                     <Group justify="space-between" wrap="wrap" gap="xs">
-                        <Text fw={600}>ビルド番号</Text>
-                        <Text>{info.buildNumber}</Text>
-                    </Group>
-                    <Group justify="space-between" wrap="wrap" gap="xs">
-                        <Text fw={600}>コミット</Text>
-                        <Text>{info.gitSha}</Text>
-                    </Group>
-                    <Group justify="space-between" wrap="wrap" gap="xs">
                         <Text fw={600}>Tauri</Text>
                         <Text>{info.tauriVersion}</Text>
                     </Group>
@@ -77,9 +67,22 @@ export function HelpAbout() {
 
             <Card withBorder radius="lg" padding="lg">
                 <Stack gap="sm">
-                    <Title order={4}>詳細</Title>
-                    <Text c="dimmed">内容は `ui/src/assets/about.md` を編集して更新できます。</Text>
-                    <HelpTextBlocks raw={aboutMarkdownRaw} />
+                    <HelpTextBlocks
+                        raw={aboutMarkdownRaw}
+                        onOpenLocalLink={async (href) => {
+                            if (href !== 'app://readme') return
+                            try {
+                                await openReadme()
+                            } catch (err) {
+                                console.error(err)
+                                notifications.show({
+                                    title: 'エラー',
+                                    message: 'README を開けませんでした',
+                                    color: 'red',
+                                })
+                            }
+                        }}
+                    />
                 </Stack>
             </Card>
         </Stack>

@@ -390,10 +390,16 @@ struct AppSettings {
     window_width: Option<u32>,
     #[serde(default)]
     window_height: Option<u32>,
+    #[serde(default = "default_preview_quality")]
+    preview_quality: String,
 }
 
 fn default_excel_meta_sheet() -> bool {
     true
+}
+
+fn default_preview_quality() -> String {
+    "light".to_string()
 }
 
 fn load_settings_from_disk(project_root: &std::path::Path) -> Result<AppSettings, String> {
@@ -425,6 +431,7 @@ fn load_settings_from_disk(project_root: &std::path::Path) -> Result<AppSettings
             pdf_dpi: Some(200),
             window_width: Some(1200),
             window_height: Some(760),
+            preview_quality: default_preview_quality(),
         })
     }
 }
@@ -468,6 +475,7 @@ fn apply_window_settings(app: &tauri::AppHandle, project_root: &std::path::Path)
 fn run_job(
     paths: Vec<String>,
     options: Option<RunOptions>,
+    cleanup_paths: Option<Vec<String>>,
     state: State<Arc<AppState>>,
 ) -> Result<RunJobResponse, String> {
     if paths.is_empty() {
@@ -558,6 +566,7 @@ fn run_job(
     let project_root_cloned = project_root.clone();
     let paths_cloned = paths.clone();
     let job_id_cloned = job_id.clone();
+    let cleanup_paths_cloned = cleanup_paths.unwrap_or_default();
 
     thread::spawn(move || {
         let mut outputs = Vec::new();
@@ -940,9 +949,47 @@ fn run_job(
                 }
             }
         }
+
+        if !cleanup_paths_cloned.is_empty() {
+            for path in cleanup_paths_cloned {
+                if let Err(e) = fs::remove_file(&path) {
+                    if let Ok(mut jobs) = state_arc.jobs.lock() {
+                        if let Some(job) = jobs.get_mut(&job_id_cloned) {
+                            job.log.push(format!("cleanup failed: {path} ({e})"));
+                        }
+                    }
+                }
+            }
+        }
     });
 
     Ok(RunJobResponse { job_id })
+}
+
+fn sanitize_extension(extension: Option<String>) -> String {
+    let fallback = "png".to_string();
+    let ext = extension.unwrap_or_default().to_lowercase();
+    let trimmed = ext.trim().trim_start_matches('.');
+    let clean: String = trimmed.chars().filter(|c| c.is_ascii_alphanumeric()).collect();
+    if clean.is_empty() {
+        fallback
+    } else {
+        clean
+    }
+}
+
+#[tauri::command]
+fn save_clipboard_image(data: Vec<u8>, extension: Option<String>) -> Result<String, String> {
+    if data.is_empty() {
+        return Err("empty clipboard image data".into());
+    }
+    let ext = sanitize_extension(extension);
+    let dir = std::env::temp_dir().join("ocr_to_doc");
+    fs::create_dir_all(&dir).map_err(|e| format!("failed to create temp dir: {e}"))?;
+    let filename = format!("clipboard_{}.{}", Uuid::new_v4(), ext);
+    let path = dir.join(filename);
+    fs::write(&path, data).map_err(|e| format!("failed to write clipboard image: {e}"))?;
+    Ok(path.to_string_lossy().to_string())
 }
 
 #[tauri::command]
@@ -951,6 +998,7 @@ fn render_preview(
     page: Option<u32>,
     crop: Option<CropRect>,
     max_long_edge: Option<u32>,
+    pdf_dpi: Option<u32>,
 ) -> Result<PreviewResponse, String> {
     let exe_dir = std::env::current_exe().map_err(|e| format!("failed to get exe path: {e}"))?;
     let project_root = resolve_project_root(&exe_dir).ok_or("failed to resolve project root")?;
@@ -978,6 +1026,9 @@ fn render_preview(
     }
     if let Some(max_le) = max_long_edge {
         cmd.arg("--max-long-edge").arg(max_le.to_string());
+    }
+    if let Some(dpi) = pdf_dpi {
+        cmd.arg("--pdf-dpi").arg(dpi.to_string());
     }
 
     cmd.current_dir(&project_root);
@@ -1505,6 +1556,21 @@ fn open_input_file(path: String) -> Result<(), String> {
 }
 
 #[tauri::command]
+fn open_readme() -> Result<(), String> {
+    let exe_dir = std::env::current_exe().map_err(|e| format!("failed to get exe path: {e}"))?;
+    let project_root = resolve_project_root(&exe_dir).ok_or("failed to resolve project root")?;
+
+    let candidates = ["readme.md", "README.md"];
+    for name in candidates {
+        let path = project_root.join(name);
+        if path.exists() {
+            return open_path_with_default_app(&path);
+        }
+    }
+    Err("README not found".into())
+}
+
+#[tauri::command]
 fn list_recent_results(limit: Option<u32>) -> Result<Vec<RecentResultEntry>, String> {
     let exe_dir = std::env::current_exe().map_err(|e| format!("failed to get exe path: {e}"))?;
     let project_root = resolve_project_root(&exe_dir).ok_or("failed to resolve project root")?;
@@ -1651,6 +1717,7 @@ pub fn run() {
         .manage(Arc::new(AppState::default()))
         .invoke_handler(tauri::generate_handler![
             run_job,
+            save_clipboard_image,
             render_preview,
             get_progress,
             get_result,
@@ -1658,6 +1725,7 @@ pub fn run() {
             open_output,
             open_output_dir,
             open_input_file,
+            open_readme,
             list_recent_results,
             open_result_dir,
             open_result_file,

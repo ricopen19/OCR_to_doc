@@ -19,6 +19,7 @@ import { Result } from './pages/Result'
 import { Settings, type SettingsHandle } from './pages/Settings'
 import { HelpAbout } from './pages/HelpAbout'
 import { HelpHowToUse } from './pages/HelpHowToUse'
+import { HelpTroubleshooting } from './pages/HelpTroubleshooting'
 import { loadSettings, type AppSettings } from './api/settings'
 import type { CropRect } from './types/crop'
 
@@ -46,10 +47,13 @@ function App() {
   const [etaSeconds, setEtaSeconds] = useState<number | null>(null)
   const [outputs, setOutputs] = useState<string[]>([])
   const [jobInputPaths, setJobInputPaths] = useState<string[]>([])
+  const [tempInputPaths, setTempInputPaths] = useState<string[]>([])
+  const jobCleanupPathsRef = useRef<string[]>([])
   const settingsRef = useRef<SettingsHandle | null>(null)
   const [navConfirmOpen, setNavConfirmOpen] = useState(false)
   const [navPendingPage, setNavPendingPage] = useState<PageKey | null>(null)
   const [navSaving, setNavSaving] = useState(false)
+  const [previewQuality, setPreviewQuality] = useState<'light' | 'standard' | 'high'>('light')
   const [options, setOptions] = useState<{
     formats: string[]
     imageAsPdf: boolean
@@ -112,6 +116,7 @@ function App() {
           restSeconds: s.restSeconds ?? 10,
           pdfDpi: s.pdfDpi ?? 200,
         }))
+        setPreviewQuality(s.previewQuality ?? 'light')
     }).catch(console.error)
   }, [])
 
@@ -141,6 +146,7 @@ function App() {
       restSeconds: s.restSeconds ?? 10,
       pdfDpi: s.pdfDpi ?? 200,
     }))
+    setPreviewQuality(s.previewQuality ?? 'light')
   }
 
   useEffect(() => {
@@ -165,6 +171,25 @@ function App() {
           setResultText(res.preview ?? '')
           setOutputs(res.outputs ?? [])
           setPage('result')
+          const cleanupPaths = jobCleanupPathsRef.current
+          if (cleanupPaths.length > 0) {
+            setFilePaths((prev) => prev.filter((p) => !cleanupPaths.includes(p)))
+            setTempInputPaths((prev) => prev.filter((p) => !cleanupPaths.includes(p)))
+            setOptions((prev) => {
+              if (!prev.fileOptions || Object.keys(prev.fileOptions).length === 0) return prev
+              const nextFileOptions = { ...prev.fileOptions }
+              let changed = false
+              for (const path of cleanupPaths) {
+                if (path in nextFileOptions) {
+                  delete nextFileOptions[path]
+                  changed = true
+                }
+              }
+              if (!changed) return prev
+              return { ...prev, fileOptions: nextFileOptions }
+            })
+            jobCleanupPathsRef.current = []
+          }
         } else if (p.status === 'error') {
           setError(p.error ?? 'unknown error')
           setStatus('idle')
@@ -191,7 +216,9 @@ function App() {
     setCurrentMessage('')
     setEtaSeconds(null)
     try {
-      const job = await runJob(filePaths, options)
+      const cleanupPaths = tempInputPaths.filter((p) => filePaths.includes(p))
+      jobCleanupPathsRef.current = cleanupPaths
+      const job = await runJob(filePaths, options, cleanupPaths)
       setJobId(job.jobId)
     } catch (err) {
       setError(String(err))
@@ -301,6 +328,10 @@ function App() {
               <RunJob
                 filePaths={filePaths}
                 setFilePaths={setFilePaths}
+                addTempPaths={(paths) =>
+                  setTempInputPaths((prev) => Array.from(new Set([...prev, ...paths])))
+                }
+                clearTempPaths={() => setTempInputPaths([])}
                 status={status}
                 setStatus={setStatus}
                 progress={progress}
@@ -312,6 +343,7 @@ function App() {
                 onRun={handleRun}
                 options={options}
                 setOptions={setOptions}
+                previewQuality={previewQuality}
               />
             )}
             {page === 'result' && (
@@ -327,6 +359,7 @@ function App() {
               <Settings ref={settingsRef} onSaved={handleSettingsSaved} />
             )}
             {page === 'help_howto' && <HelpHowToUse />}
+            {page === 'help_troubleshooting' && <HelpTroubleshooting />}
             {page === 'help_about' && <HelpAbout />}
           </Container>
         </AppShell.Main>

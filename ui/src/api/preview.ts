@@ -9,7 +9,7 @@ export type PreviewPayload = {
 
 export async function renderPreview(
   path: string,
-  opts?: { page?: number; crop?: CropRect; maxLongEdge?: number },
+  opts?: { page?: number; crop?: CropRect; maxLongEdge?: number; pdfDpi?: number },
 ): Promise<PreviewPayload> {
   const hasTauri = typeof window !== 'undefined' && ('__TAURI__' in window || '__TAURI_INTERNALS__' in window)
   if (!hasTauri) throw new Error('Tauri 環境外ではプレビューできません')
@@ -18,5 +18,6 @@ export async function renderPreview(
     page: opts?.page,
     crop: opts?.crop,
     maxLongEdge: opts?.maxLongEdge,
+    pdfDpi: opts?.pdfDpi,
   })
 }

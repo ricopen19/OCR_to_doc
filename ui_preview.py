@@ -92,6 +92,7 @@ def main() -> None:
     parser.add_argument("--page", type=int, default=1, help="PDF のページ番号（1起点）")
     parser.add_argument("--crop", help="正規化トリミング（left,top,width,height / 0〜1）")
     parser.add_argument("--max-long-edge", type=int, default=1400, help="長辺の最大 px（プレビュー用）")
+    parser.add_argument("--pdf-dpi", type=int, default=150, help="PDF ラスター化の DPI（プレビュー用）")
     args = parser.parse_args()
 
     base_dir = Path(__file__).resolve().parent
@@ -121,7 +122,7 @@ def main() -> None:
 
         images = convert_from_path(
             str(input_path),
-            dpi=150,
+            dpi=args.pdf_dpi,
             first_page=page,
             last_page=page,
             fmt="png",

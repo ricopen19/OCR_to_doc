@@ -16,19 +16,37 @@ import { renderPreview } from '../api/preview'
 import { ImageCropper } from './ImageCropper'
 import type { CropRect } from '../types/crop'
 
+const PREVIEW_SETTINGS = {
+  light: { maxLongEdge: 1000, pdfDpi: 110 },
+  standard: { maxLongEdge: 1400, pdfDpi: 150 },
+  high: { maxLongEdge: 1800, pdfDpi: 200 },
+} as const
+
+type PreviewQuality = keyof typeof PREVIEW_SETTINGS
+
 type CropModalProps = {
   opened: boolean
   onClose: () => void
   filePath: string
   initialCrop?: CropRect
   onSave: (crop?: CropRect) => void
+  previewQuality?: PreviewQuality
 }
 
 function isPdf(path: string) {
   return path.toLowerCase().endsWith('.pdf')
 }
 
-export function CropModal({ opened, onClose, filePath, initialCrop, onSave }: CropModalProps) {
+export function CropModal({
+  opened,
+  onClose,
+  filePath,
+  initialCrop,
+  onSave,
+  previewQuality,
+}: CropModalProps) {
+  const resolvedPreviewQuality: PreviewQuality = previewQuality ?? 'light'
+  const previewSettings = PREVIEW_SETTINGS[resolvedPreviewQuality]
   const pdf = useMemo(() => isPdf(filePath), [filePath])
   const [tab, setTab] = useState<string>('select')
 
@@ -48,7 +66,11 @@ export function CropModal({ opened, onClose, filePath, initialCrop, onSave }: Cr
     setLoading(true)
     setError(null)
     try {
-      const res = await renderPreview(filePath, { page, maxLongEdge: 1600 })
+      const res = await renderPreview(filePath, {
+        page,
+        maxLongEdge: previewSettings.maxLongEdge,
+        pdfDpi: previewSettings.pdfDpi,
+      })
       setSelectSrc(res.dataUrl)
       setPageCount(res.pageCount ?? null)
       setBasePage(res.page ?? page)
@@ -64,7 +86,12 @@ export function CropModal({ opened, onClose, filePath, initialCrop, onSave }: Cr
     setLoading(true)
     setError(null)
     try {
-      const res = await renderPreview(filePath, { page, crop, maxLongEdge: 1600 })
+      const res = await renderPreview(filePath, {
+        page,
+        crop,
+        maxLongEdge: previewSettings.maxLongEdge,
+        pdfDpi: previewSettings.pdfDpi,
+      })
       setAppliedSrc(res.dataUrl)
       setPageCount(res.pageCount ?? null)
       setPreviewPage(res.page ?? page)

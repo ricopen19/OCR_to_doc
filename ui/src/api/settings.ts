@@ -16,6 +16,7 @@ export interface AppSettings {
     windowWidth?: number
     windowHeight?: number
     useGpu?: boolean
+    previewQuality?: 'light' | 'standard' | 'high'
 }
 
 const DEFAULT_SETTINGS: AppSettings = {
@@ -32,6 +33,7 @@ const DEFAULT_SETTINGS: AppSettings = {
     windowWidth: 1200,
     windowHeight: 760,
     useGpu: false,
+    previewQuality: 'light',
 }
 
 export async function loadSettings(): Promise<AppSettings> {

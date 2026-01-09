@@ -1,4 +1,5 @@
 import { Anchor, Stack, Text } from '@mantine/core'
+import type { ReactNode } from 'react'
 
 export type HelpTextBlock = {
     title: string
@@ -41,21 +42,79 @@ function parseHelpTextBlocks(raw: string): HelpTextBlock[] {
         .filter((e) => e.title.length > 0)
 }
 
-function renderTextWithLinks(text: string) {
+function renderAutoLinks(text: string, keyPrefix: string) {
     const parts = text.split(/(https?:\/\/\S+)/g)
     return parts.map((part, idx) => {
         if (/^https?:\/\/\S+$/.test(part)) {
             return (
-                <Anchor key={idx} href={part} target="_blank" rel="noreferrer">
+                <Anchor key={`${keyPrefix}-url-${idx}`} href={part} target="_blank" rel="noreferrer">
                     {part}
                 </Anchor>
             )
         }
-        return <span key={idx}>{part}</span>
+        return <span key={`${keyPrefix}-text-${idx}`}>{part}</span>
     })
 }
 
-export function HelpTextBlocks({ raw }: { raw: string }) {
+function renderTextWithLinks(text: string, onOpenLocalLink?: (href: string) => void) {
+    const nodes: ReactNode[] = []
+    const linkRegex = /\[([^\]]+)\]\(([^)]+)\)/g
+    let lastIndex = 0
+    let match: RegExpExecArray | null
+    let linkIndex = 0
+
+    while ((match = linkRegex.exec(text)) !== null) {
+        const [full, label, href] = match
+        const start = match.index
+        if (start > lastIndex) {
+            nodes.push(...renderAutoLinks(text.slice(lastIndex, start), `pre-${linkIndex}`))
+        }
+
+        if (href.startsWith('app://') && onOpenLocalLink) {
+            nodes.push(
+                <Anchor
+                    key={`link-${linkIndex}`}
+                    href={href}
+                    onClick={(e) => {
+                        e.preventDefault()
+                        onOpenLocalLink(href)
+                    }}
+                >
+                    {label}
+                </Anchor>
+            )
+        } else if (/^https?:\/\//.test(href)) {
+            nodes.push(
+                <Anchor key={`link-${linkIndex}`} href={href} target="_blank" rel="noreferrer">
+                    {label}
+                </Anchor>
+            )
+        } else {
+            nodes.push(
+                <Anchor key={`link-${linkIndex}`} href={href}>
+                    {label}
+                </Anchor>
+            )
+        }
+
+        lastIndex = start + full.length
+        linkIndex += 1
+    }
+
+    if (lastIndex < text.length) {
+        nodes.push(...renderAutoLinks(text.slice(lastIndex), `post-${linkIndex}`))
+    }
+
+    return nodes
+}
+
+export function HelpTextBlocks({
+    raw,
+    onOpenLocalLink,
+}: {
+    raw: string
+    onOpenLocalLink?: (href: string) => void
+}) {
     const blocks = parseHelpTextBlocks(raw)
     return (
         <Stack gap="md">
@@ -63,11 +122,14 @@ export function HelpTextBlocks({ raw }: { raw: string }) {
                 <Stack key={idx} gap={4}>
                     <Text fw={700}>{block.title}</Text>
                     <Text style={{ whiteSpace: 'pre-wrap' }}>
-                        {block.body ? renderTextWithLinks(block.body) : <Text span c="dimmed">（未設定）</Text>}
+                        {block.body ? (
+                            renderTextWithLinks(block.body, onOpenLocalLink)
+                        ) : (
+                            <Text span c="dimmed">（未設定）</Text>
+                        )}
                     </Text>
                 </Stack>
             ))}
         </Stack>
     )
 }
-

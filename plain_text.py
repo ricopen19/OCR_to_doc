@@ -5,6 +5,7 @@ import re
 IMG_MD_PATTERN = re.compile(r"!\[[^\]]*\]\((?P<url>[^)]+)\)")
 IMG_HTML_PATTERN = re.compile(r"<img[^>]*src=\"(?P<url>[^\"]+)\"[^>]*>", re.IGNORECASE)
 LINK_MD_PATTERN = re.compile(r"\[(?P<text>[^\]]+)\]\([^)]+\)")
+OCR_BR_PATTERN = re.compile(r"(?:<+|＜+|〈+)\s*br\s*(?:>+|＞+|〉+)", re.IGNORECASE)
 
 CODE_FENCE_OPEN_PATTERN = re.compile(r"^```[^\n]*$", re.MULTILINE)
 CODE_FENCE_CLOSE_PATTERN = re.compile(r"^```$", re.MULTILINE)
@@ -62,6 +63,8 @@ def to_plain_text(md: str) -> str:
 
     text = md or ""
 
+    text = OCR_BR_PATTERN.sub("<br>", text)
+
     # normalize <br> early
     text = text.replace("<br>", "\n")
 
@@ -109,4 +112,3 @@ def to_plain_text(md: str) -> str:
     # normalize blank lines
     text = re.sub(r"\n{3,}", "\n\n", text).strip()
     return text
-

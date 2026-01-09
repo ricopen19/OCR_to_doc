@@ -30,6 +30,31 @@ class MarkdownCleanupTests(unittest.TestCase):
         self.assertIn("log_2 n", cleaned)
         self.assertNotIn("$", cleaned)
 
+    def test_ocr_br_marker_is_normalized(self) -> None:
+        line = "a<<<br>>>b"
+        cleaned = clean_text(line)
+        self.assertEqual(cleaned, "a<br>b")
+
+    def test_ocr_br_marker_fullwidth_is_normalized(self) -> None:
+        line = "a＜br＞b"
+        cleaned = clean_text(line)
+        self.assertEqual(cleaned, "a<br>b")
+
+    def test_trailing_backslash_is_removed(self) -> None:
+        line = "line\\"
+        cleaned = clean_text(line)
+        self.assertEqual(cleaned, "line")
+
+    def test_escaped_punctuation_is_unescaped(self) -> None:
+        line = r"note\! and wave\~"
+        cleaned = clean_text(line)
+        self.assertEqual(cleaned, "note! and wave~")
+
+    def test_leading_dot_is_converted_to_bullet(self) -> None:
+        line = "。いつもどおりに...頑張っていく!"
+        cleaned = clean_text(line)
+        self.assertEqual(cleaned, "- いつもどおりに...頑張っていく!")
+
     def test_repair_broken_table_rows_with_br(self) -> None:
         content = """# Page 1
 ## 詳細情報
