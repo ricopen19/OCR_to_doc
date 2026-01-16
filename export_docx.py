@@ -3,7 +3,10 @@ from __future__ import annotations
 import argparse
 import json
 import re
+import shutil
+import subprocess
 import sys
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -18,6 +21,8 @@ TEX_FRACTION_PATTERN = re.compile(r"\\frac\{([^{}]+)\}\{([^{}]+)\}")
 TEX_SUB_SUP_PATTERN = re.compile(r"([A-Za-z]+)\s*[_^]\s*\{?(\d+)\}?")
 
 TABLE_RULE = re.compile(r"^:?-{3,}:?$")
+# OCR 由来で区切り線のダッシュが短い場合があるため 1 文字以上で許容する
+PANDOC_TABLE_DIVIDER = re.compile(r"^\s*\|?(?:\s*:?-{1,}:?\s*\|)+\s*:?-{1,}:?\s*\|?\s*$")
 IMG_HTML_PATTERN = re.compile(r"<img[^>]*src=\"([^\"]+)\"[^>]*>")
 IMG_MD_PATTERN = re.compile(r"!\[[^\]]*\]\(([^)]+)\)")
 WIDTH_PATTERN = re.compile(r"width\s*=\s*\"?([0-9]+(?:\.[0-9]+)?)(px|cm|mm)?\"?")
@@ -41,6 +46,70 @@ def split_table_line(line: str) -> list[str]:
     if stripped.endswith("|"):
         stripped = stripped[:-1]
     return [cell.strip() for cell in stripped.split("|")]
+
+
+def _looks_like_table_row(line: str) -> bool:
+    return "|" in line
+
+
+def _is_table_divider(line: str) -> bool:
+    return bool(PANDOC_TABLE_DIVIDER.match(line.strip()))
+
+
+def _normalize_table_row(line: str, col_count: int) -> str:
+    cells = split_table_line(line)
+    if len(cells) < col_count:
+        cells.extend([""] * (col_count - len(cells)))
+    elif len(cells) > col_count:
+        cells = cells[:col_count]
+    return "| " + " | ".join(cells) + " |"
+
+
+def _build_table_divider(col_count: int) -> str:
+    return "| " + " | ".join(["---"] * col_count) + " |"
+
+
+def _escape_leading_pipe(line: str) -> str:
+    stripped = line.lstrip()
+    if not stripped.startswith("|") or stripped.startswith("\\|"):
+        return line
+    leading = line[: len(line) - len(stripped)]
+    return f"{leading}\\{stripped}"
+
+
+def _preprocess_for_pandoc(lines: list[str]) -> list[str]:
+    out: list[str] = []
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        next_line = lines[i + 1] if i + 1 < len(lines) else ""
+
+        if _looks_like_table_row(line) and _is_table_divider(next_line):
+            header_cells = split_table_line(line)
+            col_count = max(1, len(header_cells))
+            if out and out[-1].strip():
+                out.append("")
+            out.append(_normalize_table_row(line, col_count))
+            out.append(_build_table_divider(col_count))
+            i += 2
+            while i < len(lines):
+                row_line = lines[i]
+                if not row_line.strip() or not _looks_like_table_row(row_line):
+                    break
+                out.append(_normalize_table_row(row_line, col_count))
+                i += 1
+            if out and out[-1].strip():
+                out.append("")
+            while i < len(lines) and not lines[i].strip():
+                i += 1
+            continue
+
+        if line.lstrip().startswith("|"):
+            out.append(_escape_leading_pipe(line))
+        else:
+            out.append(line)
+        i += 1
+    return out
 
 
 def looks_like_divider(row: list[str]) -> bool:
@@ -145,6 +214,14 @@ def to_width(value: str | None):
     return Inches(amount / 96)
 
 
+def _get_max_content_width(document: Document) -> int | None:
+    if not document.sections:
+        return None
+    section = document.sections[0]
+    max_width = section.page_width - section.left_margin - section.right_margin
+    return max(0, int(max_width))
+
+
 def add_image(document: Document, base_dir: Path, src: str, width_token: str | None = None) -> None:
     src = src.strip()
     if src.startswith("./"):
@@ -159,8 +236,16 @@ def add_image(document: Document, base_dir: Path, src: str, width_token: str | N
     paragraph = document.add_paragraph()
     run = paragraph.add_run()
     width = to_width(width_token)
-    kwargs = {"width": width} if width else {}
-    run.add_picture(str(src_path), **kwargs)
+    if width:
+        run.add_picture(str(src_path), width=width)
+        return
+
+    shape = run.add_picture(str(src_path))
+    max_width = _get_max_content_width(document)
+    if max_width and shape.width > max_width:
+        ratio = max_width / shape.width
+        shape.width = int(max_width)
+        shape.height = int(shape.height * ratio)
 
 @dataclass
 class MathRegion:
@@ -449,9 +534,59 @@ def convert_markdown(
     flush_paragraph(document, paragraph_buffer, base_dir)
 
 
-def convert_file(md_path: Path, *, math_mode: str = "text") -> Path:
+def _require_pandoc() -> str:
+    pandoc_path = shutil.which("pandoc")
+    if not pandoc_path:
+        raise RuntimeError("--use-pandoc には pandoc のインストールが必要です。")
+    return pandoc_path
+
+
+def _convert_with_pandoc(md_path: Path) -> Path:
     if not md_path.exists():
         raise FileNotFoundError(f"Markdown ファイルが見つかりません: {md_path}")
+    docx_path = md_path.with_suffix(".docx")
+    pandoc_path = _require_pandoc()
+    processed = _preprocess_for_pandoc(read_markdown(md_path))
+    with tempfile.NamedTemporaryFile(
+        "w",
+        encoding="utf-8",
+        suffix=".pandoc.md",
+        prefix=f"{md_path.stem}_",
+        dir=md_path.parent,
+        delete=False,
+    ) as tmp:
+        tmp.write("\n".join(processed) + "\n")
+        tmp_path = Path(tmp.name)
+    cmd = [
+        pandoc_path,
+        str(tmp_path),
+        "--from",
+        "gfm+tex_math_dollars",
+        "--to",
+        "docx",
+        "--output",
+        str(docx_path),
+        "--resource-path",
+        str(md_path.parent),
+    ]
+    try:
+        subprocess.run(cmd, check=True)
+    except subprocess.CalledProcessError as exc:
+        raise RuntimeError(f"pandoc 変換に失敗しました: {exc}") from exc
+    finally:
+        try:
+            tmp_path.unlink()
+        except Exception:
+            pass
+    return docx_path
+
+
+def convert_file(md_path: Path, *, math_mode: str = "text", use_pandoc: bool = False) -> Path:
+    if not md_path.exists():
+        raise FileNotFoundError(f"Markdown ファイルが見つかりません: {md_path}")
+
+    if use_pandoc:
+        return _convert_with_pandoc(md_path)
 
     docx_path = md_path.with_suffix(".docx")
     document = Document()
@@ -465,6 +600,11 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Markdown を docx に変換する")
     parser.add_argument("markdown", nargs="?", default="merged.md", help="入力 Markdown ファイル")
     parser.add_argument(
+        "--use-pandoc",
+        action="store_true",
+        help="pandoc で Markdown を docx に変換する（md 入力限定）",
+    )
+    parser.add_argument(
         "--math",
         choices=["text", "image"],
         default="text",
@@ -473,7 +613,9 @@ def main() -> None:
     args = parser.parse_args()
     md_path = Path(args.markdown)
     try:
-        docx_path = convert_file(md_path, math_mode=args.math)
+        if args.use_pandoc and md_path.suffix.lower() != ".md":
+            raise ValueError("--use-pandoc は .md 入力限定です。")
+        docx_path = convert_file(md_path, math_mode=args.math, use_pandoc=args.use_pandoc)
         print(f"Word ファイルを出力しました: {docx_path}")
     except Exception as e:
         print(f"エラー: {e}")

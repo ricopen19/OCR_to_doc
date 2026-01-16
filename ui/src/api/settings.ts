@@ -6,6 +6,7 @@ export interface AppSettings {
     imageAsPdf: boolean
     enableFigure: boolean
     mode?: 'lite' | 'full'
+    docxEngine?: 'python' | 'pandoc'
     excelMode?: 'layout' | 'table'
     outputRoot?: string
     excelMetaSheet?: boolean
@@ -24,6 +25,7 @@ const DEFAULT_SETTINGS: AppSettings = {
     imageAsPdf: false,
     enableFigure: true,
     mode: 'lite',
+    docxEngine: 'python',
     excelMode: 'layout',
     excelMetaSheet: true,
     chunkSize: 10,

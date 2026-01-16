@@ -13,6 +13,7 @@ export type RunOptions = {
   enableFigure: boolean
   useGpu?: boolean
   mode: 'lite' | 'full'
+  docxEngine?: 'python' | 'pandoc'
   excelMode?: 'layout' | 'table'
   excelMetaSheet?: boolean
   chunkSize?: number

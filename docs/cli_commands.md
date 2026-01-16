@@ -56,6 +56,7 @@ poetry run -- python dispatcher.py sample.pdf -- --start 11 --end 20
 - `--math-refiner / --no-math-refiner`: PDF 経路で Pix2Text を有効化（既定 OFF）
 - `--formats <list>`: 生成物（既定 `md`、例: `--formats md docx xlsx csv`）
 - `--docx-math {text,image}`: docx 出力時の数式の扱い（既定 `text`。image は数式領域を画像で貼る）
+- `--docx-engine {python,pandoc}`: docx 変換エンジン（既定 `python`。pandoc は md 入力の数式ブロック化向け）
 - `--excel-mode {layout,table}`: xlsx 出力モード（既定 `layout`、`table` は結合解除＋テーブル化）
 - 追加引数透過: `--` 以降は `ocr_chanked.py` の引数として解釈されます（例: `--start/--end` 等）。
   - UI で PDF ごとにページ範囲を変えたい場合は、PDF ファイル単位で `dispatcher.py` を実行し、各 PDF に対応する `-- --start/--end` を付与します（未指定=全ページ）。
@@ -133,6 +134,7 @@ poetry run python export_docx.py <input.md>
 ```
 
 - 引数省略時は `merged.md` を入力として扱います。
+- `--use-pandoc`: pandoc で Markdown→docx を変換（`.md` 入力限定）。
 
 ## 5. Excel 変換（PoC）: `export_excel_poc.py`
 

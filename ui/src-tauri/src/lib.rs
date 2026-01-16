@@ -275,6 +275,8 @@ struct RunOptions {
     #[serde(default)]
     mode: String,
     #[serde(default)]
+    docx_engine: Option<String>,
+    #[serde(default)]
     chunk_size: Option<u32>,
     #[serde(default)]
     enable_rest: bool,
@@ -371,6 +373,8 @@ struct AppSettings {
     #[serde(default)]
     mode: Option<String>,
     #[serde(default)]
+    docx_engine: Option<String>,
+    #[serde(default)]
     excel_mode: Option<String>,
     #[serde(default)]
     use_gpu: bool,
@@ -421,6 +425,7 @@ fn load_settings_from_disk(project_root: &std::path::Path) -> Result<AppSettings
             image_as_pdf: false,
             enable_figure: true,
             mode: Some("lite".into()),
+            docx_engine: Some("python".into()),
             excel_mode: Some("layout".into()),
             use_gpu: false,
             output_root: None,
@@ -525,6 +530,7 @@ fn run_job(
         enable_figure,
         use_gpu,
         mode,
+        docx_engine,
         chunk_size,
         enable_rest,
         rest_seconds,
@@ -539,6 +545,7 @@ fn run_job(
             o.enable_figure,
             o.use_gpu,
             Some(o.mode),
+            o.docx_engine,
             o.chunk_size,
             o.enable_rest,
             o.rest_seconds,
@@ -552,6 +559,7 @@ fn run_job(
             false,
             true,
             false,
+            None,
             None,
             None,
             false,
@@ -584,6 +592,11 @@ fn run_job(
                 cmd.arg("--formats");
                 for fmt in &formats {
                     cmd.arg(fmt);
+                }
+            }
+            if let Some(engine) = &docx_engine {
+                if !engine.is_empty() {
+                    cmd.arg("--docx-engine").arg(engine);
                 }
             }
             if let Some(em) = &excel_mode {

@@ -60,6 +60,7 @@ function App() {
     enableFigure: boolean
     useGpu: boolean
     mode: 'lite' | 'full'
+    docxEngine: 'python' | 'pandoc'
     excelMode: 'layout' | 'table'
     excelMetaSheet: boolean
     chunkSize: number
@@ -73,6 +74,7 @@ function App() {
     enableFigure: true,
     useGpu: false,
     mode: 'lite',
+    docxEngine: 'python',
     excelMode: 'layout',
     excelMetaSheet: true,
     chunkSize: 10,
@@ -109,6 +111,7 @@ function App() {
           enableFigure: s.enableFigure,
           useGpu: Boolean(s.useGpu),
           mode: s.mode ?? 'lite',
+          docxEngine: s.docxEngine ?? 'python',
           excelMode: s.excelMode ?? 'layout',
           excelMetaSheet: s.excelMetaSheet ?? true,
           chunkSize: s.chunkSize ?? 10,

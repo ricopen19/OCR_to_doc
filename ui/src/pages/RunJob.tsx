@@ -17,6 +17,7 @@ import {
     Container,
     SegmentedControl,
     NumberInput,
+    Radio,
 } from '@mantine/core'
 import { IconUpload, IconPlayerPlay, IconFile, IconX, IconAlertTriangle, IconCrop, IconDeviceFloppy } from '@tabler/icons-react'
 import { useCallback, useEffect, useRef, useState, type Dispatch, type SetStateAction } from 'react'
@@ -63,6 +64,7 @@ export interface RunJobOptions {
     enableFigure: boolean
     useGpu: boolean
     mode: 'lite' | 'full'
+    docxEngine: 'python' | 'pandoc'
     excelMode: 'layout' | 'table'
     excelMetaSheet: boolean
     chunkSize: number
@@ -239,6 +241,7 @@ export function RunJob({
                 excelMode: options.excelMode,
                 mode: options.mode,
                 pdfDpi: options.pdfDpi,
+                docxEngine: options.docxEngine,
             }
             await saveSettings(toSave)
             notifications.show({
@@ -594,6 +597,29 @@ export function RunJob({
                                         <Checkbox value="csv" label="CSV" />
                                     </Group>
                                 </CheckboxGroup>
+
+                                {options.formats.includes('docx') && (
+                                    <Stack gap="xs">
+                                        <Text size="sm" fw={500}>Word出力方式</Text>
+                                        <Radio.Group
+                                            value={options.docxEngine}
+                                            onChange={(val) =>
+                                                setOptions((prev) => ({
+                                                    ...prev,
+                                                    docxEngine: val as 'python' | 'pandoc',
+                                                }))
+                                            }
+                                        >
+                                            <Stack gap="xs">
+                                                <Radio value="python" label="標準（python-docx）" />
+                                                <Radio value="pandoc" label="数式ブロック（Pandoc）" />
+                                            </Stack>
+                                        </Radio.Group>
+                                        <Text size="xs" c="dimmed">
+                                            Pandoc が必要です。数式ブロック化は md 入力が前提です。
+                                        </Text>
+                                    </Stack>
+                                )}
 
                                 {(options.formats.includes('xlsx') || options.formats.includes('csv')) && (
                                     <Stack gap="xs">

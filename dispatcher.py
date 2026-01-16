@@ -170,6 +170,12 @@ def parse_args() -> argparse.Namespace:
         help="docx 出力時の数式の扱い。text=本文としてそのまま、image=検出した数式領域を画像で貼る",
     )
     parser.add_argument(
+        "--docx-engine",
+        choices=["python", "pandoc"],
+        default="python",
+        help="docx 変換エンジン。python=python-docx（既定）、pandoc=Pandoc",
+    )
+    parser.add_argument(
         "--excel-mode",
         choices=["layout", "table"],
         default="layout",
@@ -230,6 +236,7 @@ def run(
     force_tesseract_merge: bool = False,
     formats: list[str] | None = None,
     docx_math: str = "text",
+    docx_engine: str = "python",
     crop: str | None = None,
     excel_mode: str = "layout",
     excel_meta_sheet: bool = True,
@@ -237,7 +244,9 @@ def run(
     formats = formats or ["md"]
     meta = inspect(path)
     output_dir = None
-    needs_json = ("xlsx" in formats or "csv" in formats) or ("docx" in formats and docx_math == "image")
+    needs_json = ("xlsx" in formats or "csv" in formats) or (
+        "docx" in formats and docx_math == "image" and docx_engine != "pandoc"
+    )
     if meta.is_pdf:
         _run_pdf(
             meta.path,
@@ -280,7 +289,11 @@ def run(
         merged_md = output_dir / f"{output_dir.name}_merged.md"
         if merged_md.exists():
             print(f"[dispatcher] Converting to docx: {merged_md}")
-            convert_file(merged_md, math_mode=docx_math)
+            convert_file(
+                merged_md,
+                math_mode=docx_math,
+                use_pandoc=(docx_engine == "pandoc"),
+            )
         else:
             # 2. Single page markdown (Image)
             # For single image, it might be page_001.md. 
@@ -303,7 +316,11 @@ def run(
                     print(f"[dispatcher] Copied {page_md} to {target_md}")
 
                 md_to_convert = target_md if target_md.exists() else page_md
-                convert_file(md_to_convert, math_mode=docx_math)
+                convert_file(
+                    md_to_convert,
+                    math_mode=docx_math,
+                    use_pandoc=(docx_engine == "pandoc"),
+                )
                 print(f"[dispatcher] Converting to docx: {md_to_convert}")
 
     if "xlsx" in formats and output_dir:
@@ -698,6 +715,7 @@ def main() -> None:
             "excel_mode": args.excel_mode,
             "excel_meta_sheet": args.excel_meta_sheet,
             "docx_math": args.docx_math,
+            "docx_engine": args.docx_engine,
             "crop": args.crop,
             "extra": args.extra,
         },
@@ -719,6 +737,7 @@ def main() -> None:
             force_tesseract_merge=args.force_tesseract_merge,
             formats=args.formats,
             docx_math=args.docx_math,
+            docx_engine=args.docx_engine,
             crop=args.crop,
             excel_mode=args.excel_mode,
             excel_meta_sheet=args.excel_meta_sheet,
