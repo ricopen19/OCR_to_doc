@@ -21,7 +21,7 @@ STRAY_MARKER_BEFORE_MEDIA = re.compile(r"(?:\\g(?:<\d+>)?|\$\d+)\s*(?=(?:<)?img\
 STRAY_MARKER_AFTER_MEDIA = re.compile(r"((?:<)?img[^>]*>|<br>|\bbr\b)\s*(?:\\g(?:<\d+>)?|\$\d+)", re.IGNORECASE)
 BACKREF_TOKEN_PATTERN = re.compile(r"\s*\\g(?:<\d+>)?\s*")
 IMG_MISSING_BRACKETS_PATTERN = re.compile(r"(?<!<)(img\s+src=\"[^\"]+\"[^>\n]*)", re.IGNORECASE)
-BARE_BR_PATTERN = re.compile(r"(?<!\w)br(?!\w)")
+BARE_BR_PATTERN = re.compile(r"(?<![\w<])br(?!\w)")
 BARE_TAGS = ("details", "/details", "summary", "/summary")
 TEX_INLINE_PATTERN = re.compile(r"\$(?P<body>[^$]+)\$")
 TEX_BLOCK_INLINE_PATTERN = re.compile(r"\$\$(?P<body>[\s\S]+?)\$\$")
@@ -34,6 +34,15 @@ DIVIDER_CELL_PATTERN = re.compile(r"^(?P<left>:)?(?P<dashes>-+)(?P<right>:)?$")
 OCR_BR_PATTERN = re.compile(r"(?:<+|＜+|〈+)\s*br\s*(?:>+|＞+|〉+)", re.IGNORECASE)
 TRAILING_BACKSLASH_PATTERN = re.compile(r"\\+(\s*)$")
 LEADING_DOT_PATTERN = re.compile(r"^(\s*)。\s*", re.MULTILINE)
+SLASH_NUMBER_PATTERN = re.compile(r"^/\s*([0-9][0-9,.\-]*)$")
+NUMBER_TOKEN_PATTERN = re.compile(r"^[0-9][0-9,.\-]*$")
+LETTER_SLASH_PATTERN = re.compile(r"^([A-Z])\s*/\s*(.+)$")
+FORMULA_LIKE_PATTERN = re.compile(r"[0-9]|[+\-*=\^%<>]|[(){}\[\]]|[×÷±]")
+RE_23_ITEM = re.compile(r"^\s*([2-9]|1[0-9])[\s\.\)、)]\s*")
+RE_BAR_HEAD = re.compile(r"^\s*(\\\||\||｜)\s*")
+RE_SLASH_ALONE = re.compile(r"^\s*/\s*$")
+RE_SLASH_HEAD = re.compile(r"^\s*/\s+(.*)$")
+RE_URL_HEAD = re.compile(r"^\s*https?://", re.IGNORECASE)
 
 
 def strip_trailing_backslashes(text: str) -> str:
@@ -58,6 +67,8 @@ def clean_text(line: str) -> str:
     text = apply_formatting_templates(text)
     text = normalize_headings(text)
     text = normalize_layout_marks(text)
+    text = normalize_letter_slash_prefix(text)
+    text = normalize_fraction_layout(text)
     text = cleanup_stray_markers(text)
     text = recover_html_tokens(text)
     text = sanitize_media_paths(text)
@@ -338,6 +349,103 @@ def normalize_layout_marks(text: str) -> str:
     return text
 
 
+def normalize_letter_slash_prefix(text: str) -> str:
+    match = LETTER_SLASH_PATTERN.match(text)
+    if not match:
+        return text
+    rest = match.group(2).strip()
+    if not FORMULA_LIKE_PATTERN.search(rest):
+        return text
+    return f"{match.group(1)}: {rest}"
+
+
+def looks_like_numbered_block(lines: list[str], start_idx: int, *, window: int = 6) -> bool:
+    end = min(len(lines), start_idx + window)
+    found = 0
+    for j in range(start_idx, end):
+        line = lines[j].strip()
+        if not line:
+            continue
+        if RE_23_ITEM.match(line):
+            found += 1
+    return found >= 1
+
+
+def _is_table_like_line(line: str) -> bool:
+    stripped = line.strip()
+    if not stripped.startswith("|"):
+        return False
+    if stripped.count("|") >= 2:
+        return True
+    return _is_table_divider_line(stripped)
+
+
+def fix_ocr_leading_slash_and_bar(lines: list[str]) -> list[str]:
+    out = list(lines)
+    i = 0
+    while i < len(out):
+        line = out[i]
+
+        if RE_SLASH_ALONE.match(line):
+            if looks_like_numbered_block(out, i + 1):
+                out[i] = ""
+            i += 1
+            continue
+
+        match = RE_SLASH_HEAD.match(line)
+        if match and not RE_URL_HEAD.match(line):
+            if looks_like_numbered_block(out, i + 1):
+                out[i] = f"1 {match.group(1).strip()}"
+            i += 1
+            continue
+
+        if RE_BAR_HEAD.match(line):
+            if looks_like_numbered_block(out, i + 1) and not _is_table_like_line(line):
+                out[i] = RE_BAR_HEAD.sub("1 ", line, count=1)
+            i += 1
+            continue
+
+        i += 1
+
+    return out
+
+
+def normalize_fraction_layout(text: str) -> str:
+    if "<br>" not in text:
+        return text
+    parts = [part.strip() for part in text.split("<br>")]
+    out: list[str] = []
+    i = 0
+    while i < len(parts):
+        part = parts[i]
+        if i + 1 < len(parts):
+            slash_match = SLASH_NUMBER_PATTERN.match(part)
+            if slash_match:
+                next_part = parts[i + 1]
+                if NUMBER_TOKEN_PATTERN.match(next_part):
+                    out.append(f"{next_part}/{slash_match.group(1)}")
+                    i += 2
+                    continue
+        if i + 1 < len(parts):
+            next_part = parts[i + 1]
+            if NUMBER_TOKEN_PATTERN.match(part) and NUMBER_TOKEN_PATTERN.match(next_part):
+                rest = " ".join(p for p in parts[i + 2 :] if p)
+                if "-1" in rest or "×100" in rest or "÷100" in rest:
+                    out.append(f"{part}/{next_part}")
+                    i += 2
+                    continue
+        if i + 2 < len(parts):
+            next_part = parts[i + 1]
+            tail = parts[i + 2].lstrip()
+            if tail.startswith("-1") and part and next_part:
+                out.append(f"{part}/{next_part}")
+                i += 2
+                continue
+        out.append(part)
+        i += 1
+    return "<br>".join(out)
+
+
 def normalize_headings(text: str) -> str:
     stripped = text.strip()
     match = re.match(r"^(#+)\s+\$(\d+(?:-\d+)+)\$\s*(.*)$", stripped)
@@ -392,7 +500,8 @@ def clean_file(path: Path, inplace: bool = True) -> Path:
         if cleaned == "":
             continue
         cleaned_lines.append(cleaned)
-    cleaned = "\n".join(cleaned_lines)
+    cleaned_lines = fix_ocr_leading_slash_and_bar(cleaned_lines)
+    cleaned = "\n".join(line for line in cleaned_lines if line != "")
     cleaned = normalize_broken_markdown_tables(cleaned)
     cleaned = demote_inner_headings_between_pages(cleaned)
     cleaned = finalize_html_tokens(cleaned)
