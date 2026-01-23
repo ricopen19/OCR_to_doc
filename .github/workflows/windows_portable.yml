@@ -193,7 +193,7 @@ jobs:
           }
 
       - name: Create zip
-        if: ${{ github.event_name == 'push' || github.event.inputs.with_runtime == 'true' }}
+        if: ${{ startsWith(github.ref, 'refs/tags/') }}
         run: |
           $ErrorActionPreference = "Stop"
           $zip = "ocr-to-doc-portable-windows.zip"
@@ -201,7 +201,7 @@ jobs:
           Compress-Archive -Path "dist-portable/ocr-to-doc" -DestinationPath $zip
 
       - name: Upload artifact
-        if: ${{ github.event_name == 'push' || github.event.inputs.with_runtime == 'true' }}
+        if: ${{ startsWith(github.ref, 'refs/tags/') }}
         uses: actions/upload-artifact@v4
         with:
           name: ocr-to-doc-portable-windows
