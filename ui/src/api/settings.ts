@@ -10,6 +10,7 @@ export interface AppSettings {
     excelMode?: 'layout' | 'table'
     outputRoot?: string
     excelMetaSheet?: boolean
+    excelSymbolFallback?: boolean
     chunkSize?: number
     enableRest: boolean
     restSeconds?: number
@@ -28,6 +29,7 @@ const DEFAULT_SETTINGS: AppSettings = {
     docxEngine: 'python',
     excelMode: 'layout',
     excelMetaSheet: true,
+    excelSymbolFallback: true,
     chunkSize: 10,
     enableRest: false,
     restSeconds: 10,

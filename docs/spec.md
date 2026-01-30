@@ -39,14 +39,14 @@ PoC や将来案（未確定）は `docs/Tasks.md` / `docs/poc_results/` / `docs
   - ページ範囲が全ページ以外の場合は自動で `result/<pdf_stem>_p<start>-<end>/`
   - `--label` 指定時は `result/<pdf_stem>_<label>/`
 - 生成物（代表例）:
-  - `page_images/page_001.png`（デフォルト保持。`--drop-page-images` で削除）
+  - `page_images/page_001.png`（CLI ではデフォルト保持。GUI では処理完了後に削除）
   - `page_001.md`（ページ Markdown。マージ後にデフォルトで削除）
-  - `figures/`（図表抽出画像、候補ログなど）
+  - `figures/`（図表抽出画像、候補ログなど。GUI ではこの配下の画像のみ保持）
     - `figures/icon_candidates.json`（小型アイコン候補ログ。条件により生成）
     - `figures/all_fig_stats.json`（全図版統計ログ。`--icon-log-all` 指定時）
   - `<base>_merged.md`（結合済み Markdown。`base` は出力ディレクトリ名）
   - `<base>_merged.docx`（`--formats docx` の場合）
-  - `<base>.xlsx`（`--formats xlsx` の場合）
+  - `<base>.xlsx`（`--formats xlsx` の場合。layout モードでは Excel Table を付与しない）
   - `<base>__<table_name>.csv`（`--formats csv` の場合。JSON tables から結合解除して分割）
   - `math_review.csv`（数式崩れ疑いの簡易ログ）
   - `yomi_formats/json/*.json`（`--emit-json on/auto` の場合）
@@ -58,10 +58,10 @@ PoC や将来案（未確定）は `docs/Tasks.md` / `docs/poc_results/` / `docs
 
 - 出力先: `result/<image_stem>/`
 - 生成物（代表例）:
-  - `converted/`（正規化後の PNG や、`--image-as-pdf` の PDF を保存）
-  - `preprocessed/<profile>/page_001.png`（OCR 向け前処理済み画像）
+  - `converted/`（正規化後の PNG や、`--image-as-pdf` の PDF を保存。GUI では処理完了後に削除）
+  - `preprocessed/<profile>/page_001.png`（OCR 向け前処理済み画像。GUI では処理完了後に削除）
   - `page_001.md`（ページ Markdown）
-  - `figures/`（図表抽出画像、候補ログなど）
+  - `figures/`（図表抽出画像、候補ログなど。GUI ではこの配下の画像のみ保持）
   - `yomi_formats/json/*.json`（`--formats xlsx` などで JSON を出す場合）
 
 ※ 画像単体では自動マージは走りません（`page_001.md` が成果物になります）。ただし `--image-as-pdf` を指定した場合は PDF 経路へ回るため、`<base>_merged.md` が生成されます。
@@ -74,7 +74,7 @@ PoC や将来案（未確定）は `docs/Tasks.md` / `docs/poc_results/` / `docs
 
 - ローカル完結（クラウド送信なし）
 - 既定は CPU 前提（`--device` は指定可能だが、職場PC相当の環境では `cpu` 運用を推奨）
-- ページ画像はデフォルト保持（検証用）。不要なら `--drop-page-images`
+- ページ画像は CLI ではデフォルト保持（検証用）。GUI 実行時は処理完了後に中間画像を削除（`figures/` のみ保持）
 - マージ後はページ Markdown をデフォルト削除（中間生成物を減らす）
 
 ## 6. 関連ドキュメント

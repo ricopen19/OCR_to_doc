@@ -5,6 +5,7 @@ import sys
 import time
 import platform
 import subprocess
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
@@ -27,6 +28,49 @@ from ocr import (
 例:
     poetry run python ocr_chanked.py input.pdf --start 11 --end 20
 """
+
+
+class PerfLogger:
+    def __init__(self, log_path: Path) -> None:
+        self.log_path = log_path
+
+    def _write(self, record: dict) -> None:
+        try:
+            self.log_path.parent.mkdir(parents=True, exist_ok=True)
+            with self.log_path.open("a", encoding="utf-8") as fp:
+                fp.write(json.dumps(record, ensure_ascii=False) + "\n")
+        except OSError:
+            pass
+
+    def log_span(self, event: str, start: float, end: float, **fields: object) -> None:
+        duration_ms = (end - start) * 1000.0
+        self._write(
+            {
+                "event": event,
+                "start": start,
+                "end": end,
+                "duration_ms": round(duration_ms, 3),
+                **fields,
+            }
+        )
+
+    @contextmanager
+    def span(self, event: str, **fields: object):
+        start = time.perf_counter()
+        try:
+            yield
+        finally:
+            end = time.perf_counter()
+            self.log_span(event, start, end, **fields)
+
+
+@contextmanager
+def maybe_span(perf: PerfLogger | None, event: str, **fields: object):
+    if perf is None:
+        yield
+        return
+    with perf.span(event, **fields):
+        yield
 
 
 def parse_args() -> argparse.Namespace:
@@ -377,11 +421,15 @@ def run_merger(base_name: str):
         base_name,
     ]
     print("\n--- merged_md.py を実行 ---")
-    subprocess.run(cmd, check=True)
+    with maybe_span(PERF, "postprocess", output=str(OUT_DIR)):
+        subprocess.run(cmd, check=True)
 
 DPI = max(72, int(args.dpi))
 
+run_start = time.perf_counter()
+info_start = time.perf_counter()
 info = pdfinfo_from_path(str(PDF_PATH), poppler_path=str(POPPLER_PATH))
+info_end = time.perf_counter()
 num_pages = int(info["Pages"])
 
 start_page_limit = max(1, args.start)
@@ -404,6 +452,16 @@ OUT_DIR.mkdir(parents=True, exist_ok=True)
 (OUT_DIR / "figures").mkdir(exist_ok=True)
 PAGE_IMAGE_DIR = OUT_DIR / "page_images"
 PAGE_IMAGE_DIR.mkdir(exist_ok=True)
+PERF: PerfLogger | None = PerfLogger(OUT_DIR / "perf.jsonl")
+if PERF:
+    PERF.log_span(
+        "pdf.info",
+        info_start,
+        info_end,
+        input=str(PDF_PATH),
+        pages=num_pages,
+        dpi=DPI,
+    )
 
 print(f"PDF: {PDF_PATH}")
 print(f"出力ディレクトリ: {OUT_DIR}")
@@ -424,77 +482,84 @@ while current <= end_page_limit:
     chunk_end = min(current + CHUNK_SIZE - 1, end_page_limit)
 
     print(f"\n=== Chunk {chunk_index}: {chunk_start}〜{chunk_end} ===")
+    with maybe_span(PERF, "chunk", index=chunk_index, chunk_start=chunk_start, chunk_end=chunk_end):
 
-    for page in range(chunk_start, chunk_end + 1):
-        print(f"\n--- Page {page}/{end_page_limit} (abs {page}/{num_pages}) ---")
+        for page in range(chunk_start, chunk_end + 1):
+            print(f"\n--- Page {page}/{end_page_limit} (abs {page}/{num_pages}) ---")
 
-        images = convert_from_path(
-            str(PDF_PATH),
-            dpi=DPI,
-            first_page=page,
-            last_page=page,
-            fmt="png",
-            poppler_path=str(POPPLER_PATH),
-        )
-        img = apply_crop(images[0], CROP)
+            with maybe_span(PERF, "page.render", page=page, dpi=DPI):
+                images = convert_from_path(
+                    str(PDF_PATH),
+                    dpi=DPI,
+                    first_page=page,
+                    last_page=page,
+                    fmt="png",
+                    poppler_path=str(POPPLER_PATH),
+                )
+                img = apply_crop(images[0], CROP)
 
-        img_path = PAGE_IMAGE_DIR / f"page_{page:03}.png"
-        img.save(img_path)
-        del img
+                img_path = PAGE_IMAGE_DIR / f"page_{page:03}.png"
+                img.save(img_path)
+                del img
 
-        preview_cmd = build_command(img_path, OUT_DIR, OPTIONS)
-        print(" ".join(preview_cmd))
-        run_ocr(img_path, OUT_DIR, page_number=page, options=OPTIONS)
+            preview_cmd = build_command(img_path, OUT_DIR, OPTIONS)
+            print(" ".join(preview_cmd))
+            with maybe_span(PERF, "page.ocr", page=page, mode=args.mode, device=args.device):
+                run_ocr(img_path, OUT_DIR, page_number=page, options=OPTIONS)
 
-        md_paths = sorted(OUT_DIR.glob(f"page_{page:03}*.md"))
+            md_paths = sorted(OUT_DIR.glob(f"page_{page:03}*.md"))
 
-        should_emit_json = args.emit_json == "on" or (
-            args.emit_json == "auto" and page_has_math(md_paths)
-        )
-
-        if should_emit_json:
-            try:
-                export_json(img_path, OUT_DIR, OPTIONS)
-            except subprocess.CalledProcessError as exc:
-                print(f"JSON 出力に失敗しました (page {page}): {exc}")
-        elif args.emit_json == "auto":
-            print("JSON スキップ (数式なし判定)")
-
-        if args.emit_csv:
-            try:
-                export_csv(img_path, OUT_DIR, OPTIONS)
-            except subprocess.CalledProcessError as exc:
-                print(f"CSV 出力に失敗しました (page {page}): {exc}")
-
-        if MATH_REFINER and md_paths:
-            result = MATH_REFINER.refine_page(
-                page_md_paths=md_paths,
-                image_path=img_path,
-                page_number=page,
+            should_emit_json = args.emit_json == "on" or (
+                args.emit_json == "auto" and page_has_math(md_paths)
             )
-            if result.replaced:
-                print(
-                    f"MathRefiner: {result.replaced} 件の数式を置換 (未使用 {result.unused})"
-                )
-            elif result.unused:
-                print(
-                    f"MathRefiner: 数式を {result.unused} 件検出しましたが置換対象がありませんでした"
-                )
 
-        if not args.keep_page_images:
-            try:
-                img_path.unlink()
-            except FileNotFoundError:
-                pass
+            if should_emit_json:
+                try:
+                    with maybe_span(PERF, "page.export_json", page=page):
+                        export_json(img_path, OUT_DIR, OPTIONS)
+                except subprocess.CalledProcessError as exc:
+                    print(f"JSON 出力に失敗しました (page {page}): {exc}")
+            elif args.emit_json == "auto":
+                print("JSON スキップ (数式なし判定)")
 
-        print(f"--- Done {page}/{end_page_limit} ---")
-        time.sleep(1.0)  # ページごとの軽い休憩
+            if args.emit_csv:
+                try:
+                    with maybe_span(PERF, "page.export_csv", page=page):
+                        export_csv(img_path, OUT_DIR, OPTIONS)
+                except subprocess.CalledProcessError as exc:
+                    print(f"CSV 出力に失敗しました (page {page}): {exc}")
 
-    if REST_SECONDS > 0:
-        print(f"\n=== Chunk {chunk_index} 完了 → {REST_SECONDS} 秒休憩 ===")
-        time.sleep(REST_SECONDS)
-    else:
-        print(f"\n=== Chunk {chunk_index} 完了 → 休憩なし ===")
+            if MATH_REFINER and md_paths:
+                with maybe_span(PERF, "page.math_refiner", page=page):
+                    result = MATH_REFINER.refine_page(
+                        page_md_paths=md_paths,
+                        image_path=img_path,
+                        page_number=page,
+                    )
+                if result.replaced:
+                    print(
+                        f"MathRefiner: {result.replaced} 件の数式を置換 (未使用 {result.unused})"
+                    )
+                elif result.unused:
+                    print(
+                        f"MathRefiner: 数式を {result.unused} 件検出しましたが置換対象がありませんでした"
+                    )
+
+            if not args.keep_page_images:
+                with maybe_span(PERF, "page.cleanup", page=page):
+                    try:
+                        img_path.unlink()
+                    except FileNotFoundError:
+                        pass
+
+            print(f"--- Done {page}/{end_page_limit} ---")
+            time.sleep(1.0)  # ページごとの軽い休憩
+
+        if REST_SECONDS > 0:
+            print(f"\n=== Chunk {chunk_index} 完了 → {REST_SECONDS} 秒休憩 ===")
+            time.sleep(REST_SECONDS)
+        else:
+            print(f"\n=== Chunk {chunk_index} 完了 → 休憩なし ===")
 
     current += CHUNK_SIZE
     chunk_index += 1
@@ -502,3 +567,12 @@ while current <= end_page_limit:
 run_merger(output_dir_name)
 
 print("\nすべてのチャンク処理が完了しました。")
+if PERF:
+    PERF.log_span(
+        "pdf.total",
+        run_start,
+        time.perf_counter(),
+        input=str(PDF_PATH),
+        pages=end_page_limit - start_page_limit + 1,
+        dpi=DPI,
+    )

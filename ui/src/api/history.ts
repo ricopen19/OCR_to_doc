@@ -9,9 +9,17 @@ export type RecentResultEntry = {
 
 export type EnvironmentStatus = {
   projectRoot: string
+  os: string
   dispatcherFound: boolean
+  dispatcherPath?: string
   resultDirFound: boolean
+  resultRoot: string
   pythonBin: string
+  pythonFound: boolean
+  pythonPath?: string
+  popplerFound: boolean
+  popplerPath?: string
+  resourceRoots?: string[]
 }
 
 export async function listRecentResults(limit = 10): Promise<RecentResultEntry[]> {
@@ -37,9 +45,16 @@ export async function checkEnvironment(): Promise<EnvironmentStatus> {
   if (hasTauri) return invoke<EnvironmentStatus>('check_environment')
   return {
     projectRoot: '',
+    os: '',
     dispatcherFound: false,
+    dispatcherPath: undefined,
     resultDirFound: false,
+    resultRoot: '',
     pythonBin: '',
+    pythonFound: false,
+    pythonPath: undefined,
+    popplerFound: false,
+    popplerPath: undefined,
+    resourceRoots: [],
   }
 }
-

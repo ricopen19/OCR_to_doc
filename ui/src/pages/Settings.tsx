@@ -48,6 +48,7 @@ export const Settings = forwardRef<SettingsHandle, SettingsProps>(function Setti
             const normalized: AppSettings = {
                 ...s,
                 previewQuality: s.previewQuality ?? 'light',
+                excelSymbolFallback: s.excelSymbolFallback ?? true,
             }
             setSettings(normalized)
             setInitialSnapshot(settingsSnapshot(normalized))
@@ -143,8 +144,8 @@ export const Settings = forwardRef<SettingsHandle, SettingsProps>(function Setti
                     <Group align="flex-end">
                         <TextInput
                             label="出力ルートディレクトリ"
-                            description="OCR結果（resultフォルダ）の保存先を変更する場合に指定します（空の場合はプロジェクト標準のresultが使用されます）"
-                            placeholder="デフォルト (Project Root/result)"
+                            description="OCR結果（resultフォルダ）の保存先を変更する場合に指定します（空の場合は既定の出力先を使用します）"
+                            placeholder="デフォルト (~/Library/Application Support/ocr-to-doc/result)"
                             value={settings.outputRoot || ''}
                             onChange={(e) => setSettings({ ...settings, outputRoot: e.target.value })}
                             flex={1}
@@ -245,6 +246,17 @@ export const Settings = forwardRef<SettingsHandle, SettingsProps>(function Setti
                         onChange={() =>
                             setSettings((prev) =>
                                 prev ? { ...prev, excelMetaSheet: !(prev.excelMetaSheet ?? true) } : prev
+                            )
+                        }
+                    />
+                    <Switch
+                        mt="md"
+                        label="Excelの記号補完を有効化"
+                        description="空セルの記号（○/□/×など）を画像から補完します（tesseract未導入時はスキップ）"
+                        checked={settings.excelSymbolFallback ?? true}
+                        onChange={() =>
+                            setSettings((prev) =>
+                                prev ? { ...prev, excelSymbolFallback: !(prev.excelSymbolFallback ?? true) } : prev
                             )
                         }
                     />

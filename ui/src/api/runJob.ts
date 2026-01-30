@@ -16,6 +16,7 @@ export type RunOptions = {
   docxEngine?: 'python' | 'pandoc'
   excelMode?: 'layout' | 'table'
   excelMetaSheet?: boolean
+  excelSymbolFallback?: boolean
   chunkSize?: number
   enableRest: boolean
   restSeconds?: number

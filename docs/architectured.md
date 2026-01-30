@@ -16,7 +16,7 @@
 
 ```
 入力ファイル → dispatcher
-     ├─ PDF → ocr_chanked → result/<base>/page_images/*.png
+     ├─ PDF → ocr_chanked → result/<base>/page_images/*.png（GUI 実行後は削除）
      │                 ↓
      │            ocr (YomiToku / fallback)
      │                 ↓
@@ -38,11 +38,11 @@
 
 ### image_normalizer.py
 - HEIC/HEIF/SVG を PNG へ正規化し、OCR 前段の「入力ゆらぎ」を吸収する。
-- `dispatcher.py` の画像経路では `result/<stem>/converted/` 配下に変換物を保存する。
+- `dispatcher.py` の画像経路では `result/<stem>/converted/` 配下に変換物を保存する（GUI 実行後は削除）。
 
 ### image_preprocessor.py
 - 画像 OCR 向けの前処理（コントラスト、二値化、デノイズ等）をプロファイルとして提供する。
-- `dispatcher.py` の画像経路では `result/<stem>/preprocessed/<profile>/page_001.png` を生成して OCR 入力に使う。
+- `dispatcher.py` の画像経路では `result/<stem>/preprocessed/<profile>/page_001.png` を生成して OCR 入力に使う（GUI 実行後は削除）。
 
 ### ocr.py
 - YomiToku CLI を呼び出すラッパ（md/json/csv）。
@@ -61,10 +61,7 @@
 - 画像は正規化（`image_normalizer`）→前処理（`image_preprocessor`）→`ocr.run_ocr` の順で実行する。
 - `--formats` に応じて docx/xlsx/csv の後処理（`export_docx.py` / `export_excel_poc.py` 等）までまとめて実行する。
 - `--image-as-pdf` を指定すると、画像でも一度 PDF 化して PDF 経路（`ocr_chanked.py`）へ回す。
-
-### text_pdf.py（フェーズ 2）
-- テキスト埋め込み PDF から `markitdown` / `pdfplumber` 等でテキスト抽出。
-- 基本的な Markdown 整形（段落、箇条書き、表の検出）を担当。現状は PoC 途中で、抽出精度/整形ルールは今後詰める。
+- GUI 実行時は処理完了後に中間画像（`page_images/` `converted/` `preprocessed/` など）を削除し、`figures/` 配下のみ保持する。
 
 ### postprocess.py / poppler/merged_md.py
 - ページ Markdown のソート＋マージと `# Page n` の挿入。
@@ -79,7 +76,7 @@
 - 実運用では `dispatcher.py --formats xlsx` が内部で `yomi_formats/json` を生成し、これを基に xlsx を作る。
 
 ### export_yomi_json.py（補助）
-- `result/<base>/page_images/` から YomiToku JSON を再生成する（再OCRなしで json を取り直したい時の補助）。
+- `result/<base>/page_images/` から YomiToku JSON を再生成する（再OCRなしで json を取り直したい時の補助。GUI 実行後は page_images が削除される）。
 
 ---
 

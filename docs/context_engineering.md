@@ -24,7 +24,7 @@
 ## 5. 既存資産 / 依存
 - OCR: YomiToku。
 - 変換: Pandoc（docx/xlsx 変換検討）。
-- テキストPDF対応: markitdown。
+- テキストPDF対応: 現状は同梱対象外（将来オプションで再検討）。
 - GUI: Tauri + React を採用。
 
 ## 6. 未確定事項 / TODO

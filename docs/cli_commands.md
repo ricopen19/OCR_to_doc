@@ -53,11 +53,10 @@ poetry run -- python dispatcher.py sample.pdf -- --start 11 --end 20
 - `--crop <left,top,width,height>`: 正規化トリミング範囲（0〜1）。PDF/画像どちらにも適用（例: `--crop 0.05,0.08,0.90,0.85`）
 - `--fallback-tesseract / --no-fallback-tesseract`: pytesseract フォールバック（既定 OFF）
 - `--force-tesseract-merge / --no-force-tesseract-merge`: tesseract 結果を追記（既定 OFF）
-- `--math-refiner / --no-math-refiner`: PDF 経路で Pix2Text を有効化（既定 OFF）
 - `--formats <list>`: 生成物（既定 `md`、例: `--formats md docx xlsx csv`）
 - `--docx-math {text,image}`: docx 出力時の数式の扱い（既定 `text`。image は数式領域を画像で貼る）
 - `--docx-engine {python,pandoc}`: docx 変換エンジン（既定 `python`。pandoc は md 入力の数式ブロック化向け）
-- `--excel-mode {layout,table}`: xlsx 出力モード（既定 `layout`、`table` は結合解除＋テーブル化）
+- `--excel-mode {layout,table}`: xlsx 出力モード（既定 `layout`。layout は Excel Table を付与しない。`table` は結合解除＋テーブル化）
 - 追加引数透過: `--` 以降は `ocr_chanked.py` の引数として解釈されます（例: `--start/--end` 等）。
   - UI で PDF ごとにページ範囲を変えたい場合は、PDF ファイル単位で `dispatcher.py` を実行し、各 PDF に対応する `-- --start/--end` を付与します（未指定=全ページ）。
 
@@ -93,25 +92,20 @@ poetry run python ocr_chanked.py input.pdf --emit-json auto
 - `--device <str>`: YomiToku に渡すデバイス指定（既定 `cpu`）
 - `--label <str>`: 出力ディレクトリのラベル（`<output-root>/<PDF名>_<label>/`）
 - `--output-root <dir>`: 出力ルート（既定 `result`）
-- `--drop-page-images`: `page_images` を保存しない（既定は保存）
+- `--drop-page-images`: `page_images` を保存しない（既定は保存。GUI 実行後は `figures/` 以外の中間画像を削除）
 - `--emit-json {off,on,auto}`: JSON 出力（既定 `off`）
 - `--emit-csv / --no-emit-csv`: CSV 出力（既定 OFF）
 - `--fallback-tesseract / --no-fallback-tesseract`: pytesseract フォールバック（既定 OFF）
 - `--force-tesseract-merge / --no-force-tesseract-merge`: tesseract 結果を追記（既定 OFF）
 - `--crop <left,top,width,height>`: 正規化トリミング範囲（0〜1）。全ページに適用（例: `--crop 0.05,0.08,0.90,0.85`）
 
-### オプション（上級: アイコン/数式）
+### オプション（上級: アイコン）
 - アイコンフィルタ:
   - `--icon-profile {default,strict,lenient}`
   - `--icon-policy {auto,review,keep}`
   - `--icon-config <path>`（JSON）
   - `--icon-log / --no-icon-log`（候補ログ、既定 ON）
   - `--icon-log-all / --no-icon-log-all`（全統計ログ、既定 OFF）
-- 数式（Pix2Text）:
-  - `--math-refiner`（既定 OFF）
-  - `--math-score <float>`（既定 `0.7`）
-  - `--math-cache <dir>`（既定 `./.pix2text_cache`）
-  - `--math-resized-shape <int>`（既定 `960`）
 
 ## 3. マージ（単体実行）: `postprocess.py` / `poppler/merged_md.py`
 
@@ -150,11 +144,11 @@ poetry run python export_excel_poc.py <input> <output.xlsx> --format json
 - `--meta / --no-meta`: メタシート（既定 ON）
 - `--review-columns / --no-review-columns`: レビュー列（既定 OFF）
 - `--auto-format / --no-auto-format`: 自動書式（既定 ON）
-- `--excel-mode {layout,table}`: xlsx 出力モード（既定 `layout`、`table` は結合解除＋テーブル化）
+- `--excel-mode {layout,table}`: xlsx 出力モード（既定 `layout`。layout は Excel Table を付与しない。`table` は結合解除＋テーブル化）
 
 ## 6. JSON 追い出し（OCR 済み画像から）: `export_yomi_json.py`
 
-`result/<name>/page_images/` から YomiToku JSON を再生成します。
+`result/<name>/page_images/` から YomiToku JSON を再生成します（GUI 実行後は page_images が削除されます）。
 
 ```bash
 poetry run python export_yomi_json.py --input result/<name> --mode lite
@@ -203,19 +197,13 @@ poetry run python image_preprocessor.py <input> --output <out.png> --profile ocr
 - `--keep-color/--no-keep-color` / `--no-grayscale`
 - `--page-number <int>`（既定 `1`）
 
-## 10. テキスト PDF を Markdown 化（PoC）: `text_pdf.py`
-
-```bash
-poetry run python text_pdf.py <input.pdf> --output <out.md>
-```
-
-## 11. コマンド早見（補助）: `scripts/command_help.py`
+## 10. コマンド早見（補助）: `scripts/command_help.py`
 
 ```bash
 poetry run python scripts/command_help.py
 ```
 
-## 12. UI 設定画面に反映する候補（たたき台）
+## 11. UI 設定画面に反映する候補（たたき台）
 
 まずは `dispatcher.py` のオプションを UI の基本設定にし、PDF 固有の設定は「詳細」へ寄せるのが安全です。
 
@@ -233,5 +221,4 @@ poetry run python scripts/command_help.py
 - `--drop-page-images`
 - `--emit-json`（xlsx を使う場合は内部で on にする運用も可）
 - `--icon-profile` / `--icon-policy` / `--icon-config` / `--icon-log*`
-- `--math-refiner` / `--math-score` / `--math-resized-shape`
 - `--output-root` / `--device` / `--svg-dpi`

@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 import argparse
+import json
 import subprocess
 import sys
+import time
+from contextlib import contextmanager
 from pathlib import Path
 
 from ingest import InputKind, IngestError, inspect
@@ -16,6 +19,40 @@ from export_excel_poc import main as export_excel_main, parse_args as parse_exce
 DEFAULT_OUTPUT_ROOT = Path("result")
 CONVERTED_DIR_NAME = "converted"
 PREPROCESSED_DIR_NAME = "preprocessed"
+
+
+class PerfLogger:
+    def __init__(self, log_path: Path) -> None:
+        self.log_path = log_path
+
+    def _write(self, record: dict) -> None:
+        try:
+            self.log_path.parent.mkdir(parents=True, exist_ok=True)
+            with self.log_path.open("a", encoding="utf-8") as fp:
+                fp.write(json.dumps(record, ensure_ascii=False) + "\n")
+        except OSError:
+            pass
+
+    def log_span(self, event: str, start: float, end: float, **fields: object) -> None:
+        duration_ms = (end - start) * 1000.0
+        self._write(
+            {
+                "event": event,
+                "start": start,
+                "end": end,
+                "duration_ms": round(duration_ms, 3),
+                **fields,
+            }
+        )
+
+    @contextmanager
+    def span(self, event: str, **fields: object):
+        start = time.perf_counter()
+        try:
+            yield
+        finally:
+            end = time.perf_counter()
+            self.log_span(event, start, end, **fields)
 
 
 def _parse_cli_value(args: list[str] | None, name: str) -> str | None:
@@ -189,6 +226,13 @@ def parse_args() -> argparse.Namespace:
         help="xlsx 出力時にメタ情報シートを付与する",
     )
     parser.add_argument(
+        "--excel-symbol-fallback",
+        dest="excel_symbol_fallback",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="xlsx/csv 出力時に空セルの記号補完を試みる",
+    )
+    parser.add_argument(
         "--crop",
         help="正規化トリミング範囲（left,top,width,height / 0〜1）。PDF/画像どちらにも適用されます。",
     )
@@ -240,14 +284,18 @@ def run(
     crop: str | None = None,
     excel_mode: str = "layout",
     excel_meta_sheet: bool = True,
+    excel_symbol_fallback: bool = True,
 ) -> Path:
     formats = formats or ["md"]
+    overall_start = time.perf_counter()
     meta = inspect(path)
     output_dir = None
+    perf: PerfLogger | None = None
     needs_json = ("xlsx" in formats or "csv" in formats) or (
         "docx" in formats and docx_math == "image" and docx_engine != "pandoc"
     )
     if meta.is_pdf:
+        pdf_start = time.perf_counter()
         _run_pdf(
             meta.path,
             mode=mode,
@@ -260,7 +308,18 @@ def run(
             emit_json=needs_json,
             crop=crop,
         )
+        pdf_end = time.perf_counter()
         output_dir = _infer_pdf_output_dir(meta.path, output_root=output_root, extra_args=extra_pdf_args)
+        if output_dir:
+            perf = PerfLogger(output_dir / "perf.jsonl")
+            perf.log_span(
+                "dispatcher.pdf",
+                pdf_start,
+                pdf_end,
+                input=str(meta.path),
+                mode=mode,
+                device=device,
+            )
     elif meta.is_image:
         output_dir = _run_image(
             meta.path,
@@ -279,6 +338,8 @@ def run(
             emit_json=needs_json,
             crop=crop,
         )
+        if output_dir:
+            perf = PerfLogger(output_dir / "perf.jsonl")
     else:
         raise IngestError(f"未対応の入力種別です: {path}")
 
@@ -289,11 +350,19 @@ def run(
         merged_md = output_dir / f"{output_dir.name}_merged.md"
         if merged_md.exists():
             print(f"[dispatcher] Converting to docx: {merged_md}")
-            convert_file(
-                merged_md,
-                math_mode=docx_math,
-                use_pandoc=(docx_engine == "pandoc"),
-            )
+            if perf:
+                with perf.span("dispatcher.docx", input=str(merged_md), engine=docx_engine):
+                    convert_file(
+                        merged_md,
+                        math_mode=docx_math,
+                        use_pandoc=(docx_engine == "pandoc"),
+                    )
+            else:
+                convert_file(
+                    merged_md,
+                    math_mode=docx_math,
+                    use_pandoc=(docx_engine == "pandoc"),
+                )
         else:
             # 2. Single page markdown (Image)
             # For single image, it might be page_001.md. 
@@ -316,28 +385,75 @@ def run(
                     print(f"[dispatcher] Copied {page_md} to {target_md}")
 
                 md_to_convert = target_md if target_md.exists() else page_md
-                convert_file(
-                    md_to_convert,
-                    math_mode=docx_math,
-                    use_pandoc=(docx_engine == "pandoc"),
-                )
+                if perf:
+                    with perf.span("dispatcher.docx", input=str(md_to_convert), engine=docx_engine):
+                        convert_file(
+                            md_to_convert,
+                            math_mode=docx_math,
+                            use_pandoc=(docx_engine == "pandoc"),
+                        )
+                else:
+                    convert_file(
+                        md_to_convert,
+                        math_mode=docx_math,
+                        use_pandoc=(docx_engine == "pandoc"),
+                    )
                 print(f"[dispatcher] Converting to docx: {md_to_convert}")
 
     if "xlsx" in formats and output_dir:
         # json -> xlsx
         print("[dispatcher] processing excel_via=json")
-        _convert_to_excel(
-            output_dir,
-            output_root,
-            input_path=path,
-            excel_mode=excel_mode,
-            excel_meta_sheet=excel_meta_sheet,
-        )
+        if perf:
+            with perf.span(
+                "dispatcher.xlsx",
+                input=str(path),
+                mode=excel_mode,
+                meta_sheet=excel_meta_sheet,
+                symbol_fallback=excel_symbol_fallback,
+            ):
+                _convert_to_excel(
+                    output_dir,
+                    output_root,
+                    input_path=path,
+                    excel_mode=excel_mode,
+                    excel_meta_sheet=excel_meta_sheet,
+                    excel_symbol_fallback=excel_symbol_fallback,
+                )
+        else:
+            _convert_to_excel(
+                output_dir,
+                output_root,
+                input_path=path,
+                excel_mode=excel_mode,
+                excel_meta_sheet=excel_meta_sheet,
+                excel_symbol_fallback=excel_symbol_fallback,
+            )
 
     if "csv" in formats and output_dir:
         print("[dispatcher] processing csv_via=json")
-        _convert_to_csv(output_dir, excel_mode=excel_mode)
+        if perf:
+            with perf.span(
+                "dispatcher.csv",
+                input=str(path),
+                mode=excel_mode,
+                symbol_fallback=excel_symbol_fallback,
+            ):
+                _convert_to_csv(
+                    output_dir,
+                    excel_mode=excel_mode,
+                    excel_symbol_fallback=excel_symbol_fallback,
+                )
+        else:
+            _convert_to_csv(output_dir, excel_mode=excel_mode, excel_symbol_fallback=excel_symbol_fallback)
 
+    if output_dir and perf:
+        perf.log_span(
+            "dispatcher.total",
+            overall_start,
+            time.perf_counter(),
+            input=str(path),
+            formats=formats,
+        )
     return output_dir
 
 
@@ -410,10 +526,12 @@ def _run_image(
     )
 
     output_dir = _ensure_output_dir(image_path, output_root)
+    perf = PerfLogger(output_dir / "perf.jsonl")
     convert_dir = output_dir / CONVERTED_DIR_NAME
     convert_dir.mkdir(parents=True, exist_ok=True)
     try:
-        conversion = ensure_png_image(image_path, convert_dir=convert_dir, svg_dpi=svg_dpi)
+        with perf.span("image.ensure_png", input=str(image_path), svg_dpi=svg_dpi):
+            conversion = ensure_png_image(image_path, convert_dir=convert_dir, svg_dpi=svg_dpi)
     except ImageConversionError as exc:
         raise IngestError(str(exc)) from exc
 
@@ -441,46 +559,50 @@ def _run_image(
         height = max(0.0, min(1.0 - top, height))
         if width > 0 and height > 0:
             cropped_path = convert_dir / f"{image_path.stem}_cropped.png"
-            with Image.open(conversion.converted) as img:
-                img = ImageOps.exif_transpose(img)
-                w, h = img.size
-                lpx = int(round(left * w))
-                tpx = int(round(top * h))
-                rpx = int(round((left + width) * w))
-                bpx = int(round((top + height) * h))
-                if rpx > lpx and bpx > tpx:
-                    img.crop((lpx, tpx, rpx, bpx)).save(cropped_path, format="PNG", optimize=True)
-                    conversion = ImageConversionResult(
-                        source=conversion.source,
-                        converted=cropped_path,
-                        performed=True,
-                    )
+            with perf.span("image.crop", input=str(image_path)):
+                with Image.open(conversion.converted) as img:
+                    img = ImageOps.exif_transpose(img)
+                    w, h = img.size
+                    lpx = int(round(left * w))
+                    tpx = int(round(top * h))
+                    rpx = int(round((left + width) * w))
+                    bpx = int(round((top + height) * h))
+                    if rpx > lpx and bpx > tpx:
+                        img.crop((lpx, tpx, rpx, bpx)).save(cropped_path, format="PNG", optimize=True)
+                        conversion = ImageConversionResult(
+                            source=conversion.source,
+                            converted=cropped_path,
+                            performed=True,
+                        )
 
     if image_as_pdf:
         pdf_path = convert_dir / f"{image_path.stem}.pdf"
-        _convert_image_to_pdf(conversion.converted, pdf_path, dpi=image_dpi)
+        with perf.span("image.to_pdf", input=str(conversion.converted), dpi=image_dpi):
+            _convert_image_to_pdf(conversion.converted, pdf_path, dpi=image_dpi)
         print(f"[dispatcher] 画像を PDF 化してから OCR: {pdf_path} (dpi={image_dpi})")
         print(f"[dispatcher] PDF exists: {pdf_path.exists()}")
-        _run_pdf(
-            pdf_path,
-            mode=mode,
-            device=device,
-            use_math_refiner=False,
-            output_root=output_root,
-            extra_args=_append_force_flags(extra_pdf_args, fallback_tesseract, force_tesseract_merge),
-            force_tesseract_merge=force_tesseract_merge,
-            emit_json=emit_json,  # PDF経由もJSONを出す
-            crop=crop,
-        )
+        with perf.span("image.pdf_run", input=str(pdf_path), mode=mode, device=device):
+            _run_pdf(
+                pdf_path,
+                mode=mode,
+                device=device,
+                use_math_refiner=False,
+                output_root=output_root,
+                extra_args=_append_force_flags(extra_pdf_args, fallback_tesseract, force_tesseract_merge),
+                force_tesseract_merge=force_tesseract_merge,
+                emit_json=emit_json,  # PDF経由もJSONを出す
+                crop=crop,
+            )
         return output_dir
 
     ocr_profile_obj = get_profile(ocr_profile)
-    variants = preprocess_image_variants(
-        conversion.converted,
-        output_dir / PREPROCESSED_DIR_NAME,
-        profiles=[ocr_profile_obj],
-        page_number=1,
-    )
+    with perf.span("image.preprocess", input=str(conversion.converted), profile=ocr_profile_obj.key):
+        variants = preprocess_image_variants(
+            conversion.converted,
+            output_dir / PREPROCESSED_DIR_NAME,
+            profiles=[ocr_profile_obj],
+            page_number=1,
+        )
 
     ocr_source = variants[ocr_profile_obj.key]
     options = OcrOptions(
@@ -491,13 +613,16 @@ def _run_image(
         force_tesseract_merge=force_tesseract_merge,
     )
     print(f"[dispatcher] 画像を OCR ルートへ委譲: {ocr_source}")
-    run_ocr(ocr_source, output_dir, page_number=1, options=options)
+    with perf.span("image.ocr", input=str(ocr_source), mode=mode, device=device):
+        run_ocr(ocr_source, output_dir, page_number=1, options=options)
     if emit_csv:
-        export_csv(ocr_source, output_dir, options)
+        with perf.span("image.export_csv", input=str(ocr_source)):
+            export_csv(ocr_source, output_dir, options)
     if emit_json:
         # ocr.py の export_json は便利関数として使える
         from ocr import export_json
-        export_json(ocr_source, output_dir, options)
+        with perf.span("image.export_json", input=str(ocr_source)):
+            export_json(ocr_source, output_dir, options)
     return output_dir
 
 
@@ -508,6 +633,7 @@ def _convert_to_excel(
     input_path: Path,
     excel_mode: str,
     excel_meta_sheet: bool,
+    excel_symbol_fallback: bool,
 ) -> None:
     """yomi_formats/json 内の JSON を集めて Excel に変換する。"""
 
@@ -545,7 +671,7 @@ def _convert_to_excel(
             tables = load_tables_from_json(
                 json_path,
                 page_image_path=page_image_path,
-                enable_symbol_fallback=True,
+                enable_symbol_fallback=excel_symbol_fallback,
             )
             all_tables.extend(tables)
         except ValueError:
@@ -597,7 +723,7 @@ def _convert_to_excel(
     print(f"[dispatcher] Saved Excel: {xlsx_path}")
 
 
-def _convert_to_csv(output_dir: Path, *, excel_mode: str) -> None:
+def _convert_to_csv(output_dir: Path, *, excel_mode: str, excel_symbol_fallback: bool) -> None:
     """yomi_formats/json 内の JSON を集めて CSV（結合解除＋分割）に変換する。"""
 
     import csv
@@ -633,7 +759,7 @@ def _convert_to_csv(output_dir: Path, *, excel_mode: str) -> None:
             tables = load_tables_from_json(
                 json_path,
                 page_image_path=page_image_path,
-                enable_symbol_fallback=True,
+                enable_symbol_fallback=excel_symbol_fallback,
             )
             all_tables.extend(tables)
         except ValueError:
@@ -714,6 +840,7 @@ def main() -> None:
             "formats": args.formats,
             "excel_mode": args.excel_mode,
             "excel_meta_sheet": args.excel_meta_sheet,
+            "excel_symbol_fallback": args.excel_symbol_fallback,
             "docx_math": args.docx_math,
             "docx_engine": args.docx_engine,
             "crop": args.crop,
@@ -741,6 +868,7 @@ def main() -> None:
             crop=args.crop,
             excel_mode=args.excel_mode,
             excel_meta_sheet=args.excel_meta_sheet,
+            excel_symbol_fallback=args.excel_symbol_fallback,
         )
     except (IngestError, ImageConversionError, subprocess.CalledProcessError) as exc:
         print(f"[dispatcher] エラー: {exc}")

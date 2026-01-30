@@ -31,4 +31,4 @@ jobs:
         run: poetry install --no-root
 
       - name: Static verification
-        run: poetry run python -m compileall ocr_per_page.py ocr_chanked.py export_docx.py poppler/merged_md.py
+        run: poetry run python -m compileall ocr_chanked.py export_docx.py poppler/merged_md.py

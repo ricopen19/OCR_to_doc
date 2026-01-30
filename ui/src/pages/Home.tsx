@@ -245,23 +245,41 @@ export function Home({ onNavigate }: HomeProps) {
                         ) : (
                             <Stack gap="xs">
                                 <Group justify="space-between">
+                                    <Text size="sm">OS</Text>
+                                    <Badge color="blue" variant="light">
+                                        {env?.os || 'unknown'}
+                                    </Badge>
+                                </Group>
+                                <Group justify="space-between">
                                     <Text size="sm">dispatcher.py</Text>
                                     <Badge color={env?.dispatcherFound ? 'green' : 'red'} variant="light">
                                         {env?.dispatcherFound ? 'OK' : 'NG'}
                                     </Badge>
                                 </Group>
+                                {env?.dispatcherPath && (
+                                    <Text size="xs" c="dimmed">{env.dispatcherPath}</Text>
+                                )}
                                 <Group justify="space-between">
                                     <Text size="sm">result フォルダ</Text>
                                     <Badge color={env?.resultDirFound ? 'green' : 'red'} variant="light">
                                         {env?.resultDirFound ? 'OK' : 'NG'}
                                     </Badge>
                                 </Group>
+                                <Text size="xs" c="dimmed">{env?.resultRoot || '-'}</Text>
                                 <Group justify="space-between">
                                     <Text size="sm">Python</Text>
-                                    <Badge color={env?.pythonBin ? 'blue' : 'gray'} variant="light">
-                                        {env?.pythonBin ? env.pythonBin : 'unknown'}
+                                    <Badge color={env?.pythonFound ? 'green' : 'red'} variant="light">
+                                        {env?.pythonFound ? 'OK' : 'NG'}
                                     </Badge>
                                 </Group>
+                                <Text size="xs" c="dimmed">{env?.pythonPath || env?.pythonBin || '-'}</Text>
+                                <Group justify="space-between">
+                                    <Text size="sm">Poppler</Text>
+                                    <Badge color={env?.popplerFound ? 'green' : 'red'} variant="light">
+                                        {env?.popplerFound ? 'OK' : 'NG'}
+                                    </Badge>
+                                </Group>
+                                <Text size="xs" c="dimmed">{env?.popplerPath || '-'}</Text>
                             </Stack>
                         )}
                     </Stack>

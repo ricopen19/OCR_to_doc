@@ -63,6 +63,7 @@ function App() {
     docxEngine: 'python' | 'pandoc'
     excelMode: 'layout' | 'table'
     excelMetaSheet: boolean
+    excelSymbolFallback: boolean
     chunkSize: number
     enableRest: boolean
     restSeconds: number
@@ -77,6 +78,7 @@ function App() {
     docxEngine: 'python',
     excelMode: 'layout',
     excelMetaSheet: true,
+    excelSymbolFallback: true,
     chunkSize: 10,
     enableRest: false,
     restSeconds: 10,
@@ -114,6 +116,7 @@ function App() {
           docxEngine: s.docxEngine ?? 'python',
           excelMode: s.excelMode ?? 'layout',
           excelMetaSheet: s.excelMetaSheet ?? true,
+          excelSymbolFallback: s.excelSymbolFallback ?? true,
           chunkSize: s.chunkSize ?? 10,
           enableRest: s.enableRest,
           restSeconds: s.restSeconds ?? 10,
@@ -144,6 +147,7 @@ function App() {
       mode: s.mode ?? 'lite',
       excelMode: s.excelMode ?? 'layout',
       excelMetaSheet: s.excelMetaSheet ?? true,
+      excelSymbolFallback: s.excelSymbolFallback ?? true,
       chunkSize: s.chunkSize ?? 10,
       enableRest: s.enableRest,
       restSeconds: s.restSeconds ?? 10,

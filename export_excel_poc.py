@@ -47,6 +47,34 @@ SYMBOL_NORMALIZE = {
 }
 
 _FILENAME_INVALID_RE = re.compile(r'[<>:"/\\\\|?*\\x00-\\x1F]')
+_TESSERACT_AVAILABLE: bool | None = None
+
+
+def _contains_symbol(text: str) -> bool:
+    if not text:
+        return False
+    for ch in text:
+        if ch in SYMBOL_WHITELIST:
+            return True
+        normalized = SYMBOL_NORMALIZE.get(ch)
+        if normalized and normalized in SYMBOL_WHITELIST:
+            return True
+    return False
+
+
+def _is_tesseract_available() -> bool:
+    global _TESSERACT_AVAILABLE
+    if _TESSERACT_AVAILABLE is not None:
+        return _TESSERACT_AVAILABLE
+    try:
+        import pytesseract  # type: ignore
+
+        pytesseract.get_tesseract_version()
+    except Exception:
+        _TESSERACT_AVAILABLE = False
+    else:
+        _TESSERACT_AVAILABLE = True
+    return _TESSERACT_AVAILABLE
 
 
 def _crop_inner(img: Image.Image, box: list[int], *, margin_ratio: float = 0.18) -> Image.Image:
@@ -221,6 +249,8 @@ def _detect_outline_symbol(bw: Image.Image) -> str | None:
 
 
 def _ocr_symbol_tesseract(img: Image.Image) -> str | None:
+    if not _is_tesseract_available():
+        return None
     try:
         import pytesseract  # type: ignore
     except Exception:
@@ -233,7 +263,10 @@ def _ocr_symbol_tesseract(img: Image.Image) -> str | None:
 
     # まずは OCR
     config = f"--psm 10 --oem 1 -c tessedit_char_whitelist={SYMBOL_WHITELIST}"
-    text = pytesseract.image_to_string(bw, lang="jpn+eng", config=config) or ""
+    try:
+        text = pytesseract.image_to_string(bw, lang="jpn+eng", config=config) or ""
+    except Exception:
+        return None
     text = text.strip()
     if text:
         ch = next((c for c in text if not c.isspace()), "")
@@ -258,13 +291,25 @@ def fill_empty_cells_with_symbols(
 
     if not page_image_path.exists():
         return 0
+    if not _is_tesseract_available():
+        return 0
+    symbol_cols_by_table: list[set[int]] = []
+    for cells in tables:
+        cols = {cell.col for cell in cells if _contains_symbol(cell.text)}
+        symbol_cols_by_table.append(cols)
+    if not any(symbol_cols_by_table):
+        return 0
 
     filled = 0
     with Image.open(page_image_path) as page_img:
         page_img = ImageOps.exif_transpose(page_img)
-        for cells in tables:
+        for cells, symbol_cols in zip(tables, symbol_cols_by_table):
+            if not symbol_cols:
+                continue
             for cell in cells:
                 if cell.text.strip():
+                    continue
+                if cell.col not in symbol_cols:
                     continue
                 box = getattr(cell, "box", None)
                 if not box:
@@ -1129,23 +1174,7 @@ def write_tables_to_workbook(
             for c in border_cols:
                 ws.cell(row=r, column=c).border = thin
 
-        # Excel テーブル化（先頭行をヘッダーと見なす）
-        # Excel の Table は結合セルを含められないため、結合セルが存在する場合はスキップする。
-        has_merges = bool(ws.merged_cells.ranges)
-        if not has_merges and max_row >= 1 and table_max_col >= 1:
-            ref = f"A1:{get_column_letter(table_max_col)}{max_row}"
-            table = Table(
-                displayName=f"{sheet_prefix}_{idx}_tbl",
-                ref=ref,
-                tableStyleInfo=TableStyleInfo(
-                    name="TableStyleMedium2",
-                    showFirstColumn=False,
-                    showLastColumn=False,
-                    showRowStripes=True,
-                    showColumnStripes=False,
-                ),
-            )
-            ws.add_table(table)
+        # layout モードでは Excel の Table を付与しない
 
         auto_adjust_columns(ws)
     return wb
