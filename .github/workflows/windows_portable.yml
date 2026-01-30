@@ -184,18 +184,22 @@ jobs:
           Get-ChildItem -Recurse (Join-Path $appDir "resources/py/fixtures") -ErrorAction SilentlyContinue
           $fixture = Join-Path $appDir "resources/fixtures/sample.png"
           if (-not (Test-Path $fixture)) { throw "fixture not found: $fixture" }
-          $proc = Start-Process -FilePath $exe -ArgumentList "--self-test", "--input", $fixture -Wait -PassThru
-          $code = $proc.ExitCode
+          $outLog = Join-Path $appDir "self_test.stdout.txt"
+          $errLog = Join-Path $appDir "self_test.stderr.txt"
+          if (Test-Path $outLog) { Remove-Item -Force $outLog }
+          if (Test-Path $errLog) { Remove-Item -Force $errLog }
+          & $exe --self-test --input $fixture 1> $outLog 2> $errLog
+          $code = $LASTEXITCODE
           if ($null -eq $code) { $code = 1 }
           if ($code -ne 0) {
             $ciDir = Join-Path $appDir "result_ci"
-            if (Test-Path (Join-Path $ciDir "self_test.stderr.txt")) {
+            if (Test-Path $errLog) {
               Write-Host "=== self_test.stderr.txt (tail) ==="
-              Get-Content (Join-Path $ciDir "self_test.stderr.txt") -Tail 200
+              Get-Content $errLog -Tail 200
             }
-            if (Test-Path (Join-Path $ciDir "self_test.stdout.txt")) {
+            if (Test-Path $outLog) {
               Write-Host "=== self_test.stdout.txt (tail) ==="
-              Get-Content (Join-Path $ciDir "self_test.stdout.txt") -Tail 200
+              Get-Content $outLog -Tail 200
             }
             throw "self-test failed with exit code $code"
           }
