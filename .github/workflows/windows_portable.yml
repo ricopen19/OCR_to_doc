@@ -182,7 +182,9 @@ jobs:
           Write-Host "=== fixtures ==="
           Get-ChildItem -Recurse (Join-Path $appDir "resources/fixtures") -ErrorAction SilentlyContinue
           Get-ChildItem -Recurse (Join-Path $appDir "resources/py/fixtures") -ErrorAction SilentlyContinue
-          $proc = Start-Process -FilePath $exe -ArgumentList "--self-test" -Wait -PassThru
+          $fixture = Join-Path $appDir "resources/fixtures/sample.png"
+          if (-not (Test-Path $fixture)) { throw "fixture not found: $fixture" }
+          $proc = Start-Process -FilePath $exe -ArgumentList "--self-test", "--input", $fixture -Wait -PassThru
           $code = $proc.ExitCode
           if ($null -eq $code) { $code = 1 }
           if ($code -ne 0) {
