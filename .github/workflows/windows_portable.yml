@@ -204,6 +204,16 @@ jobs:
             throw "self-test failed with exit code $code"
           }
 
+      - name: Upload self-test logs
+        if: ${{ always() && (github.event_name == 'push' || github.event.inputs.with_runtime == 'true') }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: self-test-logs
+          path: |
+            dist-portable/ocr-to-doc/self_test.stdout.txt
+            dist-portable/ocr-to-doc/self_test.stderr.txt
+          if-no-files-found: ignore
+
       - name: Create zip
         if: ${{ startsWith(github.ref, 'refs/tags/') }}
         run: |
