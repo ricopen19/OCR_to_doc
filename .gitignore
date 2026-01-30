@@ -26,6 +26,7 @@ Thumbs.db
 .mcp.json
 .specstory/
 .cursorindexingignore
+configs/settings.json
 
 # Node / UI
 node_modules/
@@ -33,6 +34,9 @@ ui/dist/
 ui/test-results/
 ui/playwright-report/
 ui/src-tauri/target/
+ui/src-tauri/resources/
+!ui/src-tauri/resources/.gitkeep
+ui/cpython-*.tar.gz
 
 # Local results / caches
 result/
