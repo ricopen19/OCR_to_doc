@@ -138,8 +138,17 @@ pub fn run_cli_if_requested() -> Option<i32> {
     };
 
     let output_root = project_root.join("result_ci");
-    let _ = fs::create_dir_all(&output_root);
-    let trace_path = output_root.join("self_test.trace.txt");
+    let trace_path = match fs::create_dir_all(&output_root) {
+        Ok(_) => output_root.join("self_test.trace.txt"),
+        Err(e) => {
+            let fallback = project_root.join("self_test.trace.txt");
+            let _ = fs::write(
+                &fallback,
+                format!("[self-test] failed to create result_ci: {e}\n"),
+            );
+            fallback
+        }
+    };
     let mut log_trace = |msg: &str| {
         if let Ok(mut f) = fs::OpenOptions::new()
             .create(true)

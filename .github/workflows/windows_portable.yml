@@ -188,10 +188,24 @@ jobs:
           New-Item -ItemType Directory -Force -Path $resultDir | Out-Null
           $outLog = Join-Path $appDir "self_test.stdout.txt"
           $errLog = Join-Path $appDir "self_test.stderr.txt"
+          $pwshLog = Join-Path $resultDir "self_test.pwsh.txt"
           if (Test-Path $outLog) { Remove-Item -Force $outLog }
           if (Test-Path $errLog) { Remove-Item -Force $errLog }
-          & $exe --self-test --input $fixture 1> $outLog 2> $errLog
-          $code = $LASTEXITCODE
+          if (Test-Path $pwshLog) { Remove-Item -Force $pwshLog }
+          try {
+            & $exe --self-test --input $fixture 1> $outLog 2> $errLog
+            $code = $LASTEXITCODE
+          } catch {
+            $code = 1
+            ($_ | Out-String) | Set-Content -Path $pwshLog
+          }
+          if (-not (Test-Path $pwshLog)) {
+            "exitcode=$code" | Set-Content -Path $pwshLog
+          } else {
+            "exitcode=$code" | Add-Content -Path $pwshLog
+          }
+          "=== result_ci contents ===" | Add-Content -Path $pwshLog
+          (Get-ChildItem -Recurse $resultDir -ErrorAction SilentlyContinue | Out-String) | Add-Content -Path $pwshLog
           if (Test-Path $outLog) { Copy-Item -Force $outLog $resultDir }
           if (Test-Path $errLog) { Copy-Item -Force $errLog $resultDir }
           if ($null -eq $code) { $code = 1 }
@@ -216,6 +230,7 @@ jobs:
           path: |
             dist-portable/ocr-to-doc/self_test.stdout.txt
             dist-portable/ocr-to-doc/self_test.stderr.txt
+            dist-portable/ocr-to-doc/self_test.trace.txt
           if-no-files-found: ignore
 
       - name: Upload self-test result_ci
