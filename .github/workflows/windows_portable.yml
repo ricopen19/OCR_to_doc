@@ -163,11 +163,14 @@ jobs:
           $ErrorActionPreference = "Stop"
           $appDir = Join-Path $PWD "dist-portable/ocr-to-doc"
           $fixtureDir = Join-Path $appDir "resources/fixtures"
+          $fixturePyDir = Join-Path $appDir "resources/py/fixtures"
           New-Item -ItemType Directory -Force -Path $fixtureDir | Out-Null
+          New-Item -ItemType Directory -Force -Path $fixturePyDir | Out-Null
 
           $b64 = (Get-Content "tests/fixtures/sample.png.b64" -Raw).Trim()
           $bytes = [Convert]::FromBase64String($b64)
           [IO.File]::WriteAllBytes((Join-Path $fixtureDir "sample.png"), $bytes)
+          [IO.File]::WriteAllBytes((Join-Path $fixturePyDir "sample.png"), $bytes)
 
       - name: Self-test portable exe
         if: ${{ github.event_name == 'push' || github.event.inputs.with_runtime == 'true' }}
@@ -176,6 +179,9 @@ jobs:
           $appDir = Join-Path $PWD "dist-portable/ocr-to-doc"
           $exe = Join-Path $appDir "ocr-to-doc.exe"
           if (-not (Test-Path $exe)) { throw "exe not found: $exe" }
+          Write-Host "=== fixtures ==="
+          Get-ChildItem -Recurse (Join-Path $appDir "resources/fixtures") -ErrorAction SilentlyContinue
+          Get-ChildItem -Recurse (Join-Path $appDir "resources/py/fixtures") -ErrorAction SilentlyContinue
           $proc = Start-Process -FilePath $exe -ArgumentList "--self-test" -Wait -PassThru
           $code = $proc.ExitCode
           if ($null -eq $code) { $code = 1 }
