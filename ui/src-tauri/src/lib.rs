@@ -1,6 +1,7 @@
 use std::{
     collections::HashMap,
     fs,
+    io::Write,
     path::PathBuf,
     process::Command,
     sync::{Arc, Mutex},
@@ -136,9 +137,31 @@ pub fn run_cli_if_requested() -> Option<i32> {
         }
     };
 
+    let output_root = project_root.join("result_ci");
+    let _ = fs::create_dir_all(&output_root);
+    let trace_path = output_root.join("self_test.trace.txt");
+    let mut log_trace = |msg: &str| {
+        if let Ok(mut f) = fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&trace_path)
+        {
+            let _ = writeln!(f, "{msg}");
+        }
+    };
+    log_trace(&format!(
+        "[self-test] exe={} project_root={}",
+        exe_path.display(),
+        project_root.display()
+    ));
+
     let python_bin = resolve_python_bin(&project_root);
     let dispatcher = resolve_python_entry(&project_root, "dispatcher.py");
     if !dispatcher.exists() {
+        log_trace(&format!(
+            "[self-test] dispatcher not found: {}",
+            dispatcher.display()
+        ));
         eprintln!("[self-test] dispatcher not found: {}", dispatcher.display());
         return Some(2);
     }
@@ -150,19 +173,15 @@ pub fn run_cli_if_requested() -> Option<i32> {
             .join("sample.png")
     });
     if !fixture.exists() {
+        log_trace(&format!(
+            "[self-test] input not found: {}",
+            fixture.display()
+        ));
         eprintln!("[self-test] input not found: {}", fixture.display());
         eprintln!("[self-test] hint: pass --input <path> or place resources/fixtures/sample.png");
         return Some(3);
     }
 
-    let output_root = project_root.join("result_ci");
-    if let Err(e) = fs::create_dir_all(&output_root) {
-        eprintln!(
-            "[self-test] failed to create output dir {}: {e}",
-            output_root.display()
-        );
-        return Some(2);
-    }
     let output_root_arg = output_root.to_string_lossy().to_string();
 
     let fixture_stem = fixture
@@ -176,6 +195,13 @@ pub fn run_cli_if_requested() -> Option<i32> {
         fixture.display(),
         output_root.display()
     );
+    log_trace(&format!(
+        "[self-test] python={} dispatcher={} input={} output_root={}",
+        python_bin,
+        dispatcher.display(),
+        fixture.display(),
+        output_root.display()
+    ));
 
     let output = {
         let mut cmd = Command::new(&python_bin);
@@ -192,6 +218,7 @@ pub fn run_cli_if_requested() -> Option<i32> {
         match cmd.output() {
             Ok(o) => o,
             Err(e) => {
+                log_trace(&format!("[self-test] failed to spawn dispatcher: {e}"));
                 eprintln!("[self-test] failed to spawn dispatcher: {e}");
                 return Some(1);
             }
@@ -209,6 +236,10 @@ pub fn run_cli_if_requested() -> Option<i32> {
     );
 
     if !output.status.success() {
+        log_trace(&format!(
+            "[self-test] dispatcher failed with status={}",
+            output.status
+        ));
         eprintln!(
             "[self-test] dispatcher failed with status={}",
             output.status
@@ -229,22 +260,43 @@ pub fn run_cli_if_requested() -> Option<i32> {
     let docx = out_dir.join(format!("{fixture_stem}.docx"));
 
     if !md.exists() {
+        log_trace(&format!(
+            "[self-test] expected markdown not found: {}",
+            md.display()
+        ));
         eprintln!("[self-test] expected markdown not found: {}", md.display());
         return Some(4);
     }
     if !docx.exists() {
+        log_trace(&format!(
+            "[self-test] expected docx not found: {}",
+            docx.display()
+        ));
         eprintln!("[self-test] expected docx not found: {}", docx.display());
         return Some(4);
     }
     if md.metadata().map(|m| m.len()).unwrap_or(0) < 10 {
+        log_trace(&format!(
+            "[self-test] markdown looks too small: {}",
+            md.display()
+        ));
         eprintln!("[self-test] markdown looks too small: {}", md.display());
         return Some(4);
     }
     if docx.metadata().map(|m| m.len()).unwrap_or(0) < 1000 {
+        log_trace(&format!(
+            "[self-test] docx looks too small: {}",
+            docx.display()
+        ));
         eprintln!("[self-test] docx looks too small: {}", docx.display());
         return Some(4);
     }
 
+    log_trace(&format!(
+        "[self-test] ok: {} {}",
+        md.display(),
+        docx.display()
+    ));
     eprintln!("[self-test] ok: {} {}", md.display(), docx.display());
     Some(0)
 }
