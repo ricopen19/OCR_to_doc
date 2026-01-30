@@ -184,12 +184,16 @@ jobs:
           Get-ChildItem -Recurse (Join-Path $appDir "resources/py/fixtures") -ErrorAction SilentlyContinue
           $fixture = Join-Path $appDir "resources/fixtures/sample.png"
           if (-not (Test-Path $fixture)) { throw "fixture not found: $fixture" }
+          $resultDir = Join-Path $appDir "result_ci"
+          New-Item -ItemType Directory -Force -Path $resultDir | Out-Null
           $outLog = Join-Path $appDir "self_test.stdout.txt"
           $errLog = Join-Path $appDir "self_test.stderr.txt"
           if (Test-Path $outLog) { Remove-Item -Force $outLog }
           if (Test-Path $errLog) { Remove-Item -Force $errLog }
           & $exe --self-test --input $fixture 1> $outLog 2> $errLog
           $code = $LASTEXITCODE
+          if (Test-Path $outLog) { Copy-Item -Force $outLog $resultDir }
+          if (Test-Path $errLog) { Copy-Item -Force $errLog $resultDir }
           if ($null -eq $code) { $code = 1 }
           if ($code -ne 0) {
             $ciDir = Join-Path $appDir "result_ci"
