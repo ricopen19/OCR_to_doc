@@ -193,11 +193,13 @@ jobs:
           if (Test-Path $errLog) { Remove-Item -Force $errLog }
           if (Test-Path $pwshLog) { Remove-Item -Force $pwshLog }
           try {
-            & $exe --self-test --input $fixture 1> $outLog 2> $errLog
-            $code = $LASTEXITCODE
+            "exe=$exe" | Set-Content -Path $pwshLog
+            "fixture=$fixture" | Add-Content -Path $pwshLog
+            $proc = Start-Process -FilePath $exe -ArgumentList "--self-test", "--input", $fixture -Wait -PassThru -NoNewWindow -RedirectStandardOutput $outLog -RedirectStandardError $errLog
+            $code = $proc.ExitCode
           } catch {
             $code = 1
-            ($_ | Out-String) | Set-Content -Path $pwshLog
+            ($_ | Out-String) | Add-Content -Path $pwshLog
           }
           if (-not (Test-Path $pwshLog)) {
             "exitcode=$code" | Set-Content -Path $pwshLog
