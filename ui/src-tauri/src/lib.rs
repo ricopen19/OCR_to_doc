@@ -1572,10 +1572,9 @@ fn resolve_resource_roots(project_root: &std::path::Path) -> Vec<PathBuf> {
 
 /// Walk ancestors from exe_dir to find dispatcher.py; return its parent (project root)
 fn resolve_project_root(exe_dir: &std::path::Path) -> Option<PathBuf> {
-    let mut resource_candidate: Option<PathBuf> = None;
     for anc in exe_dir.ancestors() {
-        let legacy = anc.join("dispatcher.py");
         let res = anc.join("resources").join("py").join("dispatcher.py");
+        let legacy = anc.join("dispatcher.py");
         let app_res = anc
             .join("Contents")
             .join("Resources")
@@ -1595,14 +1594,14 @@ fn resolve_project_root(exe_dir: &std::path::Path) -> Option<PathBuf> {
         if app_res_up.exists() {
             return Some(anc.join("Contents").join("Resources"));
         }
+        if res.exists() {
+            return Some(anc.to_path_buf());
+        }
         if legacy.exists() {
             return Some(anc.to_path_buf());
         }
-        if res.exists() && resource_candidate.is_none() {
-            resource_candidate = Some(anc.to_path_buf());
-        }
     }
-    resource_candidate
+    None
 }
 
 #[tauri::command]
