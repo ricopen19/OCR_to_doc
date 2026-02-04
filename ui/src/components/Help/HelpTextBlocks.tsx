@@ -1,4 +1,4 @@
-import { Anchor, Stack, Text } from '@mantine/core'
+import { Accordion, Anchor, Stack, Text } from '@mantine/core'
 import type { ReactNode } from 'react'
 
 export type HelpTextBlock = {
@@ -111,23 +111,40 @@ function renderTextWithLinks(text: string, onOpenLocalLink?: (href: string) => v
 export function HelpTextBlocks({
     raw,
     onOpenLocalLink,
+    mode = 'static',
 }: {
     raw: string
     onOpenLocalLink?: (href: string) => void
+    mode?: 'static' | 'accordion'
 }) {
     const blocks = parseHelpTextBlocks(raw)
+    const renderBody = (body: string) => (
+        <Text style={{ whiteSpace: 'pre-wrap' }}>
+            {body ? renderTextWithLinks(body, onOpenLocalLink) : <Text span c="dimmed">（未設定）</Text>}
+        </Text>
+    )
+
+    if (mode === 'accordion') {
+        return (
+            <Accordion variant="separated">
+                {blocks.map((block, idx) => (
+                    <Accordion.Item key={idx} value={`help-${idx}`}>
+                        <Accordion.Control>
+                            <Text fw={700}>{block.title}</Text>
+                        </Accordion.Control>
+                        <Accordion.Panel>{renderBody(block.body)}</Accordion.Panel>
+                    </Accordion.Item>
+                ))}
+            </Accordion>
+        )
+    }
+
     return (
         <Stack gap="md">
             {blocks.map((block, idx) => (
                 <Stack key={idx} gap={4}>
                     <Text fw={700}>{block.title}</Text>
-                    <Text style={{ whiteSpace: 'pre-wrap' }}>
-                        {block.body ? (
-                            renderTextWithLinks(block.body, onOpenLocalLink)
-                        ) : (
-                            <Text span c="dimmed">（未設定）</Text>
-                        )}
-                    </Text>
+                    {renderBody(block.body)}
                 </Stack>
             ))}
         </Stack>

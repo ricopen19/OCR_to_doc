@@ -14,7 +14,7 @@ export function HelpTroubleshooting() {
             </Stack>
 
             <Card withBorder radius="lg" padding="lg">
-                <HelpTextBlocks raw={troubleshootingRaw} />
+                <HelpTextBlocks raw={troubleshootingRaw} mode="accordion" />
             </Card>
         </Stack>
     )

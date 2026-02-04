@@ -14,9 +14,8 @@ export function HelpHowToUse() {
             </Stack>
 
             <Card withBorder radius="lg" padding="lg">
-                <HelpTextBlocks raw={howToUseRaw} />
+                <HelpTextBlocks raw={howToUseRaw} mode="accordion" />
             </Card>
         </Stack>
     )
 }
-
