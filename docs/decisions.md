@@ -32,3 +32,23 @@
 - **日付**: 2025-11
 - **決定**: 既定は CPU + lite モードで運用
 - **理由**: 配布先の職場 PC（i5-8500 / 16GB / GPU なし）でフルモード実行時に BSOD（MEMORY_MANAGEMENT 等）が発生した実績がある。チャンク処理 + スリープで安定化。
+
+## ADR-006: OCR エンジンを GLM-OCR (Ollama) に移行
+
+- **日付**: 2026-03
+- **決定**: YomiToku → GLM-OCR に移行。Ollama 経由でローカル実行。
+- **理由**: YomiToku は無償利用が個人用途のみ（商用・組織利用は別途ライセンスが必要。参考: https://kotaro-kinoshita.github.io/yomitoku/commercial_use_guideline/ ）。加えて torch 依存で配布が困難（ランタイム同梱で 100MB 超）。GLM-OCR は MIT ライセンスで配布制約なし、0.9B と軽量で Ollama 対応、`ollama pull` だけで導入可能。日本語精度も十分（検証済み）。
+- **却下案**: クラウド OCR（ローカル完結に反する）、glmocr パッケージ直接利用（Python 依存が増える）
+
+## ADR-007: ハイブリッド構成（Rust + Python）
+
+- **日付**: 2026-03
+- **決定**: OCR / MD 処理 / セットアップは Rust（Tauri）に移行し、エクスポート（docx/xlsx）は Python を維持
+- **理由**: Rust 統一は docx 変換ライブラリ（docx-rs）の成熟度不足がボトルネック。xlsx は rust_xlsxwriter で対応可能だが、python-docx との機能差が大きい。段階的に Python 依存を縮小する方針。
+- **却下案**: 全 Rust 統一（docx-rs の機能不足）、全 Python 維持（配布の手軽さが改善しない）
+
+## ADR-008: 初回セットアップの自動化
+
+- **日付**: 2026-03
+- **決定**: Ollama のプロセス起動・モデル取得をアプリ初回起動時に自動実行。Ollama 本体のインストールのみユーザー操作。
+- **理由**: ターゲットユーザー（教職員）はターミナル操作に不慣れ。GUI 完結のセットアップが必須。
