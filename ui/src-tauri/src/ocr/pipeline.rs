@@ -101,6 +101,29 @@ pub async fn run_ocr_pipeline(
         fs::write(&md_path, &markdown)
             .map_err(|e| format!("page_{page_num:03}.md 書き込み失敗: {e}"))?;
         md_paths.push(md_path);
+
+        // 図表抽出
+        if options.enable_figure {
+            if let Some(cb) = &on_progress {
+                cb(page_num, total, &format!("図表検出中: {page_num}/{total}"));
+            }
+            let figure_paths = super::figure_extraction::extract_figures(
+                image_path,
+                result_dir,
+                page_num,
+                &options.ocr_model,
+            )
+            .await;
+            match figure_paths {
+                Ok(paths) if !paths.is_empty() => {
+                    log::info!("Page {page_num}: {} 件の図を抽出", paths.len());
+                }
+                Err(e) => {
+                    log::warn!("Page {page_num}: 図表抽出失敗（続行）: {e}");
+                }
+                _ => {}
+            }
+        }
     }
 
     // PDF の場合、page_images を削除
