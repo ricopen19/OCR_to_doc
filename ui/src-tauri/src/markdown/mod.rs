@@ -62,7 +62,8 @@ pub fn merge_page_markdowns(
 }
 
 /// 基本的な Markdown クリーンアップ（Rust 実装）
-/// 完全な cleanup は当面 Python (markdown_cleanup.py) に委任。
+/// markdown_cleanup.py は YomiToku 固有の補正であり、GLM-OCR では不要。
+/// GLM-OCR 固有の問題が見つかったら最小限の cleanup をここに追加する。
 pub fn basic_cleanup(text: &str) -> String {
     let mut result = text.to_string();
     // 3つ以上の連続改行を2つに

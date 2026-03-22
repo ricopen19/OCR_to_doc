@@ -95,6 +95,15 @@ GLM-OCR は figure 抽出機能を持たない。代替案の比較：
 
 **案 C は並行検証**: Ollama で完結できれば最もシンプル。精度次第。
 
+### Markdown クリーンアップの扱い
+
+既存の `markdown_cleanup.py`（593行、30以上の正規表現）は **YomiToku 固有の出力の癖を補正するもの**（バックリファレンス残骸、LaTeX デリミタ崩れ、img タグ破損 等）。GLM-OCR ではこれらの問題は発生しない前提。
+
+- **GLM-OCR ブランチでは markdown_cleanup.py を使わない**
+- Rust 側には `basic_cleanup`（連続改行の整理のみ）を実装済み
+- GLM-OCR 固有の問題が見つかったら、その時に最小限の cleanup を Rust で追加
+- LLM 校正が入ればモデル固有の癖はそちらで吸収
+
 ### LLM 校正フロー
 
 ```
