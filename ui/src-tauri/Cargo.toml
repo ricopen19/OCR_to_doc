@@ -25,3 +25,9 @@ tauri = { version = "2.9.4", features = [] }
 tauri-plugin-log = "2"
 uuid = { version = "1.11", features = ["v4"] }
 tauri-plugin-dialog = "2"
+# GLM-OCR / Ollama integration
+reqwest = { version = "0.12", features = ["json"] }
+tokio = { version = "1", features = ["full"] }
+base64 = "0.22"
+image = "0.25"
+regex = "1"

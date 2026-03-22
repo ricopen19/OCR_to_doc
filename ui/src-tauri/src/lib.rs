@@ -1,3 +1,8 @@
+mod ollama;
+mod ocr;
+mod markdown;
+mod export;
+
 use std::{
     collections::HashMap,
     fs,

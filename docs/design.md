@@ -119,14 +119,141 @@ GLM-OCR:  index / label / content / bbox_2d のフラットなリスト
 
 → エクスポート側を GLM-OCR JSON ネイティブ対応に書き直す（アダプターより直接対応が保守しやすい）
 
-### 実装フェーズ
+### Phase 1 詳細設計
+
+#### Rust モジュール構成
+
+現在の `lib.rs`（2166行）はモノリシック。以下のモジュールに分割する：
+
+```
+ui/src-tauri/src/
+  lib.rs              ← Tauri コマンド登録のみ（薄く保つ）
+  ollama/
+    mod.rs            ← Ollama HTTP クライアント
+    client.rs         ← reqwest ベースの API ラッパー
+    types.rs          ← リクエスト/レスポンス型定義
+  ocr/
+    mod.rs            ← OCR オーケストレーション
+    pipeline.rs       ← PDF/画像 → ページ画像 → OCR → MD の流れ
+    pdf_to_images.rs  ← PDF → ページ画像変換
+  markdown/
+    mod.rs            ← MD マージ・クリーンアップ
+  export/
+    mod.rs            ← Python エクスポート呼び出し（既存ロジック維持）
+  job.rs              ← ジョブ状態管理（既存の JobInfo/AppState を移動）
+  settings.rs         ← 設定管理（既存ロジックを移動）
+```
+
+#### Ollama クライアント（`ollama/client.rs`）
+
+```rust
+// API エンドポイント
+const BASE_URL: &str = "http://localhost:11434";
+
+// 主要メソッド
+impl OllamaClient {
+    fn health_check() -> Result<bool>          // GET /
+    fn list_models() -> Result<Vec<Model>>     // GET /api/tags
+    fn has_model(name: &str) -> Result<bool>   // list_models + filter
+    fn pull_model(name: &str, on_progress: F)  // POST /api/pull (streaming)
+    fn chat_vision(model: &str, prompt: &str, image_base64: &str) -> Result<String>
+        // POST /api/chat { model, messages: [{ role: "user", content, images }], stream: false }
+}
+```
+
+依存追加（Cargo.toml）:
+- `reqwest = { version = "0.12", features = ["json"] }`
+- `base64 = "0.22"`
+- `tokio = { version = "1", features = ["full"] }`
+
+#### OCR パイプライン（`ocr/pipeline.rs`）
+
+```
+run_ocr_job(input_path, options):
+  1. 入力判定（PDF or 画像）
+  2. PDF → ページ画像化（pdf_to_images）
+  3. 各ページ画像を base64 エンコード
+  4. Ollama API に送信（GLM-OCR で OCR）
+     - プロンプト: "この画像のテキストを Markdown で出力してください"
+     - レスポンス: Markdown テキスト
+  5. page_###.md として保存
+  6. 全ページ MD をマージ → *_merged.md
+  7. （オプション）Python エクスポート呼び出し
+```
+
+#### PDF → 画像化（`ocr/pdf_to_images.rs`）
+
+選択肢:
+- **pdfium-render クレート**（推奨）: Chromium の PDFium をバインディング。クロスプラットフォーム。バイナリ同梱で Poppler 不要に。
+- **poppler バインディング**: 現状の Poppler を Rust から呼ぶ。既存資産を活用。
+
+→ pdfium-render を第一候補とし、Poppler 依存を解消する方向で検証。
+
+#### Markdown マージ（`markdown/mod.rs`）
+
+現在の `postprocess.py` の処理を Rust で再実装:
+- `page_*.md` をソート＋結合
+- `# Page n` 見出しの挿入
+- `markdown_cleanup.py` 相当の整形（正規表現ベース）
+
+#### エクスポート呼び出し（`export/mod.rs`）
+
+既存の Python subprocess パターンを維持:
+```rust
+// docx
+Command::new(&python_bin).arg("export_docx.py").arg(&merged_md_path)
+
+// xlsx（JSON 構造が変わるため Phase 2 で対応）
+Command::new(&python_bin).arg("export_excel_poc.py").arg(&json_path)
+```
+
+#### 進捗管理の変更
+
+現在: Python stdout のテキストパースで進捗を取得
+移行後: Rust 内部で直接進捗を更新
+
+```rust
+// OCR 処理ループ内で直接更新
+for (i, page_image) in page_images.iter().enumerate() {
+    update_progress(job_id, i, total_pages);  // → JobInfo.progress を直接更新
+    let md = ollama.chat_vision("glm-ocr", prompt, &base64_image).await?;
+    save_page_md(output_dir, i + 1, &md)?;
+}
+```
+
+→ stdout パースのハック不要。進捗の精度も上がる。
+
+#### check_environment の変更
+
+```rust
+// 現在
+EnvironmentStatus {
+    python_found, dispatcher_found, poppler_found, ...
+}
+
+// 移行後
+EnvironmentStatus {
+    ollama_running: bool,      // GET / でヘルスチェック
+    ocr_model_ready: bool,     // GET /api/tags で glm-ocr 確認
+    refine_model_ready: bool,  // 校正 LLM の有無（オプション）
+    python_found: bool,        // エクスポート用（docx/xlsx）
+    result_dir_found: bool,
+}
+```
+
+### 実装フェーズ（全体）
 
 #### Phase 1: Rust + Ollama で OCR 動作
-- [ ] Rust から Ollama API で GLM-OCR を呼び出す
-- [ ] PDF → 画像化を Rust で実装（pdfium or Poppler バインディング）
-- [ ] Markdown 出力 + マージを Rust で実装
-- [ ] 図表抽出（DocLayout-YOLO ONNX + Rust or VLM 検証）
+- [ ] lib.rs をモジュール分割
+- [ ] Ollama クライアント実装（health_check, list_models, chat_vision）
+- [ ] PDF → 画像化を Rust で実装（pdfium-render）
+- [ ] OCR パイプライン実装（画像 → Ollama → page_###.md）
+- [ ] Markdown マージを Rust で実装
+- [ ] run_job を Rust OCR パイプラインに切り替え
+- [ ] 進捗管理を Rust 内部更新に変更
+- [ ] 図表抽出の検証（VLM or DocLayout-YOLO ONNX）
 - [ ] docx エクスポート（Python 呼び出し維持）の動作確認
+- [ ] check_environment を Ollama 対応に変更
 
 #### Phase 2: エクスポート + 校正
 - [ ] GLM-OCR JSON → xlsx/csv 変換の対応（Python 側を修正）
