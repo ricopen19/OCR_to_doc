@@ -444,6 +444,10 @@ struct EnvironmentStatus {
     poppler_found: bool,
     poppler_path: Option<String>,
     resource_roots: Vec<String>,
+    // Ollama 関連
+    ollama_running: bool,
+    ocr_model_ready: bool,
+    ocr_model_name: String,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -581,6 +585,211 @@ fn apply_window_settings(app: &tauri::AppHandle, project_root: &std::path::Path)
             height as f64,
         )));
     }
+}
+
+/// Ollama (GLM-OCR) ベースの OCR ジョブ実行コマンド。
+/// 既存の run_job（Python subprocess）と並行して使用可能。
+#[tauri::command]
+async fn run_job_ollama(
+    paths: Vec<String>,
+    options: Option<RunOptions>,
+    state: State<'_, Arc<AppState>>,
+) -> Result<RunJobResponse, String> {
+    if paths.is_empty() {
+        return Err("入力ファイルがありません".into());
+    }
+
+    let exe_dir = std::env::current_exe().map_err(|e| format!("exe path 取得失敗: {e}"))?;
+    let project_root = resolve_project_root(&exe_dir).ok_or("project root 解決失敗")?;
+    let settings = load_settings_from_disk(&project_root).ok();
+    let output_root = resolve_output_root(&project_root, settings.as_ref());
+    fs::create_dir_all(&output_root)
+        .map_err(|e| format!("出力ディレクトリ作成失敗: {e}"))?;
+
+    let opts = options.unwrap_or_else(|| RunOptions {
+        formats: vec!["md".into()],
+        image_as_pdf: false,
+        enable_figure: true,
+        use_gpu: false,
+        mode: String::new(),
+        docx_engine: None,
+        chunk_size: None,
+        enable_rest: false,
+        rest_seconds: None,
+        pdf_dpi: None,
+        excel_mode: None,
+        excel_meta_sheet: None,
+        excel_symbol_fallback: None,
+        file_options: None,
+    });
+
+    let job_id = Uuid::new_v4().to_string();
+    {
+        let mut jobs = state.jobs.lock().map_err(|e| format!("lock: {e}"))?;
+        jobs.insert(
+            job_id.clone(),
+            JobInfo {
+                status: JobStatus::Running,
+                progress: 0.0,
+                log: vec!["Ollama OCR ジョブ開始".into()],
+                outputs: vec![],
+                output_paths: vec![],
+                preview: None,
+                error: None,
+                current_message: Some("Ollama に接続中...".into()),
+                page_current: None,
+                page_total: None,
+                eta_seconds: None,
+            },
+        );
+    }
+
+    let state_arc: Arc<AppState> = state.inner().clone();
+    let job_id_clone = job_id.clone();
+    let dpi = opts.pdf_dpi.unwrap_or(300);
+    let enable_figure = opts.enable_figure;
+    let formats = opts.formats.clone();
+    let python_bin = resolve_python_bin(&project_root);
+    let project_root_clone = project_root.clone();
+
+    // バックグラウンドスレッドで OCR 実行
+    tokio::spawn(async move {
+        let total_files = paths.len();
+
+        for (file_idx, input_path_str) in paths.iter().enumerate() {
+            let input_path = std::path::PathBuf::from(input_path_str);
+            let stem = input_path
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or("output");
+            let result_dir = output_root.join(stem);
+
+            let ocr_options = ocr::pipeline::OcrOptions {
+                ocr_model: "glm-ocr".to_string(),
+                dpi,
+                poppler_path: None,
+                enable_figure,
+            };
+
+            // 進捗コールバック
+            let state_cb = state_arc.clone();
+            let job_id_cb = job_id_clone.clone();
+            let file_start = (file_idx as f32 / total_files as f32) * 100.0;
+            let file_range = 100.0 / total_files as f32;
+            let on_progress: ocr::pipeline::ProgressCallback =
+                Box::new(move |current, total, msg| {
+                    if let Ok(mut jobs) = state_cb.jobs.lock() {
+                        if let Some(job) = jobs.get_mut(&job_id_cb) {
+                            let ocr_ratio = current as f32 / total.max(1) as f32;
+                            job.progress = file_start + file_range * 0.90 * ocr_ratio;
+                            job.current_message = Some(msg.to_string());
+                            job.page_current = Some(current);
+                            job.page_total = Some(total);
+                        }
+                    }
+                });
+
+            // OCR 実行
+            match ocr::pipeline::run_ocr_pipeline(
+                &input_path,
+                &result_dir,
+                &ocr_options,
+                Some(&on_progress),
+            )
+            .await
+            {
+                Ok(_md_paths) => {
+                    // Markdown マージ
+                    if let Ok(mut jobs) = state_arc.jobs.lock() {
+                        if let Some(job) = jobs.get_mut(&job_id_clone) {
+                            job.progress = file_start + file_range * 0.92;
+                            job.current_message = Some("Markdown マージ中...".into());
+                        }
+                    }
+
+                    let _ = markdown::merge_page_markdowns(&result_dir, stem, true);
+
+                    // docx エクスポート（Python 呼び出し）
+                    if formats.iter().any(|f| f == "docx") {
+                        if let Ok(mut jobs) = state_arc.jobs.lock() {
+                            if let Some(job) = jobs.get_mut(&job_id_clone) {
+                                job.progress = file_start + file_range * 0.96;
+                                job.current_message =
+                                    Some("docx 変換中...".into());
+                            }
+                        }
+
+                        let merged_md = result_dir.join(format!("{stem}_merged.md"));
+                        if merged_md.exists() {
+                            let export_script =
+                                resolve_python_entry(&project_root_clone, "export_docx.py");
+                            if export_script.exists() {
+                                let mut cmd = Command::new(&python_bin);
+                                apply_python_env(&mut cmd);
+                                cmd.arg(&export_script).arg(&merged_md);
+                                let _ = cmd.status();
+                            }
+                        }
+                    }
+
+                    // 出力ファイル収集
+                    if let Ok(mut jobs) = state_arc.jobs.lock() {
+                        if let Some(job) = jobs.get_mut(&job_id_clone) {
+                            let mut outputs = Vec::new();
+                            let mut output_paths = Vec::new();
+                            if let Ok(entries) = fs::read_dir(&result_dir) {
+                                for entry in entries.flatten() {
+                                    let path = entry.path();
+                                    if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
+                                        if name.ends_with("_merged.md")
+                                            || name.ends_with("_merged.docx")
+                                            || name.ends_with(".xlsx")
+                                            || name.ends_with(".csv")
+                                        {
+                                            outputs.push(name.to_string());
+                                            output_paths
+                                                .push(path.to_string_lossy().to_string());
+                                        }
+                                    }
+                                }
+                            }
+
+                            // プレビュー（merged.md の内容）
+                            let merged_md = result_dir.join(format!("{stem}_merged.md"));
+                            let preview = fs::read_to_string(&merged_md).ok();
+
+                            job.outputs = outputs;
+                            job.output_paths = output_paths;
+                            job.preview = preview;
+                        }
+                    }
+                }
+                Err(e) => {
+                    if let Ok(mut jobs) = state_arc.jobs.lock() {
+                        if let Some(job) = jobs.get_mut(&job_id_clone) {
+                            job.status = JobStatus::Error;
+                            job.error = Some(e);
+                            job.current_message = Some("エラーが発生しました".into());
+                        }
+                    }
+                    return;
+                }
+            }
+        }
+
+        // 完了
+        if let Ok(mut jobs) = state_arc.jobs.lock() {
+            if let Some(job) = jobs.get_mut(&job_id_clone) {
+                if job.status != JobStatus::Error {
+                    job.status = JobStatus::Done;
+                    job.progress = 100.0;
+                    job.current_message = Some("完了".into());
+                }
+            }
+        }
+    });
+
+    Ok(RunJobResponse { job_id })
 }
 
 #[tauri::command]
@@ -2021,7 +2230,7 @@ fn open_result_file(dir_name: String) -> Result<(), String> {
 }
 
 #[tauri::command]
-fn check_environment() -> Result<EnvironmentStatus, String> {
+async fn check_environment() -> Result<EnvironmentStatus, String> {
     let exe_dir = std::env::current_exe().map_err(|e| format!("failed to get exe path: {e}"))?;
     let project_root = resolve_project_root(&exe_dir).ok_or("failed to resolve project root")?;
     let settings = load_settings_from_disk(&project_root).ok();
@@ -2088,6 +2297,16 @@ fn check_environment() -> Result<EnvironmentStatus, String> {
     });
     let poppler_found = poppler_path.is_some();
 
+    // Ollama チェック
+    let ollama_client = ollama::client::OllamaClient::new();
+    let ocr_model_name = "glm-ocr".to_string();
+    let ollama_running = ollama_client.health_check().await.unwrap_or(false);
+    let ocr_model_ready = if ollama_running {
+        ollama_client.has_model(&ocr_model_name).await.unwrap_or(false)
+    } else {
+        false
+    };
+
     Ok(EnvironmentStatus {
         project_root: project_root.to_string_lossy().to_string(),
         os: std::env::consts::OS.to_string(),
@@ -2101,6 +2320,9 @@ fn check_environment() -> Result<EnvironmentStatus, String> {
         poppler_found,
         poppler_path: poppler_path.map(|p| p.to_string_lossy().to_string()),
         resource_roots: resource_roots_display,
+        ollama_running,
+        ocr_model_ready,
+        ocr_model_name,
     })
 }
 
@@ -2134,6 +2356,7 @@ pub fn run() {
         .manage(Arc::new(AppState::default()))
         .invoke_handler(tauri::generate_handler![
             run_job,
+            run_job_ollama,
             save_clipboard_image,
             render_preview,
             get_progress,
