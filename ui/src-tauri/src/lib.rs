@@ -2,19 +2,25 @@ mod ollama;
 mod ocr;
 mod markdown;
 mod export;
+mod settings;
+mod job;
+
+use settings::AppSettings;
+use job::{
+    AppState, JobInfo, JobStatus, RunOptions, CropRect,
+    RunJobResponse, ProgressResponse, ResultResponse, RecentResultEntry,
+    EnvironmentStatus, PreviewResponse,
+};
 
 use std::{
-    collections::HashMap,
     fs,
     io::Write,
     path::PathBuf,
     process::Command,
-    sync::{Arc, Mutex},
+    sync::Arc,
     thread,
     time::{Instant, SystemTime, UNIX_EPOCH},
 };
-
-use serde::{Deserialize, Serialize};
 use tauri::{Manager, State};
 use tauri_plugin_dialog;
 use uuid::Uuid;
@@ -315,241 +321,11 @@ pub fn run_cli_if_requested() -> Option<i32> {
     Some(0)
 }
 
-#[derive(Default)]
-struct AppState {
-    jobs: Mutex<HashMap<String, JobInfo>>,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-struct JobInfo {
-    status: JobStatus,
-    progress: f32,
-    log: Vec<String>,
-    outputs: Vec<String>,
-    output_paths: Vec<String>,
-    preview: Option<String>,
-    error: Option<String>,
-    current_message: Option<String>,
-    page_current: Option<u32>,
-    page_total: Option<u32>,
-    eta_seconds: Option<u32>,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "lowercase")]
-enum JobStatus {
-    Idle,
-    Running,
-    Done,
-    Error,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct RunOptions {
-    #[serde(default)]
-    formats: Vec<String>,
-    #[serde(default)]
-    image_as_pdf: bool,
-    #[serde(default)]
-    enable_figure: bool,
-    #[serde(default)]
-    use_gpu: bool,
-    #[serde(default)]
-    mode: String,
-    #[serde(default)]
-    docx_engine: Option<String>,
-    #[serde(default)]
-    chunk_size: Option<u32>,
-    #[serde(default)]
-    enable_rest: bool,
-    #[serde(default)]
-    rest_seconds: Option<u32>,
-    #[serde(default)]
-    pdf_dpi: Option<u32>,
-    #[serde(default)]
-    excel_mode: Option<String>,
-    #[serde(default)]
-    excel_meta_sheet: Option<bool>,
-    #[serde(default)]
-    excel_symbol_fallback: Option<bool>,
-    #[serde(default)]
-    file_options: Option<HashMap<String, FileSpecificOptions>>,
-}
-
-#[derive(Debug, Deserialize, Clone)]
-#[serde(rename_all = "camelCase")]
-struct CropRect {
-    left: f64,
-    top: f64,
-    width: f64,
-    height: f64,
-}
-
-#[derive(Debug, Deserialize, Clone)]
-#[serde(rename_all = "camelCase")]
-struct FileSpecificOptions {
-    start: Option<u32>,
-    end: Option<u32>,
-    crop: Option<CropRect>,
-}
-
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct RunJobResponse {
-    job_id: String,
-}
-
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct ProgressResponse {
-    status: JobStatus,
-    progress: f32,
-    log: Vec<String>,
-    error: Option<String>,
-    current_message: Option<String>,
-    page_current: Option<u32>,
-    page_total: Option<u32>,
-    eta_seconds: Option<u32>,
-}
-
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct ResultResponse {
-    outputs: Vec<String>,
-    preview: Option<String>,
-}
-
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct RecentResultEntry {
-    dir_name: String,
-    updated_at_ms: u64,
-    page_range: Option<String>,
-    best_file: Option<String>,
-}
-
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct EnvironmentStatus {
-    project_root: String,
-    os: String,
-    dispatcher_found: bool,
-    dispatcher_path: Option<String>,
-    result_dir_found: bool,
-    result_root: String,
-    python_bin: String,
-    python_found: bool,
-    python_path: Option<String>,
-    poppler_found: bool,
-    poppler_path: Option<String>,
-    resource_roots: Vec<String>,
-    // Ollama 関連
-    ollama_running: bool,
-    ocr_model_ready: bool,
-    ocr_model_name: String,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct PreviewResponse {
-    data_url: String,
-    page_count: Option<u32>,
-    page: Option<u32>,
-}
-
-#[derive(Debug, Serialize, Deserialize, Clone)]
-#[serde(rename_all = "camelCase")]
-struct AppSettings {
-    #[serde(default)]
-    formats: Vec<String>,
-    #[serde(default)]
-    image_as_pdf: bool,
-    #[serde(default)]
-    enable_figure: bool,
-    #[serde(default)]
-    mode: Option<String>,
-    #[serde(default)]
-    docx_engine: Option<String>,
-    #[serde(default)]
-    excel_mode: Option<String>,
-    #[serde(default)]
-    use_gpu: bool,
-    #[serde(default)]
-    output_root: Option<String>,
-    #[serde(default = "default_excel_meta_sheet")]
-    excel_meta_sheet: bool,
-    #[serde(default = "default_excel_symbol_fallback")]
-    excel_symbol_fallback: bool,
-    #[serde(default)]
-    chunk_size: Option<u32>,
-    #[serde(default)]
-    enable_rest: bool,
-    #[serde(default)]
-    rest_seconds: Option<u32>,
-    #[serde(default)]
-    pdf_dpi: Option<u32>,
-    #[serde(default)]
-    window_width: Option<u32>,
-    #[serde(default)]
-    window_height: Option<u32>,
-    #[serde(default = "default_preview_quality")]
-    preview_quality: String,
-}
-
-fn default_excel_meta_sheet() -> bool {
-    true
-}
-
-fn default_excel_symbol_fallback() -> bool {
-    true
-}
-
-fn default_preview_quality() -> String {
-    "light".to_string()
-}
+// 型定義は job.rs に移動済み
 
 fn load_settings_from_disk(project_root: &std::path::Path) -> Result<AppSettings, String> {
-    // Ensure configs directory exists
     let config_dir = resolve_config_dir(project_root);
-    if !config_dir.exists() {
-        let _ = fs::create_dir_all(&config_dir);
-    }
-
-    let settings_path = config_dir.join("settings.json");
-    if settings_path.exists() {
-        let content = fs::read_to_string(&settings_path).map_err(|e| e.to_string())?;
-        let settings: AppSettings = serde_json::from_str(&content).map_err(|e| e.to_string())?;
-        Ok(settings)
-    } else {
-        let legacy_path = project_root.join("configs").join("settings.json");
-        if legacy_path.exists() {
-            let content = fs::read_to_string(&legacy_path).map_err(|e| e.to_string())?;
-            let settings: AppSettings =
-                serde_json::from_str(&content).map_err(|e| e.to_string())?;
-            return Ok(settings);
-        }
-        // Return defaults
-        Ok(AppSettings {
-            formats: vec!["md".into()],
-            image_as_pdf: false,
-            enable_figure: true,
-            mode: Some("lite".into()),
-            docx_engine: Some("python".into()),
-            excel_mode: Some("layout".into()),
-            use_gpu: false,
-            output_root: None,
-            excel_meta_sheet: true,
-            excel_symbol_fallback: true,
-            chunk_size: Some(10),
-            enable_rest: false,
-            rest_seconds: Some(10),
-            pdf_dpi: Some(200),
-            window_width: Some(1200),
-            window_height: Some(760),
-            preview_quality: default_preview_quality(),
-        })
-    }
+    settings::load_settings_from_disk(project_root, &config_dir)
 }
 
 fn default_gpu_device() -> &'static str {
@@ -2337,17 +2113,8 @@ fn load_settings() -> Result<AppSettings, String> {
 fn save_settings(settings: AppSettings) -> Result<(), String> {
     let exe_dir = std::env::current_exe().map_err(|e| e.to_string())?;
     let project_root = resolve_project_root(&exe_dir).unwrap_or_else(|| PathBuf::from("."));
-
     let config_dir = resolve_config_dir(&project_root);
-    if !config_dir.exists() {
-        fs::create_dir_all(&config_dir).map_err(|e| e.to_string())?;
-    }
-
-    let settings_path = config_dir.join("settings.json");
-    let content = serde_json::to_string_pretty(&settings).map_err(|e| e.to_string())?;
-
-    fs::write(settings_path, content).map_err(|e| e.to_string())?;
-    Ok(())
+    settings::save_settings_to_disk(&settings, &config_dir)
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]

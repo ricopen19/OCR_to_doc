@@ -1,16 +1,19 @@
 use std::fs;
+use std::io::Cursor;
 use std::path::{Path, PathBuf};
 
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD as BASE64;
+use image::GenericImageView;
 
 use crate::ollama::client::OllamaClient;
 use super::pdf_to_images::{is_pdf_file, is_image_file};
 
 const OCR_MODEL: &str = "glm-ocr";
-const OCR_PROMPT: &str = "この画像のテキストを Markdown 形式で出力してください。\
-テーブルは Markdown テーブル構文を使い、数式はプレーンテキストで表現してください。\
-画像内の図やイラストは無視し、テキスト情報のみ抽出してください。";
+const OCR_PROMPT: &str = "OCR";
+
+/// glm-ocr の画像サイズ上限（長辺 2048px）
+const MAX_IMAGE_DIMENSION: u32 = 2048;
 
 /// OCR 処理の進捗コールバック
 pub type ProgressCallback = Box<dyn Fn(u32, u32, &str) + Send + Sync>;
@@ -86,10 +89,8 @@ pub async fn run_ocr_pipeline(
             cb(page_num, total, &format!("OCR 処理中: {page_num}/{total}"));
         }
 
-        // 画像を base64 エンコード
-        let image_bytes = fs::read(image_path)
-            .map_err(|e| format!("画像読み込み失敗 {}: {e}", image_path.display()))?;
-        let image_base64 = BASE64.encode(&image_bytes);
+        // 画像を読み込み、必要ならリサイズして base64 エンコード
+        let image_base64 = encode_image_for_ocr(image_path)?;
 
         // Ollama で OCR
         let markdown = client
@@ -141,9 +142,33 @@ pub async fn run_ocr_pipeline(
     Ok(md_paths)
 }
 
-/// 画像ファイルを base64 エンコードする
-pub fn encode_image_base64(path: &Path) -> Result<String, String> {
-    let bytes = fs::read(path)
-        .map_err(|e| format!("画像読み込み失敗: {e}"))?;
-    Ok(BASE64.encode(&bytes))
+/// 画像を読み込み、長辺が MAX_IMAGE_DIMENSION を超える場合はリサイズして base64 エンコード。
+/// glm-ocr は 2048x2048 を超える画像を処理できないため必須。
+fn encode_image_for_ocr(path: &Path) -> Result<String, String> {
+    let img = image::open(path)
+        .map_err(|e| format!("画像読み込み失敗 {}: {e}", path.display()))?;
+    let (w, h) = img.dimensions();
+
+    if w <= MAX_IMAGE_DIMENSION && h <= MAX_IMAGE_DIMENSION {
+        // リサイズ不要 — 元ファイルをそのままエンコード
+        let bytes = fs::read(path)
+            .map_err(|e| format!("画像読み込み失敗: {e}"))?;
+        return Ok(BASE64.encode(&bytes));
+    }
+
+    // 長辺を MAX_IMAGE_DIMENSION に合わせてリサイズ
+    let scale = MAX_IMAGE_DIMENSION as f64 / w.max(h) as f64;
+    let new_w = (w as f64 * scale) as u32;
+    let new_h = (h as f64 * scale) as u32;
+    log::info!(
+        "画像リサイズ: {}x{} → {}x{} ({})",
+        w, h, new_w, new_h, path.display()
+    );
+    let resized = img.resize_exact(new_w, new_h, image::imageops::FilterType::Lanczos3);
+
+    let mut buf = Cursor::new(Vec::new());
+    resized
+        .write_to(&mut buf, image::ImageFormat::Png)
+        .map_err(|e| format!("リサイズ画像のエンコード失敗: {e}"))?;
+    Ok(BASE64.encode(buf.into_inner()))
 }

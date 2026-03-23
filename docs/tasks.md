@@ -13,39 +13,40 @@
 - [x] 数式 OCR 検証 → 見送り（ADR-002）
 - [x] ドキュメント整理（CLAUDE.md 方針準拠）
 
-## 未着手（GLM-OCR 移行 / feature/glm-ocr ブランチ）
+## GLM-OCR 移行（feature/glm-ocr ブランチ）
 
 ### Phase 1: Rust + Ollama で OCR 動作
 
 #### 1-1. Rust 基盤整備
-- [ ] lib.rs をモジュール分割（ollama/, ocr/, markdown/, export/, job.rs, settings.rs）
-- [ ] Cargo.toml に依存追加（reqwest, base64, tokio）
+- [x] Cargo.toml に依存追加（reqwest, base64, tokio, image, serde_json, regex）
+- [ ] lib.rs をモジュール分割 — ollama/, ocr/, markdown/ 済。job.rs, settings.rs, export/ が lib.rs に残存
 
 #### 1-2. Ollama クライアント
-- [ ] health_check（GET /）
-- [ ] list_models / has_model（GET /api/tags）
-- [ ] chat_vision（POST /api/chat + base64 画像）
-- [ ] pull_model（POST /api/pull + ストリーミング進捗）
+- [x] health_check（GET /）
+- [x] list_models / has_model（GET /api/tags）
+- [x] chat_vision（POST /api/chat + base64 画像）
+- [x] pull_model（POST /api/pull、非ストリーミング）
+- [x] chat_text（LLM 校正用テキストチャット）
 
 #### 1-3. OCR パイプライン
-- [ ] PDF → 画像化（pdfium-render を検証、ダメなら Poppler バインディング）
-- [ ] 画像 → base64 → Ollama → Markdown の基本フロー
-- [ ] page_###.md の保存・命名
-- [ ] run_job を Rust OCR パイプラインに切り替え
-- [ ] 進捗管理を Rust 内部更新に変更（stdout パース廃止）
+- [x] PDF → 画像化（Poppler pdftoppm 方式で動作）
+- [x] 画像 → base64 → Ollama → Markdown の基本フロー
+- [x] page_###.md の保存・命名
+- [x] run_job を Rust OCR パイプラインに切り替え（run_job_ollama コマンド）
+- [x] 進捗管理を Rust 内部更新に変更（ProgressCallback で直接 JobInfo 更新）
 
 #### 1-4. Markdown 処理
-- [ ] page_*.md のソート + マージ（# Page n 挿入）
-- [ ] markdown_cleanup 相当の整形を Rust で実装
+- [x] page_*.md のソート + マージ（# Page n 挿入）
+- [x] basic_cleanup 実装（GLM-OCR では最小限で十分、方針確定済み）
 
 #### 1-5. 図表抽出
-- [ ] 案 C（VLM で bbox 検出）の精度検証
-- [ ] 案 D（DocLayout-YOLO ONNX + Rust）の導入検証
-- [ ] 採用した方式で crop + figures/ 保存を実装
+- [x] 案 C（VLM で bbox 検出）実装済み — 精度の実地検証は未実施
+- [x] crop + figures/ 保存を実装
+- [ ] 案 C の精度を実データで検証し、不十分なら案 D（DocLayout-YOLO ONNX）を検討
 
 #### 1-6. エクスポート・環境チェック
-- [ ] docx エクスポート（Python subprocess 呼び出し）の動作確認
-- [ ] check_environment を Ollama 対応に変更
+- [x] check_environment を Ollama 対応に変更（ollama_running, ocr_model_ready）
+- [ ] docx エクスポート（Python subprocess 呼び出し）の E2E 動作確認
 
 ### Phase 2: エクスポート + 校正
 - [ ] GLM-OCR JSON → xlsx/csv 変換の対応
