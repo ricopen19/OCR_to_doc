@@ -331,9 +331,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("output", type=Path, help="出力する xlsx パス")
     parser.add_argument(
         "--format",
-        choices=["json", "csv", "html"],
+        choices=["json", "csv", "html", "markdown"],
         required=True,
-        help="入力フォーマット",
+        help="入力フォーマット (json/csv/html/markdown)",
     )
     parser.add_argument(
         "--csv-tables-only",
@@ -485,6 +485,65 @@ def load_tables_from_html(path: Path) -> list[list[TableCell]]:
             tables.append(cells)
 
     return tables
+
+
+def load_tables_from_markdown(path: Path) -> list[list[TableCell]]:
+    """Markdown テーブルを解析して TableCell リストに変換する。
+
+    GLM-OCR の出力する Markdown 形式に対応:
+    - ``| col1 | col2 | col3 |`` 形式（標準 Markdown テーブル）
+    - ``col1 | col2 | col3`` 形式（先頭/末尾パイプなし）
+    - セパレータ行 (``--- | --- | ---``) は自動スキップ
+    - 複数テーブルに対応（テーブル間に非テーブル行がある場合に分割）
+    """
+    content = path.read_text(encoding="utf-8")
+    tables: list[list[TableCell]] = []
+    current_rows: list[list[str]] = []
+    last_was_separator = False
+
+    for line in content.splitlines():
+        stripped = line.strip()
+        # パイプ区切りの行か判定
+        if "|" in stripped and stripped.count("|") >= 1:
+            # 先頭・末尾の | を除去してからセル分割
+            inner = stripped.strip("|")
+            cells = [c.strip() for c in inner.split("|")]
+            # セパレータ行（--- のみ）をスキップ
+            if all(re.fullmatch(r":?-+:?", c) for c in cells if c):
+                last_was_separator = True
+                continue
+            # 全セルが空ならスキップ
+            if not any(c for c in cells):
+                continue
+            last_was_separator = False
+            current_rows.append(cells)
+        else:
+            # セパレータ行直後の空行はテーブル分割とみなさない
+            if stripped == "" and last_was_separator:
+                last_was_separator = False
+                continue
+            last_was_separator = False
+            # テーブル外の行 → 蓄積中のテーブルをフラッシュ
+            if current_rows:
+                tables.append(current_rows)
+                current_rows = []
+
+    if current_rows:
+        tables.append(current_rows)
+
+    if not tables:
+        raise ValueError("Markdown 内にテーブルが見つかりません")
+
+    result: list[list[TableCell]] = []
+    for table_rows in tables:
+        cells: list[TableCell] = []
+        for r_idx, row in enumerate(table_rows, start=1):
+            for c_idx, value in enumerate(row, start=1):
+                cells.append(TableCell(row=r_idx, col=c_idx, text=value.strip(), box=None))
+        if cells:
+            result.append(cells)
+
+    return result
 
 
 def auto_adjust_columns(ws) -> None:
@@ -1207,6 +1266,8 @@ def main() -> None:
         tables = load_tables_from_json(args.input)
     elif args.format == "csv":
         tables = load_tables_from_csv(args.input, tables_only=args.csv_tables_only)
+    elif args.format == "markdown":
+        tables = load_tables_from_markdown(args.input)
     else:
         tables = load_tables_from_html(args.input)
 

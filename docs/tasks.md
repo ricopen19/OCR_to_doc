@@ -49,8 +49,10 @@
 - [ ] docx エクスポート（Python subprocess 呼び出し）の E2E 動作確認
 
 ### Phase 2: エクスポート + 校正
-- [ ] GLM-OCR JSON → xlsx/csv 変換の対応
-- [ ] LLM 校正フローの実装
+- [x] Markdown テーブル → xlsx エクスポート（load_tables_from_markdown 追加）
+- [x] run_job_ollama から xlsx エクスポートを呼び出し
+- [ ] csv エクスポートの対応（xlsx と同様に Markdown から変換）
+- [ ] LLM 校正フローの実装（OCR 精度次第でオプション扱い）
 
 ### Phase 3: セットアップ + GUI
 - [ ] 初回セットアップフロー（Ollama 検出 → モデル pull → 起動）

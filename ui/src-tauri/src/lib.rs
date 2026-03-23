@@ -485,17 +485,18 @@ async fn run_job_ollama(
 
                     let _ = markdown::merge_page_markdowns(&result_dir, stem, true);
 
+                    let merged_md = result_dir.join(format!("{stem}_merged.md"));
+
                     // docx エクスポート（Python 呼び出し）
                     if formats.iter().any(|f| f == "docx") {
                         if let Ok(mut jobs) = state_arc.jobs.lock() {
                             if let Some(job) = jobs.get_mut(&job_id_clone) {
-                                job.progress = file_start + file_range * 0.96;
+                                job.progress = file_start + file_range * 0.94;
                                 job.current_message =
                                     Some("docx 変換中...".into());
                             }
                         }
 
-                        let merged_md = result_dir.join(format!("{stem}_merged.md"));
                         if merged_md.exists() {
                             let export_script =
                                 resolve_python_entry(&project_root_clone, "export_docx.py");
@@ -503,6 +504,32 @@ async fn run_job_ollama(
                                 let mut cmd = Command::new(&python_bin);
                                 apply_python_env(&mut cmd);
                                 cmd.arg(&export_script).arg(&merged_md);
+                                let _ = cmd.status();
+                            }
+                        }
+                    }
+
+                    // xlsx エクスポート（Markdown テーブル → xlsx）
+                    if formats.iter().any(|f| f == "xlsx") {
+                        if let Ok(mut jobs) = state_arc.jobs.lock() {
+                            if let Some(job) = jobs.get_mut(&job_id_clone) {
+                                job.progress = file_start + file_range * 0.97;
+                                job.current_message =
+                                    Some("xlsx 変換中...".into());
+                            }
+                        }
+
+                        if merged_md.exists() {
+                            let xlsx_path = result_dir.join(format!("{stem}.xlsx"));
+                            let export_script =
+                                resolve_python_entry(&project_root_clone, "export_excel_poc.py");
+                            if export_script.exists() {
+                                let mut cmd = Command::new(&python_bin);
+                                apply_python_env(&mut cmd);
+                                cmd.arg(&export_script)
+                                    .arg(&merged_md)
+                                    .arg(&xlsx_path)
+                                    .arg("--format").arg("markdown");
                                 let _ = cmd.status();
                             }
                         }
