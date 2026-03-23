@@ -4,12 +4,18 @@ mod markdown;
 mod export;
 mod settings;
 mod job;
+mod paths;
 
 use settings::AppSettings;
 use job::{
     AppState, JobInfo, JobStatus, RunOptions, CropRect,
     RunJobResponse, ProgressResponse, ResultResponse, RecentResultEntry,
     EnvironmentStatus, PreviewResponse,
+};
+use paths::{
+    apply_python_env, default_gpu_device, resolve_python_entry, resolve_python_bin,
+    resolve_config_dir, resolve_output_root, resolve_output_root_from_disk,
+    resolve_resource_roots, resolve_project_root,
 };
 
 use std::{
@@ -25,13 +31,7 @@ use tauri::{Manager, State};
 use tauri_plugin_dialog;
 use uuid::Uuid;
 
-const APP_SUPPORT_DIR_NAME: &str = "ocr-to-doc";
-
-fn apply_python_env(cmd: &mut Command) {
-    // Prevent UnicodeEncodeError on Windows where stdout/stderr encoding can be non-UTF-8 (e.g. cp1252).
-    cmd.env("PYTHONUTF8", "1");
-    cmd.env("PYTHONIOENCODING", "utf-8");
-}
+// APP_SUPPORT_DIR_NAME, apply_python_env は paths.rs に移動済み
 
 pub fn run_cli_if_requested() -> Option<i32> {
     let args: Vec<String> = std::env::args().collect();
@@ -328,16 +328,7 @@ fn load_settings_from_disk(project_root: &std::path::Path) -> Result<AppSettings
     settings::load_settings_from_disk(project_root, &config_dir)
 }
 
-fn default_gpu_device() -> &'static str {
-    #[cfg(target_os = "macos")]
-    {
-        "mps"
-    }
-    #[cfg(not(target_os = "macos"))]
-    {
-        "cuda"
-    }
-}
+// default_gpu_device は paths.rs に移動済み
 
 fn apply_window_settings(app: &tauri::AppHandle, project_root: &std::path::Path) {
     let settings = load_settings_from_disk(project_root).ok();
@@ -1221,70 +1212,7 @@ fn render_preview(
 /// Resolve python entry script path with priority:
 /// 1) project_root/resources/py/<filename> (or _up_/resources/py)
 /// 2) project_root/<filename> (legacy)
-fn resolve_python_entry(project_root: &std::path::Path, filename: &str) -> PathBuf {
-    for root in resolve_resource_roots(project_root) {
-        let res = root.join("py").join(filename);
-        if res.exists() {
-            return res;
-        }
-    }
-    project_root.join(filename)
-}
-
-/// Resolve python binary path with priority:
-/// 1) env PYTHON_BIN
-/// 2) project_root/resources/python/python(.exe) (portable runtime, or _up_/resources/python)
-/// 3) project_root/resources/.venv/(Scripts|bin)/python(.exe) (legacy, or _up_/resources/.venv)
-/// 4) project_root/.venv/(Scripts|bin)/python(.exe)
-/// 5) "python"
-fn resolve_python_bin(project_root: &std::path::Path) -> String {
-    if let Ok(bin) = std::env::var("PYTHON_BIN") {
-        if !bin.is_empty() {
-            return bin;
-        }
-    }
-
-    // resources/python (portable runtime)
-    for root in resolve_resource_roots(project_root) {
-        #[cfg(target_os = "windows")]
-        let res_python = root.join("python").join("python.exe");
-        #[cfg(not(target_os = "windows"))]
-        let res_python = root.join("python").join("bin").join("python");
-        if res_python.exists() {
-            return res_python.to_string_lossy().to_string();
-        }
-        #[cfg(not(target_os = "windows"))]
-        {
-            let res_python3 = root.join("python").join("bin").join("python3");
-            if res_python3.exists() {
-                return res_python3.to_string_lossy().to_string();
-            }
-        }
-    }
-
-    // resources/.venv (配布用に同梱する場合)
-    for root in resolve_resource_roots(project_root) {
-        #[cfg(target_os = "windows")]
-        let res_venv = root.join(".venv").join("Scripts").join("python.exe");
-        #[cfg(not(target_os = "windows"))]
-        let res_venv = root.join(".venv").join("bin").join("python");
-        if res_venv.exists() {
-            return res_venv.to_string_lossy().to_string();
-        }
-    }
-
-    #[cfg(target_os = "windows")]
-    let venv = project_root
-        .join(".venv")
-        .join("Scripts")
-        .join("python.exe");
-    #[cfg(not(target_os = "windows"))]
-    let venv = project_root.join(".venv").join("bin").join("python");
-    if venv.exists() {
-        return venv.to_string_lossy().to_string();
-    }
-    "python".into()
-}
+// resolve_python_entry, resolve_python_bin は paths.rs に移動済み
 
 #[tauri::command]
 fn get_progress(job_id: String, state: State<Arc<AppState>>) -> Result<ProgressResponse, String> {
@@ -1485,148 +1413,7 @@ fn collect_output_files(
     found
 }
 
-fn is_app_bundle_resource_dir(path: &std::path::Path) -> bool {
-    let name = path.file_name().and_then(|n| n.to_str());
-    if name != Some("Resources") {
-        return false;
-    }
-    let contents = path.parent().and_then(|p| p.file_name()).and_then(|n| n.to_str());
-    if contents != Some("Contents") {
-        return false;
-    }
-    path.parent()
-        .and_then(|p| p.parent())
-        .and_then(|p| p.extension())
-        .and_then(|e| e.to_str())
-        == Some("app")
-}
-
-fn resolve_app_support_dir() -> Option<PathBuf> {
-    #[cfg(target_os = "macos")]
-    {
-        let home = std::env::var_os("HOME")?;
-        return Some(
-            PathBuf::from(home)
-                .join("Library")
-                .join("Application Support")
-                .join(APP_SUPPORT_DIR_NAME),
-        );
-    }
-    #[cfg(target_os = "windows")]
-    {
-        let base = std::env::var_os("LOCALAPPDATA")
-            .or_else(|| std::env::var_os("APPDATA"))?;
-        return Some(PathBuf::from(base).join(APP_SUPPORT_DIR_NAME));
-    }
-    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
-    {
-        if let Some(base) = std::env::var_os("XDG_DATA_HOME") {
-            return Some(PathBuf::from(base).join(APP_SUPPORT_DIR_NAME));
-        }
-        let home = std::env::var_os("HOME")?;
-        return Some(
-            PathBuf::from(home)
-                .join(".local")
-                .join("share")
-                .join(APP_SUPPORT_DIR_NAME),
-        );
-    }
-}
-
-fn resolve_config_dir(project_root: &std::path::Path) -> PathBuf {
-    if is_app_bundle_resource_dir(project_root) {
-        if let Some(app_support) = resolve_app_support_dir() {
-            return app_support.join("configs");
-        }
-    }
-    project_root.join("configs")
-}
-
-fn expand_tilde_path(path: &str) -> PathBuf {
-    let trimmed = path.trim();
-    if trimmed == "~" {
-        if let Some(home) = std::env::var_os("HOME") {
-            return PathBuf::from(home);
-        }
-    }
-    if let Some(rest) = trimmed.strip_prefix("~/") {
-        if let Some(home) = std::env::var_os("HOME") {
-            return PathBuf::from(home).join(rest);
-        }
-    }
-    PathBuf::from(trimmed)
-}
-
-fn resolve_default_output_root(project_root: &std::path::Path) -> PathBuf {
-    if is_app_bundle_resource_dir(project_root) {
-        if let Some(app_support) = resolve_app_support_dir() {
-            return app_support.join("result");
-        }
-    }
-    project_root.join("result")
-}
-
-fn resolve_output_root(project_root: &std::path::Path, settings: Option<&AppSettings>) -> PathBuf {
-    if let Some(s) = settings {
-        if let Some(custom) = s.output_root.as_ref() {
-            let trimmed = custom.trim();
-            if !trimmed.is_empty() {
-                return expand_tilde_path(trimmed);
-            }
-        }
-    }
-    resolve_default_output_root(project_root)
-}
-
-fn resolve_output_root_from_disk(project_root: &std::path::Path) -> PathBuf {
-    let settings = load_settings_from_disk(project_root).ok();
-    resolve_output_root(project_root, settings.as_ref())
-}
-
-fn resolve_resource_roots(project_root: &std::path::Path) -> Vec<PathBuf> {
-    let mut roots = Vec::new();
-    let direct = project_root.join("resources");
-    roots.push(direct);
-    let up = project_root.join("_up_").join("resources");
-    if up != roots[0] {
-        roots.push(up);
-    }
-    roots
-}
-
-/// Walk ancestors from exe_dir to find dispatcher.py; return its parent (project root)
-fn resolve_project_root(exe_dir: &std::path::Path) -> Option<PathBuf> {
-    for anc in exe_dir.ancestors() {
-        let res = anc.join("resources").join("py").join("dispatcher.py");
-        let legacy = anc.join("dispatcher.py");
-        let app_res = anc
-            .join("Contents")
-            .join("Resources")
-            .join("resources")
-            .join("py")
-            .join("dispatcher.py");
-        let app_res_up = anc
-            .join("Contents")
-            .join("Resources")
-            .join("_up_")
-            .join("resources")
-            .join("py")
-            .join("dispatcher.py");
-        if app_res.exists() {
-            return Some(anc.join("Contents").join("Resources"));
-        }
-        if app_res_up.exists() {
-            return Some(anc.join("Contents").join("Resources"));
-        }
-        if res.exists() {
-            return Some(anc.to_path_buf());
-        }
-        if legacy.exists() {
-            return Some(anc.to_path_buf());
-        }
-    }
-    None
-}
+// パス解決関数群は paths.rs に移動済み
 
 #[tauri::command]
 fn get_result(job_id: String, state: State<Arc<AppState>>) -> Result<ResultResponse, String> {
