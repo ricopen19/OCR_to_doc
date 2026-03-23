@@ -19,7 +19,7 @@
 
 #### 1-1. Rust 基盤整備
 - [x] Cargo.toml に依存追加（reqwest, base64, tokio, image, serde_json, regex）
-- [ ] lib.rs をモジュール分割 — ollama/, ocr/, markdown/ 済。job.rs, settings.rs, export/ が lib.rs に残存
+- [x] lib.rs をモジュール分割 — ollama/, ocr/, markdown/, settings.rs, job.rs, paths.rs, cli.rs, results.rs, environment.rs 済（2,394→1,230行）。残存: run_job/run_job_ollama（Phase 4 で廃止予定のため見送り）
 
 #### 1-2. Ollama クライアント
 - [x] health_check（GET /）
