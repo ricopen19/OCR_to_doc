@@ -509,28 +509,35 @@ async fn run_job_ollama(
                         }
                     }
 
-                    // xlsx エクスポート（Markdown テーブル → xlsx）
-                    if formats.iter().any(|f| f == "xlsx") {
+                    // xlsx / csv エクスポート（Markdown テーブル → xlsx + csv）
+                    let want_xlsx = formats.iter().any(|f| f == "xlsx");
+                    let want_csv = formats.iter().any(|f| f == "csv");
+                    if (want_xlsx || want_csv) && merged_md.exists() {
                         if let Ok(mut jobs) = state_arc.jobs.lock() {
                             if let Some(job) = jobs.get_mut(&job_id_clone) {
                                 job.progress = file_start + file_range * 0.97;
                                 job.current_message =
-                                    Some("xlsx 変換中...".into());
+                                    Some("xlsx/csv 変換中...".into());
                             }
                         }
 
-                        if merged_md.exists() {
-                            let xlsx_path = result_dir.join(format!("{stem}.xlsx"));
-                            let export_script =
-                                resolve_python_entry(&project_root_clone, "export_excel_poc.py");
-                            if export_script.exists() {
-                                let mut cmd = Command::new(&python_bin);
-                                apply_python_env(&mut cmd);
-                                cmd.arg(&export_script)
-                                    .arg(&merged_md)
-                                    .arg(&xlsx_path)
-                                    .arg("--format").arg("markdown");
-                                let _ = cmd.status();
+                        let xlsx_path = result_dir.join(format!("{stem}.xlsx"));
+                        let export_script =
+                            resolve_python_entry(&project_root_clone, "export_excel_poc.py");
+                        if export_script.exists() {
+                            let mut cmd = Command::new(&python_bin);
+                            apply_python_env(&mut cmd);
+                            cmd.arg(&export_script)
+                                .arg(&merged_md)
+                                .arg(&xlsx_path)
+                                .arg("--format").arg("markdown");
+                            if want_csv {
+                                cmd.arg("--csv-dir").arg(&result_dir);
+                            }
+                            let _ = cmd.status();
+                            // xlsx が不要なら削除
+                            if !want_xlsx {
+                                let _ = fs::remove_file(&xlsx_path);
                             }
                         }
                     }

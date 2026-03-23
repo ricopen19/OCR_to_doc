@@ -369,6 +369,12 @@ def parse_args() -> argparse.Namespace:
         default="layout",
         help="xlsx の出力モード。layout=レイアウト優先（結合あり）、table=結合解除してテーブル化 (default: layout)",
     )
+    parser.add_argument(
+        "--csv-dir",
+        type=Path,
+        default=None,
+        help="CSV 出力先ディレクトリ（指定時は xlsx に加えて CSV も出力）",
+    )
     return parser.parse_args()
 
 
@@ -1284,6 +1290,17 @@ def main() -> None:
     args.output.parent.mkdir(parents=True, exist_ok=True)
     workbook.save(args.output)
     print(f"Saved {args.output}")
+
+    if args.csv_dir is not None:
+        base_name = args.input.stem
+        csv_files = write_tables_to_csv_files(
+            tables,
+            output_dir=args.csv_dir,
+            base_name=base_name,
+            excel_mode=args.excel_mode,
+        )
+        for cf in csv_files:
+            print(f"Saved {cf}")
 
 
 if __name__ == "__main__":

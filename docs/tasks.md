@@ -46,12 +46,13 @@
 
 #### 1-6. エクスポート・環境チェック
 - [x] check_environment を Ollama 対応に変更（ollama_running, ocr_model_ready）
-- [ ] docx エクスポート（Python subprocess 呼び出し）の E2E 動作確認
+- [x] docx エクスポート（Python subprocess 呼び出し）の E2E 動作確認
 
 ### Phase 2: エクスポート + 校正
 - [x] Markdown テーブル → xlsx エクスポート（load_tables_from_markdown 追加）
 - [x] run_job_ollama から xlsx エクスポートを呼び出し
-- [ ] csv エクスポートの対応（xlsx と同様に Markdown から変換）
+- [x] csv エクスポート対応（--csv-dir オプション、xlsx と同時出力可能）
+- [x] docx エクスポートの E2E 動作確認
 - [ ] LLM 校正フローの実装（OCR 精度次第でオプション扱い）
 
 ### Phase 3: セットアップ + GUI
