@@ -130,7 +130,8 @@ async fn run_job_ollama(
     let state_arc: Arc<AppState> = state.inner().clone();
     let job_id_clone = job_id.clone();
     let dpi = opts.pdf_dpi.unwrap_or(300);
-    let enable_figure = opts.enable_figure;
+    // glm-ocr は OCR 専用モデルのため図表抽出(bbox 検出)に非対応 → 常に無効化
+    let enable_figure = false;
     let formats = opts.formats.clone();
     let file_options = opts.file_options.clone();
     let python_bin = resolve_python_bin(&project_root);
