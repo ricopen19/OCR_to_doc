@@ -22,13 +22,39 @@ pub fn default_gpu_device() -> &'static str {
 }
 
 pub fn resolve_python_entry(project_root: &Path, filename: &str) -> PathBuf {
+    // 1) project_root/resources/py/<filename>
     for root in resolve_resource_roots(project_root) {
         let res = root.join("py").join(filename);
         if res.exists() {
             return res;
         }
     }
-    project_root.join(filename)
+    // 2) project_root/<filename>
+    let direct = project_root.join(filename);
+    if direct.exists() {
+        return direct;
+    }
+    // 3) ワークスペースルート（project_root の祖先で dispatcher.py が直接存在するディレクトリ）
+    //    デバッグビルドで project_root が target/debug/ に解決される場合のフォールバック
+    if let Some(ws_root) = find_workspace_root(project_root) {
+        let ws = ws_root.join(filename);
+        if ws.exists() {
+            return ws;
+        }
+    }
+    // fallback: project_root/<filename>（存在しなくても返す）
+    direct
+}
+
+/// project_root の祖先を辿り、dispatcher.py が直接存在するディレクトリを返す。
+/// project_root がバンドルリソースや target/debug/ の場合に、実際のワークスペースルートを見つける。
+fn find_workspace_root(project_root: &Path) -> Option<PathBuf> {
+    for anc in project_root.ancestors().skip(1) {
+        if anc.join("dispatcher.py").exists() {
+            return Some(anc.to_path_buf());
+        }
+    }
+    None
 }
 
 /// Resolve python binary path with priority:
