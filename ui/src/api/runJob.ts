@@ -44,10 +44,9 @@ export async function runJob(paths: string[], options: RunOptions, cleanupPaths?
   const hasTauri = typeof window !== 'undefined' && ('__TAURI__' in window || '__TAURI_INTERNALS__' in window)
   if (!paths.length) throw new Error('no input files')
   if (hasTauri) {
-    return invoke<{ jobId: string }>('run_job', {
+    return invoke<{ jobId: string }>('run_job_ollama', {
       paths,
       options,
-      cleanupPaths,
     })
   }
   // dev server モック

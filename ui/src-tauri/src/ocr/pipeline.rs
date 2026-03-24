@@ -7,7 +7,7 @@ use base64::engine::general_purpose::STANDARD as BASE64;
 use image::GenericImageView;
 
 use crate::ollama::client::OllamaClient;
-use super::pdf_to_images::{is_pdf_file, is_image_file};
+use super::pdf_to_images::{is_pdf_file, is_image_file, pdf_to_page_images_range};
 
 const OCR_MODEL: &str = "glm-ocr";
 const OCR_PROMPT: &str = "OCR";
@@ -24,6 +24,10 @@ pub struct OcrOptions {
     pub dpi: u32,
     pub poppler_path: Option<PathBuf>,
     pub enable_figure: bool,
+    /// PDF の開始ページ (1-indexed, None で先頭から)
+    pub start_page: Option<u32>,
+    /// PDF の終了ページ (1-indexed, None で末尾まで)
+    pub end_page: Option<u32>,
 }
 
 impl Default for OcrOptions {
@@ -33,6 +37,8 @@ impl Default for OcrOptions {
             dpi: 300,
             poppler_path: None,
             enable_figure: true,
+            start_page: None,
+            end_page: None,
         }
     }
 }
@@ -64,11 +70,13 @@ pub async fn run_ocr_pipeline(
 
     // 入力種別で分岐
     let page_images = if is_pdf_file(input_path) {
-        super::pdf_to_images::pdf_to_page_images(
+        pdf_to_page_images_range(
             input_path,
             result_dir,
             options.dpi,
             options.poppler_path.as_deref(),
+            options.start_page,
+            options.end_page,
         )?
     } else if is_image_file(input_path) {
         vec![input_path.to_path_buf()]

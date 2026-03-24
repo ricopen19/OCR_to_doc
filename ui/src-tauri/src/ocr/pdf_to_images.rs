@@ -5,11 +5,15 @@ use std::fs;
 /// PDF をページ画像に変換する。
 /// 現在は Poppler の pdftoppm を subprocess で呼び出す方式。
 /// 将来的に pdfium-render に置き換え可能。
-pub fn pdf_to_page_images(
+/// PDF をページ画像に変換する（ページ範囲指定対応）。
+/// start_page / end_page は 1-indexed。None で全ページ。
+pub fn pdf_to_page_images_range(
     pdf_path: &Path,
     output_dir: &Path,
     dpi: u32,
     poppler_path: Option<&Path>,
+    start_page: Option<u32>,
+    end_page: Option<u32>,
 ) -> Result<Vec<PathBuf>, String> {
     let images_dir = output_dir.join("page_images");
     fs::create_dir_all(&images_dir)
@@ -17,13 +21,20 @@ pub fn pdf_to_page_images(
 
     let pdftoppm = resolve_pdftoppm(poppler_path)?;
 
-    let status = Command::new(&pdftoppm)
-        .arg("-png")
+    let mut cmd = Command::new(&pdftoppm);
+    cmd.arg("-png")
         .arg("-r")
-        .arg(dpi.to_string())
-        .arg(pdf_path.to_str().unwrap_or_default())
-        .arg(images_dir.join("page").to_str().unwrap_or_default())
-        .status()
+        .arg(dpi.to_string());
+    if let Some(s) = start_page {
+        cmd.arg("-f").arg(s.to_string());
+    }
+    if let Some(e) = end_page {
+        cmd.arg("-l").arg(e.to_string());
+    }
+    cmd.arg(pdf_path.to_str().unwrap_or_default())
+        .arg(images_dir.join("page").to_str().unwrap_or_default());
+
+    let status = cmd.status()
         .map_err(|e| format!("pdftoppm 実行失敗: {e}"))?;
 
     if !status.success() {

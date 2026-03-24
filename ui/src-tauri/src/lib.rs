@@ -132,6 +132,7 @@ async fn run_job_ollama(
     let dpi = opts.pdf_dpi.unwrap_or(300);
     let enable_figure = opts.enable_figure;
     let formats = opts.formats.clone();
+    let file_options = opts.file_options.clone();
     let python_bin = resolve_python_bin(&project_root);
     let project_root_clone = project_root.clone();
 
@@ -145,13 +146,30 @@ async fn run_job_ollama(
                 .file_stem()
                 .and_then(|s| s.to_str())
                 .unwrap_or("output");
-            let result_dir = output_root.join(stem);
+
+            // file_options からページ範囲を取得
+            let (start_page, end_page) = file_options
+                .as_ref()
+                .and_then(|m| m.get(input_path_str))
+                .map(|fo| (fo.start, fo.end))
+                .unwrap_or((None, None));
+
+            // ページ範囲指定があればディレクトリ名にサフィックスを付加
+            let dir_name = match (start_page, end_page) {
+                (Some(s), Some(e)) => format!("{stem}_p{s}-{e}"),
+                (Some(s), None) => format!("{stem}_p{s}-"),
+                (None, Some(e)) => format!("{stem}_p1-{e}"),
+                (None, None) => stem.to_string(),
+            };
+            let result_dir = output_root.join(&dir_name);
 
             let ocr_options = ocr::pipeline::OcrOptions {
                 ocr_model: "glm-ocr".to_string(),
                 dpi,
                 poppler_path: None,
                 enable_figure,
+                start_page,
+                end_page,
             };
 
             // 進捗コールバック
@@ -190,9 +208,9 @@ async fn run_job_ollama(
                         }
                     }
 
-                    let _ = markdown::merge_page_markdowns(&result_dir, stem, true);
+                    let _ = markdown::merge_page_markdowns(&result_dir, &dir_name, true);
 
-                    let merged_md = result_dir.join(format!("{stem}_merged.md"));
+                    let merged_md = result_dir.join(format!("{dir_name}_merged.md"));
 
                     // docx エクスポート（Python 呼び出し）
                     if formats.iter().any(|f| f == "docx") {
@@ -228,7 +246,7 @@ async fn run_job_ollama(
                             }
                         }
 
-                        let xlsx_path = result_dir.join(format!("{stem}.xlsx"));
+                        let xlsx_path = result_dir.join(format!("{dir_name}.xlsx"));
                         let export_script =
                             resolve_python_entry(&project_root_clone, "export_excel_poc.py");
                         if export_script.exists() {
@@ -272,8 +290,8 @@ async fn run_job_ollama(
                             }
 
                             // プレビュー（merged.md の内容）
-                            let merged_md = result_dir.join(format!("{stem}_merged.md"));
-                            let preview = fs::read_to_string(&merged_md).ok();
+                            let merged_md_preview = result_dir.join(format!("{dir_name}_merged.md"));
+                            let preview = fs::read_to_string(&merged_md_preview).ok();
 
                             job.outputs = outputs;
                             job.output_paths = output_paths;
