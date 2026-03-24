@@ -115,7 +115,6 @@ pub async fn run_ocr_pipeline(
         let md_path = result_dir.join(format!("page_{page_num:03}.md"));
         fs::write(&md_path, &markdown)
             .map_err(|e| format!("page_{page_num:03}.md 書き込み失敗: {e}"))?;
-        md_paths.push(md_path);
 
         // 図表抽出 (YOLOv8x-DocLayNet via Python)
         if options.enable_figure {
@@ -133,8 +132,9 @@ pub async fn run_ocr_pipeline(
                         py_bin,
                         script,
                     ) {
-                        Ok(paths) if !paths.is_empty() => {
-                            log::info!("Page {page_num}: {} 件の図を抽出", paths.len());
+                        Ok(fig_paths) if !fig_paths.is_empty() => {
+                            log::info!("Page {page_num}: {} 件の図を抽出", fig_paths.len());
+                            append_figure_links(&md_path, &fig_paths);
                         }
                         Err(e) => {
                             log::warn!("Page {page_num}: 図表抽出失敗（続行）: {e}");
@@ -144,6 +144,8 @@ pub async fn run_ocr_pipeline(
                 }
             }
         }
+
+        md_paths.push(md_path);
     }
 
     // PDF の場合、page_images を削除
@@ -190,4 +192,18 @@ fn encode_image_for_ocr(path: &Path) -> Result<String, String> {
         .write_to(&mut buf, image::ImageFormat::Png)
         .map_err(|e| format!("リサイズ画像のエンコード失敗: {e}"))?;
     Ok(BASE64.encode(buf.into_inner()))
+}
+
+/// page_*.md の末尾に図表画像へのリンクを追記する。
+fn append_figure_links(md_path: &Path, fig_paths: &[PathBuf]) {
+    use std::io::Write;
+    let Ok(mut file) = fs::OpenOptions::new().append(true).open(md_path) else {
+        return;
+    };
+    let _ = writeln!(file);
+    for fig in fig_paths {
+        if let Some(name) = fig.file_name().and_then(|n| n.to_str()) {
+            let _ = writeln!(file, "![{name}](figures/{name})");
+        }
+    }
 }
