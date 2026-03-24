@@ -81,3 +81,11 @@
 6. **見送り**: run_job() の内部分解（Phase 4 で Python パイプライン自体を廃止予定のため）
 
 - **却下案**: run_job() を job_manager / python_subprocess / progress_parser に分解（Phase 4 で廃止予定のコードに対してリファクタリングコストが見合わない）
+
+## ADR-010: 図表抽出に YOLOv8x-DocLayNet を採用
+
+- **日付**: 2026-03-24
+- **決定**: glm-ocr の VLM bbox 検出を断念し、YOLOv8x-DocLayNet（Python ultralytics 経由）で図表を検出する
+- **理由**: glm-ocr は OCR 専用 VLM であり、bbox 検出プロンプトに対して GGML_ASSERT エラーを返す（1ページ ~3分のタイムアウト）。YOLOv8x-DocLayNet は DocLayNet データセットで学習済みの軽量モデルで、数学教材（幾何図形・グラフ含む）に対して実用的な精度を確認。conf=0.35 + 最小サイズフィルタ 150x100px をデフォルトとする。
+- **却下案**: 別 VLM（LLaVA 等）で bbox 検出（数 GB の追加モデルが必要）、Rust + ONNX Runtime（Python がハイブリッド構成で残るため不要な複雑さ）
+- **検証データ**: 数的処理_7days P17-28（12ページ）で検証。筆算集中ページ以外はほぼ全図を検出

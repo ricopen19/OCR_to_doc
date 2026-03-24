@@ -82,18 +82,33 @@
 
 ### 図表抽出の方針
 
-GLM-OCR は figure 抽出機能を持たない。代替案の比較：
+GLM-OCR は OCR 専用 VLM であり、bbox 検出に非対応（GGML_ASSERT エラーが発生する）。
 
-| 案 | 方式 | Ollama で完結 | 精度 | 導入コスト |
-|---|---|---|---|---|
-| A. PP-DocLayout | PaddlePaddle ベース | No（Python 依存） | 高（23カテゴリ） | 重い |
-| B. DocLayout-YOLO | YOLO + ONNX | No（ONNX Runtime 必要） | 高 | 中 |
-| C. VLM で検出 | Ollama 上の VLM に bbox を出力させる | Yes | 未検証 | 軽い |
-| D. Rust + ONNX | DocLayout-YOLO を ONNX Runtime Rust バインディングで実行 | No | 高 | 中 |
+#### 検証結果（2026-03-24）
 
-**案 D（Rust + ONNX）が有力**: Python 依存を増やさず、Rust バイナリに統合できる。ONNX モデルファイル（数十MB）はアプリに同梱 or 初回ダウンロード。
+**採用: YOLOv8x-DocLayNet（Python ultralytics 経由）**
 
-**案 C は並行検証**: Ollama で完結できれば最もシンプル。精度次第。
+- モデル: `DILHTWD/documentlayoutsegmentation_YOLOv8_ondoclaynet`
+- 11カテゴリ検出: Picture, Table, Formula, Caption, Text, Title, Section-header, List-item, Footnote, Page-header, Page-footer
+- 数学教材（数的処理_7days）P17-28 で検証: **ほぼ全ページで図を正しく検出**。筆算が集中するページのみ検出率 3/5
+- 設定: conf=0.35, 最小サイズ 150x100px でデフォルト固定
+
+#### 将来検討: 図表検出の感度設定
+
+ユーザー向けには conf の数値ではなく「図表検出の感度」として 高/中/低 の3段階を提供する案。
+- 高: conf=0.25（取りこぼし最小、誤検出増加）
+- 中: conf=0.35（デフォルト）
+- 低: conf=0.50（誤検出最小、取りこぼし増加）
+
+→ 実用してから不満が出た場合に追加。初期実装ではデフォルト固定。
+
+#### 却下案
+
+| 案 | 却下理由 |
+|---|---|
+| A. VLM で bbox 検出 (glm-ocr) | OCR 専用モデルで非対応。GGML_ASSERT エラー。1ページ ~3分のタイムアウト |
+| B. 別 VLM で bbox 検出 (LLaVA 等) | 数 GB の追加モデルが必要。Ollama で完結するが導入ハードルが高い |
+| C. Rust + ONNX Runtime | 精度は同等だが組み込み工数が大きい。Python がハイブリッド構成で残るため YOLO Python 版で十分 |
 
 ### Markdown クリーンアップの扱い
 
@@ -260,13 +275,13 @@ EnvironmentStatus {
 - [ ] Markdown マージを Rust で実装
 - [ ] run_job を Rust OCR パイプラインに切り替え
 - [ ] 進捗管理を Rust 内部更新に変更
-- [ ] 図表抽出の検証（VLM or DocLayout-YOLO ONNX）
+- [x] 図表抽出の検証 → YOLOv8x-DocLayNet 採用（ADR-010）
 - [ ] docx エクスポート（Python 呼び出し維持）の動作確認
 - [ ] check_environment を Ollama 対応に変更
 
 #### Phase 2: エクスポート + 校正
-- [ ] GLM-OCR JSON → xlsx/csv 変換の対応（Python 側を修正）
-- [ ] LLM 校正フローの実装（Rust → Ollama）
+- [x] Markdown テーブル → xlsx/csv 変換対応
+- [ ] LLM 校正フローの実装（glm-ocr 精度が高いためオプション扱い）
 
 #### Phase 3: セットアップ + GUI
 - [ ] 初回セットアップフロー（Ollama 検出 → モデル pull → 起動）

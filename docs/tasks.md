@@ -40,9 +40,9 @@
 - [x] basic_cleanup 実装（GLM-OCR では最小限で十分、方針確定済み）
 
 #### 1-5. 図表抽出
-- [x] 案 C（VLM で bbox 検出）実装済み — 精度の実地検証は未実施
-- [x] crop + figures/ 保存を実装
-- [ ] 案 C の精度を実データで検証し、不十分なら案 D（DocLayout-YOLO ONNX）を検討
+- [x] 案 C（VLM で bbox 検出）実装・検証 → glm-ocr は bbox 非対応で却下
+- [x] YOLOv8x-DocLayNet で検証 → 数学教材で良好な精度（conf=0.35 で実用的）
+- [ ] YOLOv8x-DocLayNet を OCR パイプラインに組み込み（Python スクリプト + Rust 呼び出し）
 
 #### 1-6. エクスポート・環境チェック
 - [x] check_environment を Ollama 対応に変更（ollama_running, ocr_model_ready）
@@ -53,7 +53,7 @@
 - [x] run_job_ollama から xlsx エクスポートを呼び出し
 - [x] csv エクスポート対応（--csv-dir オプション、xlsx と同時出力可能）
 - [x] docx エクスポートの E2E 動作確認
-- [ ] LLM 校正フローの実装（OCR 精度次第でオプション扱い）
+- [ ] LLM 校正フローの実装（glm-ocr の精度が高いためオプション扱い。必要に応じて実装）
 
 ### Phase 3: セットアップ + GUI
 - [ ] 初回セットアップフロー（Ollama 検出 → モデル pull → 起動）
