@@ -24,6 +24,10 @@ pub struct OcrOptions {
     pub dpi: u32,
     pub poppler_path: Option<PathBuf>,
     pub enable_figure: bool,
+    /// 図表抽出用 Python バイナリパス
+    pub python_bin: Option<String>,
+    /// 図表抽出スクリプトのパス (detect_figures.py)
+    pub detect_figures_script: Option<PathBuf>,
     /// PDF の開始ページ (1-indexed, None で先頭から)
     pub start_page: Option<u32>,
     /// PDF の終了ページ (1-indexed, None で末尾まで)
@@ -37,6 +41,8 @@ impl Default for OcrOptions {
             dpi: 300,
             poppler_path: None,
             enable_figure: true,
+            python_bin: None,
+            detect_figures_script: None,
             start_page: None,
             end_page: None,
         }
@@ -111,26 +117,31 @@ pub async fn run_ocr_pipeline(
             .map_err(|e| format!("page_{page_num:03}.md 書き込み失敗: {e}"))?;
         md_paths.push(md_path);
 
-        // 図表抽出
+        // 図表抽出 (YOLOv8x-DocLayNet via Python)
         if options.enable_figure {
-            if let Some(cb) = &on_progress {
-                cb(page_num, total, &format!("図表検出中: {page_num}/{total}"));
-            }
-            let figure_paths = super::figure_extraction::extract_figures(
-                image_path,
-                result_dir,
-                page_num,
-                &options.ocr_model,
-            )
-            .await;
-            match figure_paths {
-                Ok(paths) if !paths.is_empty() => {
-                    log::info!("Page {page_num}: {} 件の図を抽出", paths.len());
+            if let (Some(py_bin), Some(script)) =
+                (&options.python_bin, &options.detect_figures_script)
+            {
+                if script.exists() {
+                    if let Some(cb) = &on_progress {
+                        cb(page_num, total, &format!("図表検出中: {page_num}/{total}"));
+                    }
+                    match super::figure_extraction::extract_figures(
+                        image_path,
+                        result_dir,
+                        page_num,
+                        py_bin,
+                        script,
+                    ) {
+                        Ok(paths) if !paths.is_empty() => {
+                            log::info!("Page {page_num}: {} 件の図を抽出", paths.len());
+                        }
+                        Err(e) => {
+                            log::warn!("Page {page_num}: 図表抽出失敗（続行）: {e}");
+                        }
+                        _ => {}
+                    }
                 }
-                Err(e) => {
-                    log::warn!("Page {page_num}: 図表抽出失敗（続行）: {e}");
-                }
-                _ => {}
             }
         }
     }

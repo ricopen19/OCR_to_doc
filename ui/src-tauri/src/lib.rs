@@ -130,8 +130,7 @@ async fn run_job_ollama(
     let state_arc: Arc<AppState> = state.inner().clone();
     let job_id_clone = job_id.clone();
     let dpi = opts.pdf_dpi.unwrap_or(300);
-    // glm-ocr は OCR 専用モデルのため図表抽出(bbox 検出)に非対応 → 常に無効化
-    let enable_figure = false;
+    let enable_figure = opts.enable_figure;
     let formats = opts.formats.clone();
     let file_options = opts.file_options.clone();
     let python_bin = resolve_python_bin(&project_root);
@@ -164,11 +163,14 @@ async fn run_job_ollama(
             };
             let result_dir = output_root.join(&dir_name);
 
+            let detect_script = resolve_python_entry(&project_root_clone, "detect_figures.py");
             let ocr_options = ocr::pipeline::OcrOptions {
                 ocr_model: "glm-ocr".to_string(),
                 dpi,
                 poppler_path: None,
                 enable_figure,
+                python_bin: Some(python_bin.clone()),
+                detect_figures_script: Some(detect_script),
                 start_page,
                 end_page,
             };
