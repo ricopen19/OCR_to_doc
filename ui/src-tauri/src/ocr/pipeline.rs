@@ -12,12 +12,6 @@ use super::pdf_to_images::{is_pdf_file, is_image_file, pdf_to_page_images_range}
 const OCR_MODEL: &str = "glm-ocr";
 const OCR_PROMPT: &str = "OCR";
 
-/// glm-ocr の画像サイズ上限（長辺 2048px）
-const MAX_IMAGE_DIMENSION: u32 = 2048;
-
-/// glm-ocr (ViT patch_size=14) が要求する画像サイズのアライメント。
-/// 縦横が 28 の倍数でないと GGML_ASSERT エラーが発生する。
-const IMAGE_ALIGN: u32 = 28;
 
 /// OCR 処理の進捗コールバック
 pub type ProgressCallback = Box<dyn Fn(u32, u32, &str) + Send + Sync>;
@@ -167,36 +161,26 @@ pub async fn run_ocr_pipeline(
     Ok(md_paths)
 }
 
-/// 画像を読み込み、glm-ocr に適したサイズにリサイズして base64 エンコード。
-/// - 長辺を MAX_IMAGE_DIMENSION 以下に収める
-/// - 縦横を IMAGE_ALIGN (28) の倍数に揃える（ViT patch_size=14 の制約）
+/// glm-ocr が安定して処理できる画像サイズの上限（長辺）。
+/// 検証結果: 2048 以上でGGML_ASSERTやゴミ出力、768以下でもCRASH。
+/// 1792 が精度・安定性のベストバランス。
+const MAX_IMAGE_DIMENSION: u32 = 1792;
+
+/// 画像を glm-ocr に適したサイズにリサイズして base64 エンコード。
 fn encode_image_for_ocr(path: &Path) -> Result<String, String> {
     let img = image::open(path)
         .map_err(|e| format!("画像読み込み失敗 {}: {e}", path.display()))?;
     let (w, h) = img.dimensions();
 
-    // 長辺が上限を超える場合はスケールダウン
-    let (mut new_w, mut new_h) = if w > MAX_IMAGE_DIMENSION || h > MAX_IMAGE_DIMENSION {
-        let scale = MAX_IMAGE_DIMENSION as f64 / w.max(h) as f64;
-        ((w as f64 * scale) as u32, (h as f64 * scale) as u32)
-    } else {
-        (w, h)
-    };
-
-    // 28 の倍数に切り下げ
-    new_w = (new_w / IMAGE_ALIGN) * IMAGE_ALIGN;
-    new_h = (new_h / IMAGE_ALIGN) * IMAGE_ALIGN;
-    // 最低 28px は確保
-    new_w = new_w.max(IMAGE_ALIGN);
-    new_h = new_h.max(IMAGE_ALIGN);
-
-    if new_w == w && new_h == h {
-        // リサイズ不要 — 元ファイルをそのままエンコード
+    if w <= MAX_IMAGE_DIMENSION && h <= MAX_IMAGE_DIMENSION {
         let bytes = fs::read(path)
             .map_err(|e| format!("画像読み込み失敗: {e}"))?;
         return Ok(BASE64.encode(&bytes));
     }
 
+    let scale = MAX_IMAGE_DIMENSION as f64 / w.max(h) as f64;
+    let new_w = (w as f64 * scale) as u32;
+    let new_h = (h as f64 * scale) as u32;
     log::info!(
         "画像リサイズ: {}x{} → {}x{} ({})",
         w, h, new_w, new_h, path.display()
