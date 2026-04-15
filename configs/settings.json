@@ -6,6 +6,8 @@
   "enableFigure": true,
   "mode": "lite",
   "excelMode": "layout",
+  "excelMetaSheet": true,
+  "excelSymbolFallback": true,
   "useGpu": false,
   "outputRoot": null,
   "chunkSize": null,

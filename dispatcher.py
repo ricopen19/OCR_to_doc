@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import shutil
 import subprocess
 import sys
 import time
@@ -53,6 +54,36 @@ class PerfLogger:
         finally:
             end = time.perf_counter()
             self.log_span(event, start, end, **fields)
+
+
+def _cleanup_converted_dir(convert_dir: Path) -> None:
+    if not convert_dir.exists():
+        return
+    try:
+        shutil.rmtree(convert_dir)
+    except OSError:
+        pass
+
+
+def _cleanup_page_images_dir(output_dir: Path) -> None:
+    page_dir = output_dir / "page_images"
+    if not page_dir.exists():
+        return
+    try:
+        shutil.rmtree(page_dir)
+    except OSError:
+        pass
+
+
+def _resolve_page_images_policy(
+    extra_args: list[str] | None, *, needs_page_images: bool
+) -> tuple[list[str] | None, bool]:
+    extra = list(extra_args) if extra_args else []
+    has_drop = "--drop-page-images" in extra
+    has_keep = "--no-drop-page-images" in extra
+    if needs_page_images and not (has_drop or has_keep):
+        extra.append("--no-drop-page-images")
+    return (extra if extra else None), has_keep
 
 
 def _parse_cli_value(args: list[str] | None, name: str) -> str | None:
@@ -294,6 +325,12 @@ def run(
     needs_json = ("xlsx" in formats or "csv" in formats) or (
         "docx" in formats and docx_math == "image" and docx_engine != "pandoc"
     )
+    needs_page_images = ("xlsx" in formats and excel_symbol_fallback) or (
+        "docx" in formats and docx_math == "image" and docx_engine != "pandoc"
+    )
+    extra_pdf_args, keep_page_images = _resolve_page_images_policy(
+        extra_pdf_args, needs_page_images=needs_page_images
+    )
     if meta.is_pdf:
         pdf_start = time.perf_counter()
         _run_pdf(
@@ -454,6 +491,8 @@ def run(
             input=str(path),
             formats=formats,
         )
+    if output_dir and not keep_page_images:
+        _cleanup_page_images_dir(output_dir)
     return output_dir
 
 
@@ -535,6 +574,7 @@ def _run_image(
     except ImageConversionError as exc:
         raise IngestError(str(exc)) from exc
 
+    crop_applied = False
     if crop:
         try:
             from PIL import Image, ImageOps
@@ -574,6 +614,7 @@ def _run_image(
                             converted=cropped_path,
                             performed=True,
                         )
+                        crop_applied = True
 
     if image_as_pdf:
         pdf_path = convert_dir / f"{image_path.stem}.pdf"
@@ -582,6 +623,7 @@ def _run_image(
         print(f"[dispatcher] 画像を PDF 化してから OCR: {pdf_path} (dpi={image_dpi})")
         print(f"[dispatcher] PDF exists: {pdf_path.exists()}")
         with perf.span("image.pdf_run", input=str(pdf_path), mode=mode, device=device):
+            crop_for_pdf = None if crop_applied else crop
             _run_pdf(
                 pdf_path,
                 mode=mode,
@@ -591,8 +633,9 @@ def _run_image(
                 extra_args=_append_force_flags(extra_pdf_args, fallback_tesseract, force_tesseract_merge),
                 force_tesseract_merge=force_tesseract_merge,
                 emit_json=emit_json,  # PDF経由もJSONを出す
-                crop=crop,
+                crop=crop_for_pdf,
             )
+        _cleanup_converted_dir(convert_dir)
         return output_dir
 
     ocr_profile_obj = get_profile(ocr_profile)
@@ -623,6 +666,7 @@ def _run_image(
         from ocr import export_json
         with perf.span("image.export_json", input=str(ocr_source)):
             export_json(ocr_source, output_dir, options)
+    _cleanup_converted_dir(convert_dir)
     return output_dir
 
 

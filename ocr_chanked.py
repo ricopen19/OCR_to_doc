@@ -1,6 +1,7 @@
 import argparse
 import json
 import os
+import shutil
 import sys
 import time
 import platform
@@ -147,10 +148,9 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--drop-page-images",
-        dest="keep_page_images",
-        action="store_false",
+        action=argparse.BooleanOptionalAction,
         default=True,
-        help="ページ画像 (page_images/*.png) を保存しない",
+        help="ページ画像 (page_images/*.png) を保存しない（既定: 保存しない）",
     )
     parser.add_argument(
         "--icon-profile",
@@ -545,7 +545,7 @@ while current <= end_page_limit:
                         f"MathRefiner: 数式を {result.unused} 件検出しましたが置換対象がありませんでした"
                     )
 
-            if not args.keep_page_images:
+            if args.drop_page_images:
                 with maybe_span(PERF, "page.cleanup", page=page):
                     try:
                         img_path.unlink()
@@ -565,6 +565,12 @@ while current <= end_page_limit:
     chunk_index += 1
 
 run_merger(output_dir_name)
+
+if args.drop_page_images:
+    try:
+        shutil.rmtree(PAGE_IMAGE_DIR)
+    except OSError:
+        pass
 
 print("\nすべてのチャンク処理が完了しました。")
 if PERF:
