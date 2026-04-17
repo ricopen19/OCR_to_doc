@@ -946,9 +946,6 @@ fn render_preview(
         .map_err(|e| format!("failed to parse preview helper output: {e}"))
 }
 
-/// Resolve python entry script path with priority:
-/// 1) project_root/resources/py/<filename> (or _up_/resources/py)
-/// 2) project_root/<filename> (legacy)
 // resolve_python_entry, resolve_python_bin は paths.rs に移動済み
 
 #[tauri::command]

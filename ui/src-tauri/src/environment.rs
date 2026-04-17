@@ -2,7 +2,8 @@ use std::path::PathBuf;
 
 use crate::job::EnvironmentStatus;
 use crate::paths::{
-    resolve_output_root, resolve_python_bin, resolve_resource_roots, resolve_project_root,
+    resolve_output_root, resolve_project_root, resolve_python_bin, resolve_python_dir_candidates,
+    resolve_python_entry,
 };
 use crate::load_settings_from_disk;
 
@@ -23,23 +24,23 @@ pub async fn check_environment() -> Result<EnvironmentStatus, String> {
         .map(|p| PathBuf::from(p).is_file())
         .unwrap_or(false);
 
-    let resource_roots = resolve_resource_roots(&project_root);
-    let resource_roots_display = resource_roots
+    let python_dirs = resolve_python_dir_candidates(&project_root);
+    let resource_roots_display = python_dirs
         .iter()
         .map(|p| p.to_string_lossy().to_string())
         .collect::<Vec<_>>();
 
-    let mut dispatcher_candidates = resource_roots
-        .iter()
-        .map(|root| root.join("py").join("dispatcher.py"))
-        .collect::<Vec<_>>();
-    dispatcher_candidates.push(project_root.join("dispatcher.py"));
-    let dispatcher_path = dispatcher_candidates.into_iter().find(|p| p.is_file());
-    let dispatcher_found = dispatcher_path.is_some();
+    let dispatcher_path_buf = resolve_python_entry(&project_root, "dispatcher.py");
+    let dispatcher_found = dispatcher_path_buf.is_file();
+    let dispatcher_path = dispatcher_found.then(|| dispatcher_path_buf.to_string_lossy().to_string());
 
+    // Poppler: <project_root>/poppler/ と <project_root>/_up_/_up_/poppler/ を探索
+    let poppler_bases = [
+        project_root.join("poppler"),
+        project_root.join("_up_").join("_up_").join("poppler"),
+    ];
     let mut poppler_candidates = Vec::new();
-    for root in &resource_roots {
-        let base = root.join("py").join("poppler");
+    for base in &poppler_bases {
         #[cfg(target_os = "windows")]
         {
             poppler_candidates.push(base.join("Library").join("bin"));
@@ -88,7 +89,7 @@ pub async fn check_environment() -> Result<EnvironmentStatus, String> {
         project_root: project_root.to_string_lossy().to_string(),
         os: std::env::consts::OS.to_string(),
         dispatcher_found,
-        dispatcher_path: dispatcher_path.map(|p| p.to_string_lossy().to_string()),
+        dispatcher_path,
         result_dir_found,
         result_root: result_root.to_string_lossy().to_string(),
         python_bin,

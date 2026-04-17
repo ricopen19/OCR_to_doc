@@ -4,6 +4,8 @@ use std::process::Command;
 use crate::settings::AppSettings;
 
 const APP_SUPPORT_DIR_NAME: &str = "ocr-to-doc";
+const SCRIPTS_PYTHON: &[&str] = &["scripts", "python"];
+const BUNDLE_UP: &[&str] = &["_up_", "_up_"];
 
 pub fn apply_python_env(cmd: &mut Command) {
     cmd.env("PYTHONUTF8", "1");
@@ -21,48 +23,38 @@ pub fn default_gpu_device() -> &'static str {
     }
 }
 
-pub fn resolve_python_entry(project_root: &Path, filename: &str) -> PathBuf {
-    // 1) project_root/resources/py/<filename>
-    for root in resolve_resource_roots(project_root) {
-        let res = root.join("py").join(filename);
-        if res.exists() {
-            return res;
-        }
+fn join_segments(base: &Path, segs: &[&str]) -> PathBuf {
+    let mut p = base.to_path_buf();
+    for s in segs {
+        p.push(s);
     }
-    // 2) project_root/<filename>
-    let direct = project_root.join(filename);
-    if direct.exists() {
-        return direct;
-    }
-    // 3) ワークスペースルート（project_root の祖先で dispatcher.py が直接存在するディレクトリ）
-    //    デバッグビルドで project_root が target/debug/ に解決される場合のフォールバック
-    if let Some(ws_root) = find_workspace_root(project_root) {
-        let ws = ws_root.join(filename);
-        if ws.exists() {
-            return ws;
-        }
-    }
-    // fallback: project_root/<filename>（存在しなくても返す）
-    direct
+    p
 }
 
-/// project_root の祖先を辿り、dispatcher.py が直接存在するディレクトリを返す。
-/// project_root がバンドルリソースや target/debug/ の場合に、実際のワークスペースルートを見つける。
-fn find_workspace_root(project_root: &Path) -> Option<PathBuf> {
-    for anc in project_root.ancestors().skip(1) {
-        if anc.join("dispatcher.py").exists() {
-            return Some(anc.to_path_buf());
+/// project_root 直下の scripts/python/ と、バンドル内の _up_/_up_/scripts/python/ の2箇所を候補として返す。
+pub fn resolve_python_dir_candidates(project_root: &Path) -> Vec<PathBuf> {
+    vec![
+        join_segments(project_root, SCRIPTS_PYTHON),
+        join_segments(&join_segments(project_root, BUNDLE_UP), SCRIPTS_PYTHON),
+    ]
+}
+
+pub fn resolve_python_entry(project_root: &Path, filename: &str) -> PathBuf {
+    for dir in resolve_python_dir_candidates(project_root) {
+        let p = dir.join(filename);
+        if p.exists() {
+            return p;
         }
     }
-    None
+    // fallback (caller はファイル存在チェックする想定)
+    join_segments(project_root, SCRIPTS_PYTHON).join(filename)
 }
 
 /// Resolve python binary path with priority:
 /// 1) env PYTHON_BIN
-/// 2) project_root/resources/python/python(.exe)
-/// 3) project_root/resources/.venv/(Scripts|bin)/python(.exe)
-/// 4) project_root/.venv/(Scripts|bin)/python(.exe)
-/// 5) "python"
+/// 2) project_root/.venv/(Scripts|bin)/python(.exe)
+/// 3) 祖先の .venv（dev で exe が target/debug/ の場合）
+/// 4) "python"
 pub fn resolve_python_bin(project_root: &Path) -> String {
     if let Ok(bin) = std::env::var("PYTHON_BIN") {
         if !bin.is_empty() {
@@ -70,44 +62,26 @@ pub fn resolve_python_bin(project_root: &Path) -> String {
         }
     }
 
-    for root in resolve_resource_roots(project_root) {
-        #[cfg(target_os = "windows")]
-        let res_python = root.join("python").join("python.exe");
-        #[cfg(not(target_os = "windows"))]
-        let res_python = root.join("python").join("bin").join("python");
-        if res_python.exists() {
-            return res_python.to_string_lossy().to_string();
-        }
-        #[cfg(not(target_os = "windows"))]
-        {
-            let res_python3 = root.join("python").join("bin").join("python3");
-            if res_python3.exists() {
-                return res_python3.to_string_lossy().to_string();
-            }
-        }
+    if let Some(found) = find_venv_python(project_root) {
+        return found;
     }
-
-    for root in resolve_resource_roots(project_root) {
-        #[cfg(target_os = "windows")]
-        let res_venv = root.join(".venv").join("Scripts").join("python.exe");
-        #[cfg(not(target_os = "windows"))]
-        let res_venv = root.join(".venv").join("bin").join("python");
-        if res_venv.exists() {
-            return res_venv.to_string_lossy().to_string();
+    for anc in project_root.ancestors().skip(1) {
+        if let Some(found) = find_venv_python(anc) {
+            return found;
         }
-    }
-
-    #[cfg(target_os = "windows")]
-    let venv = project_root
-        .join(".venv")
-        .join("Scripts")
-        .join("python.exe");
-    #[cfg(not(target_os = "windows"))]
-    let venv = project_root.join(".venv").join("bin").join("python");
-    if venv.exists() {
-        return venv.to_string_lossy().to_string();
     }
     "python".into()
+}
+
+fn find_venv_python(root: &Path) -> Option<String> {
+    #[cfg(target_os = "windows")]
+    let candidate = root.join(".venv").join("Scripts").join("python.exe");
+    #[cfg(not(target_os = "windows"))]
+    let candidate = root.join(".venv").join("bin").join("python");
+    if candidate.exists() {
+        return Some(candidate.to_string_lossy().to_string());
+    }
+    None
 }
 
 pub fn is_app_bundle_resource_dir(path: &Path) -> bool {
@@ -209,46 +183,19 @@ pub fn resolve_output_root_from_disk(project_root: &Path) -> PathBuf {
     resolve_output_root(project_root, settings.as_ref())
 }
 
-pub fn resolve_resource_roots(project_root: &Path) -> Vec<PathBuf> {
-    let mut roots = Vec::new();
-    let direct = project_root.join("resources");
-    roots.push(direct);
-    let up = project_root.join("_up_").join("resources");
-    if up != roots[0] {
-        roots.push(up);
-    }
-    roots
-}
-
-/// Walk ancestors from exe_dir to find dispatcher.py; return its parent (project root)
+/// exe_dir の祖先を辿り、scripts/python/ が直接（または _up_/_up_/scripts/python/ として）存在する場所を返す。
+/// 戻り値は "project_root"。dev ならリポジトリルート、macOS .app なら Contents/Resources。
 pub fn resolve_project_root(exe_dir: &Path) -> Option<PathBuf> {
     for anc in exe_dir.ancestors() {
-        let res = anc.join("resources").join("py").join("dispatcher.py");
-        let legacy = anc.join("dispatcher.py");
-        let app_res = anc
-            .join("Contents")
-            .join("Resources")
-            .join("resources")
-            .join("py")
-            .join("dispatcher.py");
-        let app_res_up = anc
-            .join("Contents")
-            .join("Resources")
-            .join("_up_")
-            .join("resources")
-            .join("py")
-            .join("dispatcher.py");
-        if app_res.exists() {
-            return Some(anc.join("Contents").join("Resources"));
-        }
-        if app_res_up.exists() {
-            return Some(anc.join("Contents").join("Resources"));
-        }
-        if res.exists() {
+        // Dev: ancestor/scripts/python/
+        if join_segments(anc, SCRIPTS_PYTHON).is_dir() {
             return Some(anc.to_path_buf());
         }
-        if legacy.exists() {
-            return Some(anc.to_path_buf());
+        // macOS .app: ancestor/Contents/Resources/_up_/_up_/scripts/python/
+        let bundle_res = anc.join("Contents").join("Resources");
+        let bundle_python = join_segments(&join_segments(&bundle_res, BUNDLE_UP), SCRIPTS_PYTHON);
+        if bundle_python.is_dir() {
+            return Some(bundle_res);
         }
     }
     None
