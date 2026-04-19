@@ -1,558 +1,50 @@
-use std::{
-    collections::HashMap,
-    fs,
-    io::Write,
-    path::PathBuf,
-    process::Command,
-    sync::{Arc, Mutex},
-    thread,
-    time::{Instant, SystemTime, UNIX_EPOCH},
+mod ollama;
+mod ocr;
+mod markdown;
+mod export;
+mod settings;
+mod job;
+mod paths;
+mod cli;
+mod results;
+mod environment;
+
+use settings::AppSettings;
+use job::{
+    AppState, JobInfo, JobStatus, RunOptions, CropRect,
+    RunJobResponse, ProgressResponse, ResultResponse, RecentResultEntry,
+    EnvironmentStatus, PreviewResponse,
+};
+use paths::{
+    apply_python_env, default_gpu_device, resolve_python_entry, resolve_python_bin,
+    resolve_config_dir, resolve_output_root, resolve_output_root_from_disk,
+    resolve_project_root,
+};
+use results::{
+    collect_output_files, find_output_path, open_path_with_default_app,
+    validate_result_dir_name, canonicalize_dir, pick_best_file_in_dir,
 };
 
-use serde::{Deserialize, Serialize};
+use std::{
+    fs,
+    path::PathBuf,
+    process::Command,
+    sync::Arc,
+    thread,
+    time::Instant,
+};
 use tauri::{Manager, State};
 use tauri_plugin_dialog;
 use uuid::Uuid;
 
-const APP_SUPPORT_DIR_NAME: &str = "ocr-to-doc";
+pub use cli::run_cli_if_requested;
 
-fn apply_python_env(cmd: &mut Command) {
-    // Prevent UnicodeEncodeError on Windows where stdout/stderr encoding can be non-UTF-8 (e.g. cp1252).
-    cmd.env("PYTHONUTF8", "1");
-    cmd.env("PYTHONIOENCODING", "utf-8");
-}
-
-pub fn run_cli_if_requested() -> Option<i32> {
-    let args: Vec<String> = std::env::args().collect();
-    let is_self_test = args.iter().any(|a| a == "--self-test");
-    let cli_index = args.iter().position(|a| a == "--cli");
-    if !is_self_test && cli_index.is_none() {
-        return None;
-    }
-
-    if let Some(idx) = cli_index {
-        let mut input: Option<String> = None;
-        let mut passthrough: Vec<String> = Vec::new();
-        let mut i = idx + 1;
-        while i < args.len() {
-            if args[i] == "--" {
-                passthrough.extend_from_slice(&args[i + 1..]);
-                break;
-            }
-            if input.is_none() && !args[i].starts_with('-') {
-                input = Some(args[i].clone());
-            }
-            i += 1;
-        }
-        let input = match input {
-            Some(p) => p,
-            None => {
-                eprintln!("[cli] usage: ocr-to-doc.exe --cli <input> [-- <dispatcher args>]");
-                return Some(2);
-            }
-        };
-
-        let exe_path = match std::env::current_exe() {
-            Ok(p) => p,
-            Err(e) => {
-                eprintln!("[cli] failed to get current_exe: {e}");
-                return Some(2);
-            }
-        };
-        let project_root = match resolve_project_root(&exe_path) {
-            Some(p) => p,
-            None => {
-                eprintln!(
-                    "[cli] failed to resolve project root from {}",
-                    exe_path.display()
-                );
-                return Some(2);
-            }
-        };
-        let python_bin = resolve_python_bin(&project_root);
-        let dispatcher = resolve_python_entry(&project_root, "dispatcher.py");
-        if !dispatcher.exists() {
-            eprintln!("[cli] dispatcher not found: {}", dispatcher.display());
-            return Some(2);
-        }
-
-        let settings = load_settings_from_disk(&project_root).ok();
-        let output_root = resolve_output_root(&project_root, settings.as_ref());
-        if let Err(e) = fs::create_dir_all(&output_root) {
-            eprintln!(
-                "[cli] failed to create output root {}: {e}",
-                output_root.display()
-            );
-            return Some(2);
-        }
-
-        let mut cmd = Command::new(&python_bin);
-        apply_python_env(&mut cmd);
-        cmd.arg("-u")
-            .arg(&dispatcher)
-            .arg(&input)
-            .arg("--output-root")
-            .arg(&output_root);
-        for a in passthrough {
-            cmd.arg(a);
-        }
-        cmd.current_dir(&project_root);
-
-        let status = match cmd.status() {
-            Ok(s) => s,
-            Err(e) => {
-                eprintln!("[cli] failed to run dispatcher: {e}");
-                return Some(1);
-            }
-        };
-        return Some(if status.success() { 0 } else { 1 });
-    }
-
-    let mut input_path: Option<String> = None;
-    let mut i = 0usize;
-    while i < args.len() {
-        if args[i] == "--input" && i + 1 < args.len() {
-            input_path = Some(args[i + 1].clone());
-            i += 2;
-            continue;
-        }
-        i += 1;
-    }
-
-    let exe_path = match std::env::current_exe() {
-        Ok(p) => p,
-        Err(e) => {
-            eprintln!("[self-test] failed to get current_exe: {e}");
-            return Some(2);
-        }
-    };
-    let project_root = match resolve_project_root(&exe_path) {
-        Some(p) => p,
-        None => {
-            eprintln!(
-                "[self-test] failed to resolve project root from {}",
-                exe_path.display()
-            );
-            return Some(2);
-        }
-    };
-
-    let output_root = project_root.join("result_ci");
-    let trace_path = match fs::create_dir_all(&output_root) {
-        Ok(_) => output_root.join("self_test.trace.txt"),
-        Err(e) => {
-            let fallback = project_root.join("self_test.trace.txt");
-            let _ = fs::write(
-                &fallback,
-                format!("[self-test] failed to create result_ci: {e}\n"),
-            );
-            fallback
-        }
-    };
-    let mut log_trace = |msg: &str| {
-        if let Ok(mut f) = fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&trace_path)
-        {
-            let _ = writeln!(f, "{msg}");
-        }
-    };
-    log_trace(&format!(
-        "[self-test] exe={} project_root={}",
-        exe_path.display(),
-        project_root.display()
-    ));
-
-    let python_bin = resolve_python_bin(&project_root);
-    let dispatcher = resolve_python_entry(&project_root, "dispatcher.py");
-    if !dispatcher.exists() {
-        log_trace(&format!(
-            "[self-test] dispatcher not found: {}",
-            dispatcher.display()
-        ));
-        eprintln!("[self-test] dispatcher not found: {}", dispatcher.display());
-        return Some(2);
-    }
-
-    let fixture = input_path.map(PathBuf::from).unwrap_or_else(|| {
-        project_root
-            .join("resources")
-            .join("fixtures")
-            .join("sample.png")
-    });
-    if !fixture.exists() {
-        log_trace(&format!(
-            "[self-test] input not found: {}",
-            fixture.display()
-        ));
-        eprintln!("[self-test] input not found: {}", fixture.display());
-        eprintln!("[self-test] hint: pass --input <path> or place resources/fixtures/sample.png");
-        return Some(3);
-    }
-
-    let output_root_arg = output_root.to_string_lossy().to_string();
-
-    let fixture_stem = fixture
-        .file_stem()
-        .and_then(|s| s.to_str())
-        .unwrap_or("fixture");
-    eprintln!(
-        "[self-test] project_root={} python={} input={} output_root={}",
-        project_root.display(),
-        python_bin,
-        fixture.display(),
-        output_root.display()
-    );
-    log_trace(&format!(
-        "[self-test] python={} dispatcher={} input={} output_root={}",
-        python_bin,
-        dispatcher.display(),
-        fixture.display(),
-        output_root.display()
-    ));
-
-    let output = {
-        let mut cmd = Command::new(&python_bin);
-        apply_python_env(&mut cmd);
-        cmd.arg("-u")
-            .arg(&dispatcher)
-            .arg(&fixture)
-            .args(["--formats", "md", "docx"])
-            .args(["--mode", "lite"])
-            .args(["--device", "cpu"])
-            .args(["--no-figure"])
-            .args(["--output-root", &output_root_arg])
-            .current_dir(&project_root);
-        match cmd.output() {
-            Ok(o) => o,
-            Err(e) => {
-                log_trace(&format!("[self-test] failed to spawn dispatcher: {e}"));
-                eprintln!("[self-test] failed to spawn dispatcher: {e}");
-                return Some(1);
-            }
-        }
-    };
-
-    // GUI subsystem on Windows may not surface stdout/stderr; always persist for debugging.
-    let _ = fs::write(
-        output_root.join("self_test.stdout.txt"),
-        String::from_utf8_lossy(&output.stdout).as_bytes(),
-    );
-    let _ = fs::write(
-        output_root.join("self_test.stderr.txt"),
-        String::from_utf8_lossy(&output.stderr).as_bytes(),
-    );
-
-    if !output.status.success() {
-        log_trace(&format!(
-            "[self-test] dispatcher failed with status={}",
-            output.status
-        ));
-        eprintln!(
-            "[self-test] dispatcher failed with status={}",
-            output.status
-        );
-        eprintln!(
-            "--- stdout ---\n{}",
-            String::from_utf8_lossy(&output.stdout)
-        );
-        eprintln!(
-            "--- stderr ---\n{}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-        return Some(1);
-    }
-
-    let out_dir = output_root.join(fixture_stem);
-    let md = out_dir.join("page_001.md");
-    let docx = out_dir.join(format!("{fixture_stem}.docx"));
-
-    if !md.exists() {
-        log_trace(&format!(
-            "[self-test] expected markdown not found: {}",
-            md.display()
-        ));
-        eprintln!("[self-test] expected markdown not found: {}", md.display());
-        return Some(4);
-    }
-    if !docx.exists() {
-        log_trace(&format!(
-            "[self-test] expected docx not found: {}",
-            docx.display()
-        ));
-        eprintln!("[self-test] expected docx not found: {}", docx.display());
-        return Some(4);
-    }
-    if md.metadata().map(|m| m.len()).unwrap_or(0) < 10 {
-        log_trace(&format!(
-            "[self-test] markdown looks too small: {}",
-            md.display()
-        ));
-        eprintln!("[self-test] markdown looks too small: {}", md.display());
-        return Some(4);
-    }
-    if docx.metadata().map(|m| m.len()).unwrap_or(0) < 1000 {
-        log_trace(&format!(
-            "[self-test] docx looks too small: {}",
-            docx.display()
-        ));
-        eprintln!("[self-test] docx looks too small: {}", docx.display());
-        return Some(4);
-    }
-
-    log_trace(&format!(
-        "[self-test] ok: {} {}",
-        md.display(),
-        docx.display()
-    ));
-    eprintln!("[self-test] ok: {} {}", md.display(), docx.display());
-    Some(0)
-}
-
-#[derive(Default)]
-struct AppState {
-    jobs: Mutex<HashMap<String, JobInfo>>,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-struct JobInfo {
-    status: JobStatus,
-    progress: f32,
-    log: Vec<String>,
-    outputs: Vec<String>,
-    output_paths: Vec<String>,
-    preview: Option<String>,
-    error: Option<String>,
-    current_message: Option<String>,
-    page_current: Option<u32>,
-    page_total: Option<u32>,
-    eta_seconds: Option<u32>,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "lowercase")]
-enum JobStatus {
-    Idle,
-    Running,
-    Done,
-    Error,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct RunOptions {
-    #[serde(default)]
-    formats: Vec<String>,
-    #[serde(default)]
-    image_as_pdf: bool,
-    #[serde(default)]
-    enable_figure: bool,
-    #[serde(default)]
-    use_gpu: bool,
-    #[serde(default)]
-    mode: String,
-    #[serde(default)]
-    docx_engine: Option<String>,
-    #[serde(default)]
-    chunk_size: Option<u32>,
-    #[serde(default)]
-    enable_rest: bool,
-    #[serde(default)]
-    rest_seconds: Option<u32>,
-    #[serde(default)]
-    pdf_dpi: Option<u32>,
-    #[serde(default)]
-    excel_mode: Option<String>,
-    #[serde(default)]
-    excel_meta_sheet: Option<bool>,
-    #[serde(default)]
-    excel_symbol_fallback: Option<bool>,
-    #[serde(default)]
-    file_options: Option<HashMap<String, FileSpecificOptions>>,
-}
-
-#[derive(Debug, Deserialize, Clone)]
-#[serde(rename_all = "camelCase")]
-struct CropRect {
-    left: f64,
-    top: f64,
-    width: f64,
-    height: f64,
-}
-
-#[derive(Debug, Deserialize, Clone)]
-#[serde(rename_all = "camelCase")]
-struct FileSpecificOptions {
-    start: Option<u32>,
-    end: Option<u32>,
-    crop: Option<CropRect>,
-}
-
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct RunJobResponse {
-    job_id: String,
-}
-
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct ProgressResponse {
-    status: JobStatus,
-    progress: f32,
-    log: Vec<String>,
-    error: Option<String>,
-    current_message: Option<String>,
-    page_current: Option<u32>,
-    page_total: Option<u32>,
-    eta_seconds: Option<u32>,
-}
-
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct ResultResponse {
-    outputs: Vec<String>,
-    preview: Option<String>,
-}
-
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct RecentResultEntry {
-    dir_name: String,
-    updated_at_ms: u64,
-    page_range: Option<String>,
-    best_file: Option<String>,
-}
-
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct EnvironmentStatus {
-    project_root: String,
-    os: String,
-    dispatcher_found: bool,
-    dispatcher_path: Option<String>,
-    result_dir_found: bool,
-    result_root: String,
-    python_bin: String,
-    python_found: bool,
-    python_path: Option<String>,
-    poppler_found: bool,
-    poppler_path: Option<String>,
-    resource_roots: Vec<String>,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct PreviewResponse {
-    data_url: String,
-    page_count: Option<u32>,
-    page: Option<u32>,
-}
-
-#[derive(Debug, Serialize, Deserialize, Clone)]
-#[serde(rename_all = "camelCase")]
-struct AppSettings {
-    #[serde(default)]
-    formats: Vec<String>,
-    #[serde(default)]
-    image_as_pdf: bool,
-    #[serde(default)]
-    enable_figure: bool,
-    #[serde(default)]
-    mode: Option<String>,
-    #[serde(default)]
-    docx_engine: Option<String>,
-    #[serde(default)]
-    excel_mode: Option<String>,
-    #[serde(default)]
-    use_gpu: bool,
-    #[serde(default)]
-    output_root: Option<String>,
-    #[serde(default = "default_excel_meta_sheet")]
-    excel_meta_sheet: bool,
-    #[serde(default = "default_excel_symbol_fallback")]
-    excel_symbol_fallback: bool,
-    #[serde(default)]
-    chunk_size: Option<u32>,
-    #[serde(default)]
-    enable_rest: bool,
-    #[serde(default)]
-    rest_seconds: Option<u32>,
-    #[serde(default)]
-    pdf_dpi: Option<u32>,
-    #[serde(default)]
-    window_width: Option<u32>,
-    #[serde(default)]
-    window_height: Option<u32>,
-    #[serde(default = "default_preview_quality")]
-    preview_quality: String,
-}
-
-fn default_excel_meta_sheet() -> bool {
-    true
-}
-
-fn default_excel_symbol_fallback() -> bool {
-    true
-}
-
-fn default_preview_quality() -> String {
-    "light".to_string()
-}
-
-fn load_settings_from_disk(project_root: &std::path::Path) -> Result<AppSettings, String> {
-    // Ensure configs directory exists
+pub(crate) fn load_settings_from_disk(project_root: &std::path::Path) -> Result<AppSettings, String> {
     let config_dir = resolve_config_dir(project_root);
-    if !config_dir.exists() {
-        let _ = fs::create_dir_all(&config_dir);
-    }
-
-    let settings_path = config_dir.join("settings.json");
-    if settings_path.exists() {
-        let content = fs::read_to_string(&settings_path).map_err(|e| e.to_string())?;
-        let settings: AppSettings = serde_json::from_str(&content).map_err(|e| e.to_string())?;
-        Ok(settings)
-    } else {
-        let legacy_path = project_root.join("configs").join("settings.json");
-        if legacy_path.exists() {
-            let content = fs::read_to_string(&legacy_path).map_err(|e| e.to_string())?;
-            let settings: AppSettings =
-                serde_json::from_str(&content).map_err(|e| e.to_string())?;
-            return Ok(settings);
-        }
-        // Return defaults
-        Ok(AppSettings {
-            formats: vec!["md".into()],
-            image_as_pdf: false,
-            enable_figure: true,
-            mode: Some("lite".into()),
-            docx_engine: Some("python".into()),
-            excel_mode: Some("layout".into()),
-            use_gpu: false,
-            output_root: None,
-            excel_meta_sheet: true,
-            excel_symbol_fallback: true,
-            chunk_size: Some(10),
-            enable_rest: false,
-            rest_seconds: Some(10),
-            pdf_dpi: Some(200),
-            window_width: Some(1200),
-            window_height: Some(760),
-            preview_quality: default_preview_quality(),
-        })
-    }
+    settings::load_settings_from_disk(project_root, &config_dir)
 }
 
-fn default_gpu_device() -> &'static str {
-    #[cfg(target_os = "macos")]
-    {
-        "mps"
-    }
-    #[cfg(not(target_os = "macos"))]
-    {
-        "cuda"
-    }
-}
+// default_gpu_device は paths.rs に移動済み
 
 fn apply_window_settings(app: &tauri::AppHandle, project_root: &std::path::Path) {
     let settings = load_settings_from_disk(project_root).ok();
@@ -576,6 +68,266 @@ fn apply_window_settings(app: &tauri::AppHandle, project_root: &std::path::Path)
             height as f64,
         )));
     }
+}
+
+/// Ollama (GLM-OCR) ベースの OCR ジョブ実行コマンド。
+/// 既存の run_job（Python subprocess）と並行して使用可能。
+#[tauri::command]
+async fn run_job_ollama(
+    paths: Vec<String>,
+    options: Option<RunOptions>,
+    state: State<'_, Arc<AppState>>,
+) -> Result<RunJobResponse, String> {
+    if paths.is_empty() {
+        return Err("入力ファイルがありません".into());
+    }
+
+    let exe_dir = std::env::current_exe().map_err(|e| format!("exe path 取得失敗: {e}"))?;
+    let project_root = resolve_project_root(&exe_dir).ok_or("project root 解決失敗")?;
+    let settings = load_settings_from_disk(&project_root).ok();
+    let output_root = resolve_output_root(&project_root, settings.as_ref());
+    fs::create_dir_all(&output_root)
+        .map_err(|e| format!("出力ディレクトリ作成失敗: {e}"))?;
+
+    let opts = options.unwrap_or_else(|| RunOptions {
+        formats: vec!["md".into()],
+        image_as_pdf: false,
+        enable_figure: true,
+        use_gpu: false,
+        mode: String::new(),
+        docx_engine: None,
+        chunk_size: None,
+        enable_rest: false,
+        rest_seconds: None,
+        pdf_dpi: None,
+        excel_mode: None,
+        excel_meta_sheet: None,
+        excel_symbol_fallback: None,
+        file_options: None,
+    });
+
+    let job_id = Uuid::new_v4().to_string();
+    {
+        let mut jobs = state.jobs.lock().map_err(|e| format!("lock: {e}"))?;
+        jobs.insert(
+            job_id.clone(),
+            JobInfo {
+                status: JobStatus::Running,
+                progress: 0.0,
+                log: vec!["Ollama OCR ジョブ開始".into()],
+                outputs: vec![],
+                output_paths: vec![],
+                preview: None,
+                error: None,
+                current_message: Some("Ollama に接続中...".into()),
+                page_current: None,
+                page_total: None,
+                eta_seconds: None,
+            },
+        );
+    }
+
+    let state_arc: Arc<AppState> = state.inner().clone();
+    let job_id_clone = job_id.clone();
+    let dpi = opts.pdf_dpi.unwrap_or(300);
+    let enable_figure = opts.enable_figure;
+    let formats = opts.formats.clone();
+    let file_options = opts.file_options.clone();
+    let python_bin = resolve_python_bin(&project_root);
+    let project_root_clone = project_root.clone();
+
+    // バックグラウンドスレッドで OCR 実行
+    tokio::spawn(async move {
+        let total_files = paths.len();
+
+        for (file_idx, input_path_str) in paths.iter().enumerate() {
+            let input_path = std::path::PathBuf::from(input_path_str);
+            let stem = input_path
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or("output");
+
+            // file_options からページ範囲を取得
+            let (start_page, end_page) = file_options
+                .as_ref()
+                .and_then(|m| m.get(input_path_str))
+                .map(|fo| (fo.start, fo.end))
+                .unwrap_or((None, None));
+
+            // ページ範囲指定があればディレクトリ名にサフィックスを付加
+            let dir_name = match (start_page, end_page) {
+                (Some(s), Some(e)) => format!("{stem}_p{s}-{e}"),
+                (Some(s), None) => format!("{stem}_p{s}-"),
+                (None, Some(e)) => format!("{stem}_p1-{e}"),
+                (None, None) => stem.to_string(),
+            };
+            let result_dir = output_root.join(&dir_name);
+
+            let detect_script = resolve_python_entry(&project_root_clone, "detect_figures.py");
+            let ocr_options = ocr::pipeline::OcrOptions {
+                ocr_model: "glm-ocr".to_string(),
+                dpi,
+                poppler_path: None,
+                enable_figure,
+                python_bin: Some(python_bin.clone()),
+                detect_figures_script: Some(detect_script),
+                start_page,
+                end_page,
+            };
+
+            // 進捗コールバック
+            let state_cb = state_arc.clone();
+            let job_id_cb = job_id_clone.clone();
+            let file_start = (file_idx as f32 / total_files as f32) * 100.0;
+            let file_range = 100.0 / total_files as f32;
+            let on_progress: ocr::pipeline::ProgressCallback =
+                Box::new(move |current, total, msg| {
+                    if let Ok(mut jobs) = state_cb.jobs.lock() {
+                        if let Some(job) = jobs.get_mut(&job_id_cb) {
+                            let ocr_ratio = current as f32 / total.max(1) as f32;
+                            job.progress = file_start + file_range * 0.90 * ocr_ratio;
+                            job.current_message = Some(msg.to_string());
+                            job.page_current = Some(current);
+                            job.page_total = Some(total);
+                        }
+                    }
+                });
+
+            // OCR 実行
+            match ocr::pipeline::run_ocr_pipeline(
+                &input_path,
+                &result_dir,
+                &ocr_options,
+                Some(&on_progress),
+            )
+            .await
+            {
+                Ok(_md_paths) => {
+                    // Markdown マージ
+                    if let Ok(mut jobs) = state_arc.jobs.lock() {
+                        if let Some(job) = jobs.get_mut(&job_id_clone) {
+                            job.progress = file_start + file_range * 0.92;
+                            job.current_message = Some("Markdown マージ中...".into());
+                        }
+                    }
+
+                    let _ = markdown::merge_page_markdowns(&result_dir, &dir_name, true);
+
+                    let merged_md = result_dir.join(format!("{dir_name}_merged.md"));
+
+                    // docx エクスポート（Python 呼び出し）
+                    if formats.iter().any(|f| f == "docx") {
+                        if let Ok(mut jobs) = state_arc.jobs.lock() {
+                            if let Some(job) = jobs.get_mut(&job_id_clone) {
+                                job.progress = file_start + file_range * 0.94;
+                                job.current_message =
+                                    Some("docx 変換中...".into());
+                            }
+                        }
+
+                        if merged_md.exists() {
+                            let export_script =
+                                resolve_python_entry(&project_root_clone, "export_docx.py");
+                            if export_script.exists() {
+                                let mut cmd = Command::new(&python_bin);
+                                apply_python_env(&mut cmd);
+                                cmd.arg(&export_script).arg(&merged_md);
+                                let _ = cmd.status();
+                            }
+                        }
+                    }
+
+                    // xlsx / csv エクスポート（Markdown テーブル → xlsx + csv）
+                    let want_xlsx = formats.iter().any(|f| f == "xlsx");
+                    let want_csv = formats.iter().any(|f| f == "csv");
+                    if (want_xlsx || want_csv) && merged_md.exists() {
+                        if let Ok(mut jobs) = state_arc.jobs.lock() {
+                            if let Some(job) = jobs.get_mut(&job_id_clone) {
+                                job.progress = file_start + file_range * 0.97;
+                                job.current_message =
+                                    Some("xlsx/csv 変換中...".into());
+                            }
+                        }
+
+                        let xlsx_path = result_dir.join(format!("{dir_name}.xlsx"));
+                        let export_script =
+                            resolve_python_entry(&project_root_clone, "export_excel_poc.py");
+                        if export_script.exists() {
+                            let mut cmd = Command::new(&python_bin);
+                            apply_python_env(&mut cmd);
+                            cmd.arg(&export_script)
+                                .arg(&merged_md)
+                                .arg(&xlsx_path)
+                                .arg("--format").arg("markdown");
+                            if want_csv {
+                                cmd.arg("--csv-dir").arg(&result_dir);
+                            }
+                            let _ = cmd.status();
+                            // xlsx が不要なら削除
+                            if !want_xlsx {
+                                let _ = fs::remove_file(&xlsx_path);
+                            }
+                        }
+                    }
+
+                    // 出力ファイル収集
+                    if let Ok(mut jobs) = state_arc.jobs.lock() {
+                        if let Some(job) = jobs.get_mut(&job_id_clone) {
+                            let mut outputs = Vec::new();
+                            let mut output_paths = Vec::new();
+                            if let Ok(entries) = fs::read_dir(&result_dir) {
+                                for entry in entries.flatten() {
+                                    let path = entry.path();
+                                    if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
+                                        if name.ends_with("_merged.md")
+                                            || name.ends_with("_merged.docx")
+                                            || name.ends_with(".xlsx")
+                                            || name.ends_with(".csv")
+                                        {
+                                            outputs.push(name.to_string());
+                                            output_paths
+                                                .push(path.to_string_lossy().to_string());
+                                        }
+                                    }
+                                }
+                            }
+
+                            // プレビュー（merged.md の内容）
+                            let merged_md_preview = result_dir.join(format!("{dir_name}_merged.md"));
+                            let preview = fs::read_to_string(&merged_md_preview).ok();
+
+                            job.outputs = outputs;
+                            job.output_paths = output_paths;
+                            job.preview = preview;
+                        }
+                    }
+                }
+                Err(e) => {
+                    if let Ok(mut jobs) = state_arc.jobs.lock() {
+                        if let Some(job) = jobs.get_mut(&job_id_clone) {
+                            job.status = JobStatus::Error;
+                            job.error = Some(e);
+                            job.current_message = Some("エラーが発生しました".into());
+                        }
+                    }
+                    return;
+                }
+            }
+        }
+
+        // 完了
+        if let Ok(mut jobs) = state_arc.jobs.lock() {
+            if let Some(job) = jobs.get_mut(&job_id_clone) {
+                if job.status != JobStatus::Error {
+                    job.status = JobStatus::Done;
+                    job.progress = 100.0;
+                    job.current_message = Some("完了".into());
+                }
+            }
+        }
+    });
+
+    Ok(RunJobResponse { job_id })
 }
 
 #[tauri::command]
@@ -1194,73 +946,7 @@ fn render_preview(
         .map_err(|e| format!("failed to parse preview helper output: {e}"))
 }
 
-/// Resolve python entry script path with priority:
-/// 1) project_root/resources/py/<filename> (or _up_/resources/py)
-/// 2) project_root/<filename> (legacy)
-fn resolve_python_entry(project_root: &std::path::Path, filename: &str) -> PathBuf {
-    for root in resolve_resource_roots(project_root) {
-        let res = root.join("py").join(filename);
-        if res.exists() {
-            return res;
-        }
-    }
-    project_root.join(filename)
-}
-
-/// Resolve python binary path with priority:
-/// 1) env PYTHON_BIN
-/// 2) project_root/resources/python/python(.exe) (portable runtime, or _up_/resources/python)
-/// 3) project_root/resources/.venv/(Scripts|bin)/python(.exe) (legacy, or _up_/resources/.venv)
-/// 4) project_root/.venv/(Scripts|bin)/python(.exe)
-/// 5) "python"
-fn resolve_python_bin(project_root: &std::path::Path) -> String {
-    if let Ok(bin) = std::env::var("PYTHON_BIN") {
-        if !bin.is_empty() {
-            return bin;
-        }
-    }
-
-    // resources/python (portable runtime)
-    for root in resolve_resource_roots(project_root) {
-        #[cfg(target_os = "windows")]
-        let res_python = root.join("python").join("python.exe");
-        #[cfg(not(target_os = "windows"))]
-        let res_python = root.join("python").join("bin").join("python");
-        if res_python.exists() {
-            return res_python.to_string_lossy().to_string();
-        }
-        #[cfg(not(target_os = "windows"))]
-        {
-            let res_python3 = root.join("python").join("bin").join("python3");
-            if res_python3.exists() {
-                return res_python3.to_string_lossy().to_string();
-            }
-        }
-    }
-
-    // resources/.venv (配布用に同梱する場合)
-    for root in resolve_resource_roots(project_root) {
-        #[cfg(target_os = "windows")]
-        let res_venv = root.join(".venv").join("Scripts").join("python.exe");
-        #[cfg(not(target_os = "windows"))]
-        let res_venv = root.join(".venv").join("bin").join("python");
-        if res_venv.exists() {
-            return res_venv.to_string_lossy().to_string();
-        }
-    }
-
-    #[cfg(target_os = "windows")]
-    let venv = project_root
-        .join(".venv")
-        .join("Scripts")
-        .join("python.exe");
-    #[cfg(not(target_os = "windows"))]
-    let venv = project_root.join(".venv").join("bin").join("python");
-    if venv.exists() {
-        return venv.to_string_lossy().to_string();
-    }
-    "python".into()
-}
+// resolve_python_entry, resolve_python_bin は paths.rs に移動済み
 
 #[tauri::command]
 fn get_progress(job_id: String, state: State<Arc<AppState>>) -> Result<ProgressResponse, String> {
@@ -1283,326 +969,7 @@ fn get_progress(job_id: String, state: State<Arc<AppState>>) -> Result<ProgressR
     Err("job not found".into())
 }
 
-/// 入力パスに応じて出力候補を探す
-fn collect_output_files(
-    result_root: &std::path::Path,
-    project_root: &std::path::Path,
-    inputs: &[String],
-    formats: &[String],
-) -> Vec<PathBuf> {
-    fn push_unique(found: &mut Vec<PathBuf>, path: PathBuf) {
-        if path.exists() && !found.contains(&path) {
-            found.push(path);
-        }
-    }
-
-    fn pick_latest_result_dir(result_root: &std::path::Path, stem: &str) -> Option<PathBuf> {
-        if !result_root.exists() {
-            return None;
-        }
-
-        let mut candidates: Vec<(std::time::SystemTime, PathBuf)> = Vec::new();
-
-        let direct = result_root.join(stem);
-        if direct.is_dir() {
-            let modified = direct
-                .metadata()
-                .and_then(|m| m.modified())
-                .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
-            candidates.push((modified, direct));
-        }
-
-        if let Ok(entries) = fs::read_dir(result_root) {
-            let prefix = format!("{stem}_");
-            for entry in entries.flatten() {
-                let path = entry.path();
-                if !path.is_dir() {
-                    continue;
-                }
-                let name = path
-                    .file_name()
-                    .unwrap_or_default()
-                    .to_string_lossy()
-                    .to_string();
-                if !name.starts_with(&prefix) {
-                    continue;
-                }
-                let modified = path
-                    .metadata()
-                    .and_then(|m| m.modified())
-                    .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
-                candidates.push((modified, path));
-            }
-        }
-
-        candidates.sort_by(|(a, _), (b, _)| b.cmp(a));
-        candidates.first().map(|(_, p)| p.clone())
-    }
-
-    let mut found = Vec::new();
-    for input in inputs {
-        let input_path = PathBuf::from(input);
-        let stem_owned = input_path
-            .file_stem()
-            .and_then(|s| s.to_str())
-            .unwrap_or("output")
-            .to_string();
-        let stem = stem_owned.as_str();
-        let mut md_found_for_input = false;
-        let mut result_dir_opt: Option<PathBuf> = None;
-
-        // result/<stem> もしくは result/<stem>_*（ページ範囲指定などの suffix 付き）の最新ディレクトリ内
-        if let Some(result_dir) = pick_latest_result_dir(result_root, stem) {
-            result_dir_opt = Some(result_dir.clone());
-            let dir_name = result_dir
-                .file_name()
-                .unwrap_or_default()
-                .to_string_lossy()
-                .to_string();
-
-            for fmt in formats {
-                if fmt == "xlsx" {
-                    // dispatcher は <output_dir.name>.xlsx を作る
-                    push_unique(&mut found, result_dir.join(format!("{dir_name}.xlsx")));
-                    push_unique(&mut found, result_dir.join(format!("{stem}.xlsx")));
-                    // 念のため
-                    push_unique(
-                        &mut found,
-                        result_dir.join(format!("{dir_name}_merged.xlsx")),
-                    );
-                    push_unique(&mut found, result_dir.join(format!("{stem}_merged.xlsx")));
-                    continue;
-                }
-                if fmt == "csv" {
-                    if let Ok(entries) = fs::read_dir(&result_dir) {
-                        for entry in entries.flatten() {
-                            let path = entry.path();
-                            if !path.is_file() {
-                                continue;
-                            }
-                            if path.extension().map(|e| e == "csv").unwrap_or(false) {
-                                push_unique(&mut found, path);
-                            }
-                        }
-                    }
-                    continue;
-                }
-
-                // ocr_chanked のマージ出力 + export_docx の変換結果は <output_dir.name>_merged.<fmt>
-                let merged = result_dir.join(format!("{dir_name}_merged.{fmt}"));
-                push_unique(&mut found, merged.clone());
-                // 旧ルール互換
-                let legacy_merged = result_dir.join(format!("{stem}_merged.{fmt}"));
-                push_unique(&mut found, legacy_merged.clone());
-                let stem_path = result_dir.join(format!("{stem}.{fmt}"));
-                push_unique(&mut found, stem_path.clone());
-                let dir_name_path = result_dir.join(format!("{dir_name}.{fmt}"));
-                push_unique(&mut found, dir_name_path.clone());
-                if fmt == "md"
-                    && (merged.exists()
-                        || legacy_merged.exists()
-                        || stem_path.exists()
-                        || dir_name_path.exists())
-                {
-                    md_found_for_input = true;
-                }
-            }
-        }
-
-        // ルート直下に <stem>_merged.<fmt> / <stem>.<fmt>
-        for fmt in formats {
-            let c1 = result_root.join(format!("{}_merged.{}", stem, fmt));
-            let c2 = result_root.join(format!("{}.{}", stem, fmt));
-            let c1_exists = c1.exists();
-            let c2_exists = c2.exists();
-            push_unique(&mut found, c1);
-            push_unique(&mut found, c2);
-            if fmt == "md" && (c1_exists || c2_exists) {
-                md_found_for_input = true;
-            }
-            if result_root != project_root {
-                let c3 = project_root.join(format!("{}_merged.{}", stem, fmt));
-                let c4 = project_root.join(format!("{}.{}", stem, fmt));
-                let c3_exists = c3.exists();
-                let c4_exists = c4.exists();
-                push_unique(&mut found, c3);
-                push_unique(&mut found, c4);
-                if fmt == "md" && (c3_exists || c4_exists) {
-                    md_found_for_input = true;
-                }
-            }
-        }
-
-        if !md_found_for_input && formats.iter().any(|f| f == "md") {
-            if let Some(result_dir) = result_dir_opt {
-                if let Ok(entries) = fs::read_dir(&result_dir) {
-                    let mut candidates = Vec::new();
-                    for entry in entries.flatten() {
-                        let path = entry.path();
-                        if !path.is_file() {
-                            continue;
-                        }
-                        if path.extension().map(|e| e == "md").unwrap_or(false) {
-                            if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
-                                if name.starts_with("page_") {
-                                    candidates.push(path);
-                                }
-                            }
-                        }
-                    }
-                    candidates.sort();
-                    if let Some(first) = candidates.first() {
-                        push_unique(&mut found, first.clone());
-                    }
-                }
-            }
-        }
-    }
-    found
-}
-
-fn is_app_bundle_resource_dir(path: &std::path::Path) -> bool {
-    let name = path.file_name().and_then(|n| n.to_str());
-    if name != Some("Resources") {
-        return false;
-    }
-    let contents = path.parent().and_then(|p| p.file_name()).and_then(|n| n.to_str());
-    if contents != Some("Contents") {
-        return false;
-    }
-    path.parent()
-        .and_then(|p| p.parent())
-        .and_then(|p| p.extension())
-        .and_then(|e| e.to_str())
-        == Some("app")
-}
-
-fn resolve_app_support_dir() -> Option<PathBuf> {
-    #[cfg(target_os = "macos")]
-    {
-        let home = std::env::var_os("HOME")?;
-        return Some(
-            PathBuf::from(home)
-                .join("Library")
-                .join("Application Support")
-                .join(APP_SUPPORT_DIR_NAME),
-        );
-    }
-    #[cfg(target_os = "windows")]
-    {
-        let base = std::env::var_os("LOCALAPPDATA")
-            .or_else(|| std::env::var_os("APPDATA"))?;
-        return Some(PathBuf::from(base).join(APP_SUPPORT_DIR_NAME));
-    }
-    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
-    {
-        if let Some(base) = std::env::var_os("XDG_DATA_HOME") {
-            return Some(PathBuf::from(base).join(APP_SUPPORT_DIR_NAME));
-        }
-        let home = std::env::var_os("HOME")?;
-        return Some(
-            PathBuf::from(home)
-                .join(".local")
-                .join("share")
-                .join(APP_SUPPORT_DIR_NAME),
-        );
-    }
-}
-
-fn resolve_config_dir(project_root: &std::path::Path) -> PathBuf {
-    if is_app_bundle_resource_dir(project_root) {
-        if let Some(app_support) = resolve_app_support_dir() {
-            return app_support.join("configs");
-        }
-    }
-    project_root.join("configs")
-}
-
-fn expand_tilde_path(path: &str) -> PathBuf {
-    let trimmed = path.trim();
-    if trimmed == "~" {
-        if let Some(home) = std::env::var_os("HOME") {
-            return PathBuf::from(home);
-        }
-    }
-    if let Some(rest) = trimmed.strip_prefix("~/") {
-        if let Some(home) = std::env::var_os("HOME") {
-            return PathBuf::from(home).join(rest);
-        }
-    }
-    PathBuf::from(trimmed)
-}
-
-fn resolve_default_output_root(project_root: &std::path::Path) -> PathBuf {
-    if is_app_bundle_resource_dir(project_root) {
-        if let Some(app_support) = resolve_app_support_dir() {
-            return app_support.join("result");
-        }
-    }
-    project_root.join("result")
-}
-
-fn resolve_output_root(project_root: &std::path::Path, settings: Option<&AppSettings>) -> PathBuf {
-    if let Some(s) = settings {
-        if let Some(custom) = s.output_root.as_ref() {
-            let trimmed = custom.trim();
-            if !trimmed.is_empty() {
-                return expand_tilde_path(trimmed);
-            }
-        }
-    }
-    resolve_default_output_root(project_root)
-}
-
-fn resolve_output_root_from_disk(project_root: &std::path::Path) -> PathBuf {
-    let settings = load_settings_from_disk(project_root).ok();
-    resolve_output_root(project_root, settings.as_ref())
-}
-
-fn resolve_resource_roots(project_root: &std::path::Path) -> Vec<PathBuf> {
-    let mut roots = Vec::new();
-    let direct = project_root.join("resources");
-    roots.push(direct);
-    let up = project_root.join("_up_").join("resources");
-    if up != roots[0] {
-        roots.push(up);
-    }
-    roots
-}
-
-/// Walk ancestors from exe_dir to find dispatcher.py; return its parent (project root)
-fn resolve_project_root(exe_dir: &std::path::Path) -> Option<PathBuf> {
-    for anc in exe_dir.ancestors() {
-        let res = anc.join("resources").join("py").join("dispatcher.py");
-        let legacy = anc.join("dispatcher.py");
-        let app_res = anc
-            .join("Contents")
-            .join("Resources")
-            .join("resources")
-            .join("py")
-            .join("dispatcher.py");
-        let app_res_up = anc
-            .join("Contents")
-            .join("Resources")
-            .join("_up_")
-            .join("resources")
-            .join("py")
-            .join("dispatcher.py");
-        if app_res.exists() {
-            return Some(anc.join("Contents").join("Resources"));
-        }
-        if app_res_up.exists() {
-            return Some(anc.join("Contents").join("Resources"));
-        }
-        if res.exists() {
-            return Some(anc.to_path_buf());
-        }
-        if legacy.exists() {
-            return Some(anc.to_path_buf());
-        }
-    }
-    None
-}
+// collect_output_files, find_output_path 等は results.rs に移動済み
 
 #[tauri::command]
 fn get_result(job_id: String, state: State<Arc<AppState>>) -> Result<ResultResponse, String> {
@@ -1666,157 +1033,6 @@ fn save_file(
         return Err(format!("source file not found: {}", filename));
     }
     Err("job not found".into())
-}
-
-fn find_output_path(
-    result_root: &std::path::Path,
-    project_root: &std::path::Path,
-    filename: &str,
-) -> Option<PathBuf> {
-    // 1. result ディレクトリ内を探索
-    if result_root.exists() {
-        if let Ok(entries) = fs::read_dir(result_root) {
-            for entry in entries.flatten() {
-                let candidate = entry.path().join(filename);
-                if candidate.exists() {
-                    return Some(candidate);
-                }
-            }
-        }
-    }
-
-    // 2. result 直下
-    let candidate = result_root.join(filename);
-    if candidate.exists() {
-        return Some(candidate);
-    }
-
-    // 3. プロジェクトルート直下
-    let candidate = project_root.join(filename);
-    if candidate.exists() {
-        return Some(candidate);
-    }
-
-    None
-}
-
-fn open_path_with_default_app(path: &std::path::Path) -> Result<(), String> {
-    #[cfg(target_os = "macos")]
-    let mut cmd = {
-        let mut c = Command::new("open");
-        c.arg(path);
-        c
-    };
-
-    #[cfg(target_os = "windows")]
-    let mut cmd = {
-        // explorer はファイル/フォルダ両方を開ける
-        let mut c = Command::new("explorer");
-        c.arg(path);
-        c
-    };
-
-    #[cfg(all(unix, not(target_os = "macos")))]
-    let mut cmd = {
-        let mut c = Command::new("xdg-open");
-        c.arg(path);
-        c
-    };
-
-    cmd.spawn()
-        .map(|_| ())
-        .map_err(|e| format!("failed to open path: {e}"))
-}
-
-fn validate_result_dir_name(dir_name: &str) -> Result<(), String> {
-    if dir_name.is_empty() {
-        return Err("dirName is empty".into());
-    }
-    if dir_name.contains('/') || dir_name.contains('\\') || dir_name.contains("..") {
-        return Err("invalid dirName".into());
-    }
-    Ok(())
-}
-
-fn canonicalize_dir(path: &std::path::Path) -> Result<PathBuf, String> {
-    fs::canonicalize(path).map_err(|e| format!("failed to canonicalize path: {e}"))
-}
-
-fn parse_page_range_from_dir(dir_name: &str) -> Option<String> {
-    // 例: foo_p3-9 -> "p3-9"
-    let pos = dir_name.rfind("_p")?;
-    let rest = &dir_name[(pos + 2)..];
-    let mut parts = rest.splitn(2, '-');
-    let start = parts.next()?;
-    let end = parts.next()?;
-    if start.is_empty() || end.is_empty() {
-        return None;
-    }
-    if !start.chars().all(|c| c.is_ascii_digit()) || !end.chars().all(|c| c.is_ascii_digit()) {
-        return None;
-    }
-    Some(format!("p{}-{}", start, end))
-}
-
-fn pick_best_file_in_dir(dir: &std::path::Path, dir_name: &str) -> Option<String> {
-    let candidates = [
-        // docx
-        format!("{dir_name}_merged.docx"),
-        format!("{dir_name}.docx"),
-        // xlsx (dispatcher は <output_dir.name>.xlsx)
-        format!("{dir_name}.xlsx"),
-        format!("{dir_name}_merged.xlsx"),
-        // csv（複数になる可能性があるので、代表として単体名も見る）
-        format!("{dir_name}.csv"),
-        format!("{dir_name}_merged.csv"),
-        // md
-        format!("{dir_name}_merged.md"),
-        format!("{dir_name}.md"),
-    ];
-
-    for filename in candidates {
-        if dir.join(&filename).exists() {
-            return Some(filename);
-        }
-    }
-
-    // fallback: scan directory for known extensions
-    if let Ok(entries) = fs::read_dir(dir) {
-        let mut docx = None;
-        let mut xlsx = None;
-        let mut csv = None;
-        let mut md = None;
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if !path.is_file() {
-                continue;
-            }
-            let name = path
-                .file_name()
-                .unwrap_or_default()
-                .to_string_lossy()
-                .to_string();
-            let lower = name.to_lowercase();
-            if docx.is_none() && lower.ends_with(".docx") {
-                docx = Some(name);
-                continue;
-            }
-            if xlsx.is_none() && lower.ends_with(".xlsx") {
-                xlsx = Some(name);
-                continue;
-            }
-            if csv.is_none() && lower.ends_with(".csv") {
-                csv = Some(name);
-                continue;
-            }
-            if md.is_none() && lower.ends_with(".md") {
-                md = Some(name);
-            }
-        }
-        return docx.or(xlsx).or(csv).or(md);
-    }
-
-    None
 }
 
 #[tauri::command]
@@ -1917,54 +1133,7 @@ fn open_readme() -> Result<(), String> {
 
 #[tauri::command]
 fn list_recent_results(limit: Option<u32>) -> Result<Vec<RecentResultEntry>, String> {
-    let exe_dir = std::env::current_exe().map_err(|e| format!("failed to get exe path: {e}"))?;
-    let project_root = resolve_project_root(&exe_dir).ok_or("failed to resolve project root")?;
-    let result_root = resolve_output_root_from_disk(&project_root);
-    if !result_root.exists() {
-        return Ok(vec![]);
-    }
-
-    let mut dirs: Vec<(u64, String)> = Vec::new();
-    if let Ok(entries) = fs::read_dir(&result_root) {
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if !path.is_dir() {
-                continue;
-            }
-            let name = path
-                .file_name()
-                .unwrap_or_default()
-                .to_string_lossy()
-                .to_string();
-            let modified = path
-                .metadata()
-                .and_then(|m| m.modified())
-                .unwrap_or(SystemTime::UNIX_EPOCH);
-            let ms = modified
-                .duration_since(UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_millis() as u64;
-            dirs.push((ms, name));
-        }
-    }
-
-    dirs.sort_by(|(a, _), (b, _)| b.cmp(a));
-    let take_n = limit.unwrap_or(10).max(1) as usize;
-    let mut results = Vec::new();
-
-    for (updated_at_ms, dir_name) in dirs.into_iter().take(take_n) {
-        let dir_path = result_root.join(&dir_name);
-        let best_file = pick_best_file_in_dir(&dir_path, &dir_name);
-        let page_range = parse_page_range_from_dir(&dir_name);
-        results.push(RecentResultEntry {
-            dir_name,
-            updated_at_ms,
-            page_range,
-            best_file,
-        });
-    }
-
-    Ok(results)
+    results::list_recent_results(limit)
 }
 
 #[tauri::command]
@@ -2016,87 +1185,8 @@ fn open_result_file(dir_name: String) -> Result<(), String> {
 }
 
 #[tauri::command]
-fn check_environment() -> Result<EnvironmentStatus, String> {
-    let exe_dir = std::env::current_exe().map_err(|e| format!("failed to get exe path: {e}"))?;
-    let project_root = resolve_project_root(&exe_dir).ok_or("failed to resolve project root")?;
-    let settings = load_settings_from_disk(&project_root).ok();
-    let result_root = resolve_output_root(&project_root, settings.as_ref());
-    let result_dir_found = result_root.exists();
-    let python_bin = resolve_python_bin(&project_root);
-    let python_path = if python_bin == "python" {
-        None
-    } else {
-        Some(python_bin.clone())
-    };
-    let python_found = python_path
-        .as_ref()
-        .map(|p| PathBuf::from(p).is_file())
-        .unwrap_or(false);
-
-    let resource_roots = resolve_resource_roots(&project_root);
-    let resource_roots_display = resource_roots
-        .iter()
-        .map(|p| p.to_string_lossy().to_string())
-        .collect::<Vec<_>>();
-
-    let mut dispatcher_candidates = resource_roots
-        .iter()
-        .map(|root| root.join("py").join("dispatcher.py"))
-        .collect::<Vec<_>>();
-    dispatcher_candidates.push(project_root.join("dispatcher.py"));
-    let dispatcher_path = dispatcher_candidates
-        .into_iter()
-        .find(|p| p.is_file());
-    let dispatcher_found = dispatcher_path.is_some();
-
-    let mut poppler_candidates = Vec::new();
-    for root in &resource_roots {
-        let base = root.join("py").join("poppler");
-        #[cfg(target_os = "windows")]
-        {
-            poppler_candidates.push(base.join("Library").join("bin"));
-            poppler_candidates.push(base.join("win").join("bin"));
-        }
-        #[cfg(target_os = "macos")]
-        {
-            poppler_candidates.push(base.join("macos").join("bin"));
-        }
-        #[cfg(not(any(target_os = "windows", target_os = "macos")))]
-        {
-            let os_name = std::env::consts::OS;
-            poppler_candidates.push(base.join(os_name).join("bin"));
-        }
-    }
-    let poppler_path = poppler_candidates.into_iter().find(|dir| {
-        if !dir.is_dir() {
-            return false;
-        }
-        #[cfg(target_os = "windows")]
-        let pdfinfo = dir.join("pdfinfo.exe");
-        #[cfg(not(target_os = "windows"))]
-        let pdfinfo = dir.join("pdfinfo");
-        #[cfg(target_os = "windows")]
-        let pdftoppm = dir.join("pdftoppm.exe");
-        #[cfg(not(target_os = "windows"))]
-        let pdftoppm = dir.join("pdftoppm");
-        pdfinfo.exists() || pdftoppm.exists()
-    });
-    let poppler_found = poppler_path.is_some();
-
-    Ok(EnvironmentStatus {
-        project_root: project_root.to_string_lossy().to_string(),
-        os: std::env::consts::OS.to_string(),
-        dispatcher_found,
-        dispatcher_path: dispatcher_path.map(|p| p.to_string_lossy().to_string()),
-        result_dir_found,
-        result_root: result_root.to_string_lossy().to_string(),
-        python_bin,
-        python_found,
-        python_path,
-        poppler_found,
-        poppler_path: poppler_path.map(|p| p.to_string_lossy().to_string()),
-        resource_roots: resource_roots_display,
-    })
+async fn check_environment() -> Result<EnvironmentStatus, String> {
+    environment::check_environment().await
 }
 
 #[tauri::command]
@@ -2110,17 +1200,8 @@ fn load_settings() -> Result<AppSettings, String> {
 fn save_settings(settings: AppSettings) -> Result<(), String> {
     let exe_dir = std::env::current_exe().map_err(|e| e.to_string())?;
     let project_root = resolve_project_root(&exe_dir).unwrap_or_else(|| PathBuf::from("."));
-
     let config_dir = resolve_config_dir(&project_root);
-    if !config_dir.exists() {
-        fs::create_dir_all(&config_dir).map_err(|e| e.to_string())?;
-    }
-
-    let settings_path = config_dir.join("settings.json");
-    let content = serde_json::to_string_pretty(&settings).map_err(|e| e.to_string())?;
-
-    fs::write(settings_path, content).map_err(|e| e.to_string())?;
-    Ok(())
+    settings::save_settings_to_disk(&settings, &config_dir)
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -2129,6 +1210,7 @@ pub fn run() {
         .manage(Arc::new(AppState::default()))
         .invoke_handler(tauri::generate_handler![
             run_job,
+            run_job_ollama,
             save_clipboard_image,
             render_preview,
             get_progress,

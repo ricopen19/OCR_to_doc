@@ -19,13 +19,9 @@ macOS版の出力先
 ・設定 > 出力ルートディレクトリ で変更できます
 
 macOS DMG（ランタイム同梱）
-・ビルド前に ui/src-tauri/resources に配置
-・M1 は arm64 の配布物を使用
-・python-build-standalone を ui/src-tauri/resources/python に展開（bin/python または bin/python3 が必要）
-・Pythonスクリプトは ui/src-tauri/resources/py に配置（dispatcher.py など）
-・poppler は ui/src-tauri/resources/py/poppler/macos/bin に配置
-・アイコン設定は ui/src-tauri/resources/py/configs/icon_profiles に配置
-・アプリ内で resources が Contents/Resources/_up_/resources 配下になることがある
+・Pythonスクリプトは scripts/python/ に配置（Tauri バンドル時に自動取り込み）
+・poppler は homebrew (`brew install poppler`) を使用
+・アプリ内で scripts/python/ は Contents/Resources/_up_/_up_/scripts/python/ 配下に展開される
 
 Excelの記号セル（○/□/× など）が空になる
 ・設定 >「Excelの記号補完を有効化」を ON

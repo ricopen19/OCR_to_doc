@@ -11,8 +11,65 @@
 - [x] 図表抽出 + アイコンフィルタリング
 - [x] Windows portable ビルド（GitHub Actions）
 - [x] 数式 OCR 検証 → 見送り（ADR-002）
+- [x] ドキュメント整理（CLAUDE.md 方針準拠）
 
-## 未着手
+## GLM-OCR 移行（feature/glm-ocr ブランチ）
 
-- [ ] GLM-OCR への OCR エンジン移行検討
-- [ ] Ollama LLM による OCR 結果校正フローの検討
+### Phase 1: Rust + Ollama で OCR 動作
+
+#### 1-1. Rust 基盤整備
+- [x] Cargo.toml に依存追加（reqwest, base64, tokio, image, serde_json, regex）
+- [x] lib.rs をモジュール分割 — ollama/, ocr/, markdown/, settings.rs, job.rs, paths.rs, cli.rs, results.rs, environment.rs 済（2,394→1,230行）。残存: run_job/run_job_ollama（Phase 4 で廃止予定のため見送り）
+
+#### 1-2. Ollama クライアント
+- [x] health_check（GET /）
+- [x] list_models / has_model（GET /api/tags）
+- [x] chat_vision（POST /api/chat + base64 画像）
+- [x] pull_model（POST /api/pull、非ストリーミング）
+- [x] chat_text（LLM 校正用テキストチャット）
+
+#### 1-3. OCR パイプライン
+- [x] PDF → 画像化（Poppler pdftoppm 方式で動作）
+- [x] 画像 → base64 → Ollama → Markdown の基本フロー
+- [x] page_###.md の保存・命名
+- [x] run_job を Rust OCR パイプラインに切り替え（run_job_ollama コマンド）
+- [x] 進捗管理を Rust 内部更新に変更（ProgressCallback で直接 JobInfo 更新）
+
+#### 1-4. Markdown 処理
+- [x] page_*.md のソート + マージ（# Page n 挿入）
+- [x] basic_cleanup 実装（GLM-OCR では最小限で十分、方針確定済み）
+
+#### 1-5. 図表抽出
+- [x] 案 C（VLM で bbox 検出）実装・検証 → glm-ocr は bbox 非対応で却下
+- [x] YOLOv8x-DocLayNet で検証 → 数学教材で良好な精度（conf=0.35 で実用的）
+- [x] YOLOv8x-DocLayNet を OCR パイプラインに組み込み（Python スクリプト + Rust 呼び出し）
+
+#### 1-6. エクスポート・環境チェック
+- [x] check_environment を Ollama 対応に変更（ollama_running, ocr_model_ready）
+- [x] docx エクスポート（Python subprocess 呼び出し）の E2E 動作確認
+
+### Phase 2: エクスポート + 校正
+- [x] Markdown テーブル → xlsx エクスポート（load_tables_from_markdown 追加）
+- [x] run_job_ollama から xlsx エクスポートを呼び出し
+- [x] csv エクスポート対応（--csv-dir オプション、xlsx と同時出力可能）
+- [x] docx エクスポートの E2E 動作確認
+- [ ] LLM 校正フローの実装（glm-ocr の精度が高いためオプション扱い。必要に応じて実装）
+
+### Phase 3: セットアップ + GUI
+- [ ] 初回セットアップフロー（Ollama 検出 → モデル pull → 起動）
+- [ ] Ollama 接続設定の UI
+- [ ] 環境チェック画面の刷新
+
+### Phase 4: Python 依存の縮小
+- [ ] Python パイプライン（dispatcher/ocr/postprocess）を廃止
+- [ ] Python は export のみに縮小
+- [ ] 配布パッケージのサイズ検証
+
+## Mac 対応（保留）
+
+ADR-011 に基づき配布対象は Windows のみ。Mac 対応は以下のどちらかが成立した時点で再開する（優先度低）。
+
+- [ ] (a) Ollama の M5 Metal 修正（Ollama issue #15541）を待つ
+- [ ] (b) MLX 版 glm-ocr (`mlx-community/GLM-OCR-bf16`) に差し替え
+  - PoC 済み: `/tmp/glm-ocr-poc` で 112 tok/s 動作確認（2026-04-19）
+  - 実装時に必要な作業: pipeline.rs のバッチ化・JSONL 進捗・`EnvironmentStatus` に backend フィールド追加・mlx-vlm の配布方法（brew + uv sync など）

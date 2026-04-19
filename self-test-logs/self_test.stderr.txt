@@ -1,0 +1,12 @@
+[self-test] project_root=D:\a\OCR_to_doc\OCR_to_doc python=python input=D:\a\OCR_to_doc\OCR_to_doc\dist-portable\ocr-to-doc\resources\fixtures\sample.png output_root=D:\a\OCR_to_doc\OCR_to_doc\result_ci
+[self-test] dispatcher failed with status=exit code: 1
+--- stdout ---
+
+--- stderr ---
+Traceback (most recent call last):
+  File "D:\a\OCR_to_doc\OCR_to_doc\dispatcher.py", line 15, in <module>
+    from ocr import OcrOptions, run_ocr, export_csv
+  File "D:\a\OCR_to_doc\OCR_to_doc\ocr.py", line 21, in <module>
+    from PIL import Image, ImageStat
+ModuleNotFoundError: No module named 'PIL'
+

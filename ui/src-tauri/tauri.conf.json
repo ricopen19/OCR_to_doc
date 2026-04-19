@@ -37,7 +37,7 @@
       "icons/icon.ico"
     ],
     "resources": [
-      "resources"
+      "../../scripts/python/*.py"
     ]
   }
 }

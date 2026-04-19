@@ -66,26 +66,14 @@ jobs:
             Copy-Item -Recurse -Force -Path "configs" -Destination $appDir
           }
 
-          # Python scripts are placed under resources/py to reduce user accidents
-          $pyDir = Join-Path $appDir "resources/py"
+          # Python scripts are placed under scripts/python (matches paths.rs resolution)
+          $pyDir = Join-Path $appDir "scripts/python"
           New-Item -ItemType Directory -Force -Path $pyDir | Out-Null
-          Copy-Item -Force -Path "*.py" -Destination $pyDir
+          Copy-Item -Force -Path "scripts/python/*.py" -Destination $pyDir
 
-          # Templates used by markdown_cleanup.py
-          @("formatting_templates.json","formula_templates.json","icon_config.json") | ForEach-Object {
-            if (Test-Path $_) { Copy-Item -Force -Path $_ -Destination $pyDir }
-          }
-
-          # Python-side configs (icon profiles)
-          $pyConfigsDir = Join-Path $pyDir "configs"
-          New-Item -ItemType Directory -Force -Path $pyConfigsDir | Out-Null
-          if (Test-Path "configs/icon_profiles") {
-            Copy-Item -Recurse -Force -Path "configs/icon_profiles" -Destination $pyConfigsDir
-          }
-
-          # Poppler is bundled (PDF rendering)
+          # Poppler is bundled at app root (matches environment.rs resolution)
           if (Test-Path "poppler") {
-            Copy-Item -Recurse -Force -Path "poppler" -Destination $pyDir
+            Copy-Item -Recurse -Force -Path "poppler" -Destination $appDir
           } else {
             throw "poppler directory not found at repo root"
           }
@@ -154,8 +142,8 @@ jobs:
           & $runtimePy -m pip install --upgrade pip
           & $runtimePy -m pip install -r requirements-runtime.txt
 
-          # Quick sanity checks for optional deps used by the app
-          & $runtimePy -c "import yomitoku; print('runtime imports ok')"
+          # Quick sanity checks for deps used by the app
+          & $runtimePy -c "import docx, openpyxl; print('runtime imports ok')"
 
       - name: Prepare fixture
         if: ${{ github.event_name == 'push' || github.event.inputs.with_runtime == 'true' }}
