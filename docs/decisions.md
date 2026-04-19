@@ -82,6 +82,19 @@
 
 - **却下案**: run_job() を job_manager / python_subprocess / progress_parser に分解（Phase 4 で廃止予定のコードに対してリファクタリングコストが見合わない）
 
+## ADR-011: 配布対象を当面 Windows のみとする（Mac 対応は保留）
+
+- **日付**: 2026-04-19
+- **決定**: 配布対象は Windows のみ。Mac 版は作らず、将来 (a) Ollama の M5 Metal 修正を待つ、または (b) MLX 版 glm-ocr に差し替える、のどちらかで再開する
+- **理由**: Apple M5 では Ollama (llama.cpp Metal バックエンド) が GGML_ASSERT で異常終了し、glm-ocr がロードできない。OS 分岐で MLX 経路を用意する案もあるが、(1) 実務利用は Windows シェアが圧倒的、(2) Mac 経路を足すと pipeline.rs のバッチ化・進捗 JSONL・環境チェック分岐・mlx-vlm 配布方法の検討が必要でコスト大、のため当面見送り
+- **却下案**:
+  - OS 分岐で Mac も MLX 対応（コスト対効果が合わない。Win シェアが圧倒的）
+  - Ollama に CPU-only で動かす（速度が実用域外）
+- **影響**:
+  - 開発者（M5 MBA）はローカルで OCR E2E 検証ができない。Windows GitHub Actions の `windows_portable.yml` または Win 実機で検証する
+  - Python 側（docx/xlsx export・markdown cleanup）は Mac でも開発・単体テスト可能
+- **参考**: Ollama issue #15541 / MLX PoC は `/tmp/glm-ocr-poc` で 112 tok/s 動作確認済み
+
 ## ADR-010: 図表抽出に YOLOv8x-DocLayNet を採用
 
 - **日付**: 2026-03-24

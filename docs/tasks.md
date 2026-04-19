@@ -64,3 +64,12 @@
 - [ ] Python パイプライン（dispatcher/ocr/postprocess）を廃止
 - [ ] Python は export のみに縮小
 - [ ] 配布パッケージのサイズ検証
+
+## Mac 対応（保留）
+
+ADR-011 に基づき配布対象は Windows のみ。Mac 対応は以下のどちらかが成立した時点で再開する（優先度低）。
+
+- [ ] (a) Ollama の M5 Metal 修正（Ollama issue #15541）を待つ
+- [ ] (b) MLX 版 glm-ocr (`mlx-community/GLM-OCR-bf16`) に差し替え
+  - PoC 済み: `/tmp/glm-ocr-poc` で 112 tok/s 動作確認（2026-04-19）
+  - 実装時に必要な作業: pipeline.rs のバッチ化・JSONL 進捗・`EnvironmentStatus` に backend フィールド追加・mlx-vlm の配布方法（brew + uv sync など）
