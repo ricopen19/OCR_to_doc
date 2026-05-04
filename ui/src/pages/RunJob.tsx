@@ -18,6 +18,7 @@ import {
     SegmentedControl,
     NumberInput,
     Radio,
+    Switch,
 } from '@mantine/core'
 import { IconUpload, IconPlayerPlay, IconFile, IconX, IconAlertTriangle, IconCrop, IconDeviceFloppy } from '@tabler/icons-react'
 import { useCallback, useEffect, useRef, useState, type Dispatch, type SetStateAction } from 'react'
@@ -699,6 +700,19 @@ export function RunJob({
                                             }}
                                         />
                                     )}
+                                </Stack>
+
+                                <Divider />
+
+                                <Stack gap="xs">
+                                    <Switch
+                                        label="図表抽出（YOLOv8）"
+                                        description="ON にすると図・表を自動検出して埋め込みます。CPU 負荷が高くなります。"
+                                        checked={options.enableFigure}
+                                        onChange={(e) =>
+                                            setOptions((prev) => ({ ...prev, enableFigure: e.currentTarget.checked }))
+                                        }
+                                    />
                                 </Stack>
                             </Stack>
                         </Card>

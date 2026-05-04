@@ -1,4 +1,5 @@
 use super::types::*;
+use tokio::time::{timeout, Duration};
 
 const DEFAULT_BASE_URL: &str = "http://localhost:11434";
 
@@ -130,6 +131,19 @@ impl OllamaClient {
             .await
             .map_err(|e| format!("LLM レスポンスのパースに失敗: {e}"))?;
         Ok(chat_resp.message.content)
+    }
+
+    /// モデルをアンロード（POST /api/generate / keep_alive: 0）。3秒でタイムアウト。
+    pub async fn unload_model(&self, model: &str) -> Result<(), String> {
+        let url = format!("{}/api/generate", self.base_url);
+        let request = GenerateUnloadRequest { model, keep_alive: 0 };
+        let fut = self.http.post(&url).json(&request).send();
+        let resp = timeout(Duration::from_secs(3), fut)
+            .await
+            .map_err(|_| "unload timeout".to_string())?
+            .map_err(|e| format!("unload リクエスト失敗: {e}"))?;
+        let _ = resp.bytes().await;
+        Ok(())
     }
 
     /// モデルをダウンロード（POST /api/pull）。非ストリーミング。

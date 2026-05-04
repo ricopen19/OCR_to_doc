@@ -72,7 +72,7 @@ function App() {
   }>({
     formats: ['md'],
     imageAsPdf: false,
-    enableFigure: true,
+    enableFigure: false,
     useGpu: false,
     mode: 'lite',
     docxEngine: 'python',

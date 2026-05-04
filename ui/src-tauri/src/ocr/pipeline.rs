@@ -30,6 +30,10 @@ pub struct OcrOptions {
     pub start_page: Option<u32>,
     /// PDF の終了ページ (1-indexed, None で末尾まで)
     pub end_page: Option<u32>,
+    /// ページ間に休止を挟む
+    pub enable_rest: bool,
+    /// 休止秒数
+    pub rest_seconds: u64,
 }
 
 impl Default for OcrOptions {
@@ -38,11 +42,13 @@ impl Default for OcrOptions {
             ocr_model: OCR_MODEL.to_string(),
             dpi: 300,
             poppler_path: None,
-            enable_figure: true,
+            enable_figure: false,
             python_bin: None,
             detect_figures_script: None,
             start_page: None,
             end_page: None,
+            enable_rest: false,
+            rest_seconds: 10,
         }
     }
 }
@@ -144,6 +150,11 @@ pub async fn run_ocr_pipeline(
         }
 
         md_paths.push(md_path);
+
+        // ページ間休止（最終ページは除く）
+        if options.enable_rest && i + 1 < page_images.len() {
+            tokio::time::sleep(tokio::time::Duration::from_secs(options.rest_seconds)).await;
+        }
     }
 
     // PDF の場合、page_images を削除

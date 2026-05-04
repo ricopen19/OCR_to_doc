@@ -92,7 +92,7 @@ async fn run_job_ollama(
     let opts = options.unwrap_or_else(|| RunOptions {
         formats: vec!["md".into()],
         image_as_pdf: false,
-        enable_figure: true,
+        enable_figure: false,
         use_gpu: false,
         mode: String::new(),
         docx_engine: None,
@@ -131,6 +131,8 @@ async fn run_job_ollama(
     let job_id_clone = job_id.clone();
     let dpi = opts.pdf_dpi.unwrap_or(300);
     let enable_figure = opts.enable_figure;
+    let enable_rest = opts.enable_rest;
+    let rest_seconds = opts.rest_seconds.unwrap_or(10) as u64;
     let formats = opts.formats.clone();
     let file_options = opts.file_options.clone();
     let python_bin = resolve_python_bin(&project_root);
@@ -173,6 +175,8 @@ async fn run_job_ollama(
                 detect_figures_script: Some(detect_script),
                 start_page,
                 end_page,
+                enable_rest,
+                rest_seconds,
             };
 
             // 進捗コールバック
@@ -1228,6 +1232,17 @@ pub fn run() {
             save_settings
         ])
         .plugin(tauri_plugin_dialog::init())
+        .on_window_event(|window, event| {
+            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                api.prevent_close();
+                let app = window.app_handle().clone();
+                tauri::async_runtime::spawn(async move {
+                    let client = crate::ollama::client::OllamaClient::new();
+                    let _ = client.unload_model("glm-ocr").await;
+                    app.exit(0);
+                });
+            }
+        })
         .setup(|app| {
             if cfg!(debug_assertions) {
                 app.handle().plugin(

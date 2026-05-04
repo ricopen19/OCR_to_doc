@@ -51,6 +51,13 @@ pub struct PullRequest {
     pub stream: bool,
 }
 
+/// POST /api/generate — keep_alive: 0 でモデルをアンロード
+#[derive(Debug, Serialize)]
+pub struct GenerateUnloadRequest<'a> {
+    pub model: &'a str,
+    pub keep_alive: i64,
+}
+
 /// POST /api/pull のストリーミングレスポンス（1行ずつ）
 #[derive(Debug, Deserialize)]
 pub struct PullProgress {

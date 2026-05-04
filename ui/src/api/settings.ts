@@ -24,7 +24,7 @@ export interface AppSettings {
 const DEFAULT_SETTINGS: AppSettings = {
     formats: ['md'],
     imageAsPdf: false,
-    enableFigure: true,
+    enableFigure: false,
     mode: 'lite',
     docxEngine: 'python',
     excelMode: 'layout',
