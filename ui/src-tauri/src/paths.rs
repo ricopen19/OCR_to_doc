@@ -52,14 +52,26 @@ pub fn resolve_python_entry(project_root: &Path, filename: &str) -> PathBuf {
 
 /// Resolve python binary path with priority:
 /// 1) env PYTHON_BIN
-/// 2) project_root/.venv/(Scripts|bin)/python(.exe)
-/// 3) 祖先の .venv（dev で exe が target/debug/ の場合）
-/// 4) macOS: which python3
-/// 5) "python"
+/// 2) Windows portable bundle: project_root/resources/python/python.exe
+/// 3) project_root/.venv/(Scripts|bin)/python(.exe)
+/// 4) 祖先の .venv（dev で exe が target/debug/ の場合）
+/// 5) macOS: which python3
+/// 6) "python"
 pub fn resolve_python_bin(project_root: &Path) -> String {
     if let Ok(bin) = std::env::var("PYTHON_BIN") {
         if !bin.is_empty() {
             return bin;
+        }
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        let bundled = project_root
+            .join("resources")
+            .join("python")
+            .join("python.exe");
+        if bundled.exists() {
+            return bundled.to_string_lossy().to_string();
         }
     }
 
