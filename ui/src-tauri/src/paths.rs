@@ -54,7 +54,8 @@ pub fn resolve_python_entry(project_root: &Path, filename: &str) -> PathBuf {
 /// 1) env PYTHON_BIN
 /// 2) project_root/.venv/(Scripts|bin)/python(.exe)
 /// 3) 祖先の .venv（dev で exe が target/debug/ の場合）
-/// 4) "python"
+/// 4) macOS: which python3
+/// 5) "python"
 pub fn resolve_python_bin(project_root: &Path) -> String {
     if let Ok(bin) = std::env::var("PYTHON_BIN") {
         if !bin.is_empty() {
@@ -70,7 +71,26 @@ pub fn resolve_python_bin(project_root: &Path) -> String {
             return found;
         }
     }
+
+    #[cfg(target_os = "macos")]
+    if let Some(found) = find_system_python3() {
+        return found;
+    }
+
     "python".into()
+}
+
+#[cfg(target_os = "macos")]
+fn find_system_python3() -> Option<String> {
+    let output = Command::new("which").arg("python3").output().ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if path.is_empty() {
+        return None;
+    }
+    Some(path)
 }
 
 fn find_venv_python(root: &Path) -> Option<String> {

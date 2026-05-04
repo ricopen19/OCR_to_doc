@@ -34,7 +34,7 @@ pub async fn check_environment() -> Result<EnvironmentStatus, String> {
     let dispatcher_found = dispatcher_path_buf.is_file();
     let dispatcher_path = dispatcher_found.then(|| dispatcher_path_buf.to_string_lossy().to_string());
 
-    // Poppler: <project_root>/poppler/ と <project_root>/_up_/_up_/poppler/ を探索
+    // Poppler: バンドル内 → macOS Homebrew → PATH の順で探索
     let poppler_bases = [
         project_root.join("poppler"),
         project_root.join("_up_").join("_up_").join("poppler"),
@@ -56,6 +56,14 @@ pub async fn check_environment() -> Result<EnvironmentStatus, String> {
             poppler_candidates.push(base.join(os_name).join("bin"));
         }
     }
+
+    // macOS: Homebrew のパスも候補に追加
+    #[cfg(target_os = "macos")]
+    {
+        poppler_candidates.push(PathBuf::from("/opt/homebrew/opt/poppler/bin"));
+        poppler_candidates.push(PathBuf::from("/usr/local/opt/poppler/bin"));
+    }
+
     let poppler_path = poppler_candidates.into_iter().find(|dir| {
         if !dir.is_dir() {
             return false;
@@ -70,6 +78,23 @@ pub async fn check_environment() -> Result<EnvironmentStatus, String> {
         let pdftoppm = dir.join("pdftoppm");
         pdfinfo.exists() || pdftoppm.exists()
     });
+
+    // PATH からも探す（which pdftoppm）
+    #[cfg(not(target_os = "windows"))]
+    let poppler_path = poppler_path.or_else(|| {
+        let output = std::process::Command::new("which").arg("pdftoppm").output().ok()?;
+        if !output.status.success() {
+            return None;
+        }
+        let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        if path.is_empty() {
+            return None;
+        }
+        PathBuf::from(&path).parent().map(|p| p.to_path_buf())
+    });
+    #[cfg(target_os = "windows")]
+    let poppler_path = poppler_path;
+
     let poppler_found = poppler_path.is_some();
 
     // Ollama チェック
