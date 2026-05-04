@@ -600,6 +600,15 @@ export function RunJob({
                                     </Group>
                                 </CheckboxGroup>
 
+                                <Switch
+                                    label="図表抽出（YOLOv8）"
+                                    description="図・表を自動検出して埋め込みます。CPU 負荷が高くなります。"
+                                    checked={options.enableFigure}
+                                    onChange={(e) =>
+                                        setOptions((prev) => ({ ...prev, enableFigure: e.currentTarget.checked }))
+                                    }
+                                />
+
                                 {options.formats.includes('docx') && (
                                     <Stack gap="xs">
                                         <Text size="sm" fw={500}>Word出力方式</Text>
@@ -702,18 +711,6 @@ export function RunJob({
                                     )}
                                 </Stack>
 
-                                <Divider />
-
-                                <Stack gap="xs">
-                                    <Switch
-                                        label="図表抽出（YOLOv8）"
-                                        description="ON にすると図・表を自動検出して埋め込みます。CPU 負荷が高くなります。"
-                                        checked={options.enableFigure}
-                                        onChange={(e) =>
-                                            setOptions((prev) => ({ ...prev, enableFigure: e.currentTarget.checked }))
-                                        }
-                                    />
-                                </Stack>
                             </Stack>
                         </Card>
                     </Stack>
