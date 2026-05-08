@@ -6,6 +6,9 @@ pub struct ChatRequest {
     pub model: String,
     pub messages: Vec<ChatMessage>,
     pub stream: bool,
+    /// モデルのメモリ保持時間。"3m" = 3分後に自動アンロード。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub keep_alive: Option<String>,
 }
 
 #[derive(Debug, Serialize)]

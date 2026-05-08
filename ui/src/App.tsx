@@ -80,9 +80,9 @@ function App() {
     excelMetaSheet: true,
     excelSymbolFallback: true,
     chunkSize: 10,
-    enableRest: false,
-    restSeconds: 10,
-    pdfDpi: 200,
+    enableRest: true,
+    restSeconds: 5,
+    pdfDpi: 150,
     fileOptions: {},
   })
 
@@ -120,7 +120,7 @@ function App() {
           chunkSize: s.chunkSize ?? 10,
           enableRest: s.enableRest,
           restSeconds: s.restSeconds ?? 10,
-          pdfDpi: s.pdfDpi ?? 200,
+          pdfDpi: s.pdfDpi ?? 150,
         }))
         setPreviewQuality(s.previewQuality ?? 'light')
     }).catch(console.error)
@@ -151,7 +151,7 @@ function App() {
       chunkSize: s.chunkSize ?? 10,
       enableRest: s.enableRest,
       restSeconds: s.restSeconds ?? 10,
-      pdfDpi: s.pdfDpi ?? 200,
+      pdfDpi: s.pdfDpi ?? 150,
     }))
     setPreviewQuality(s.previewQuality ?? 'light')
   }

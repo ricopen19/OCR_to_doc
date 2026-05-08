@@ -72,6 +72,7 @@ impl OllamaClient {
                 images: Some(vec![image_base64.to_string()]),
             }],
             stream: false,
+            keep_alive: Some("3m".to_string()),
         };
 
         let resp = self
@@ -110,6 +111,7 @@ impl OllamaClient {
                 images: None,
             }],
             stream: false,
+            keep_alive: Some("3m".to_string()),
         };
 
         let resp = self

@@ -118,14 +118,14 @@ export function RunJob({
     const [cropTarget, setCropTarget] = useState<string | null>(null)
     const [savingDefaults, setSavingDefaults] = useState(false)
     const deriveDpiPreset = (dpi: number) =>
-        ([200, 300, 400].includes(dpi) ? String(dpi) : 'custom') as '200' | '300' | '400' | 'custom'
+        ([150, 200, 300].includes(dpi) ? String(dpi) : 'custom') as '150' | '200' | '300' | 'custom'
 
-    const [dpiPreset, setDpiPreset] = useState<'200' | '300' | '400' | 'custom'>(() =>
-        deriveDpiPreset(options.pdfDpi ?? 200)
+    const [dpiPreset, setDpiPreset] = useState<'150' | '200' | '300' | 'custom'>(() =>
+        deriveDpiPreset(options.pdfDpi ?? 150)
     )
 
     useEffect(() => {
-        setDpiPreset(deriveDpiPreset(options.pdfDpi ?? 200))
+        setDpiPreset(deriveDpiPreset(options.pdfDpi ?? 150))
     }, [options.pdfDpi])
 
     useEffect(() => {
@@ -609,6 +609,28 @@ export function RunJob({
                                     }
                                 />
 
+                                <Switch
+                                    label="ページ間休止"
+                                    description="1ページごとに CPU を冷ます休止を挟みます。MBA など発熱が気になる場合は ON にしてください。"
+                                    checked={options.enableRest}
+                                    onChange={(e) =>
+                                        setOptions((prev) => ({ ...prev, enableRest: e.currentTarget.checked }))
+                                    }
+                                />
+                                {options.enableRest && (
+                                    <NumberInput
+                                        label="休止秒数"
+                                        min={1}
+                                        max={60}
+                                        value={options.restSeconds}
+                                        onChange={(v) => {
+                                            const val = typeof v === 'number' ? v : 5
+                                            setOptions((prev) => ({ ...prev, restSeconds: val }))
+                                        }}
+                                        style={{ maxWidth: 160 }}
+                                    />
+                                )}
+
                                 {options.formats.includes('docx') && (
                                     <Stack gap="xs">
                                         <Text size="sm" fw={500}>Word出力方式</Text>
@@ -690,25 +712,11 @@ export function RunJob({
                                             setOptions((prev) => ({ ...prev, pdfDpi: parsed }))
                                         }}
                                         data={[
-                                            { label: '低 (200)', value: '200' },
-                                            { label: '標準 (300)', value: '300' },
-                                            { label: '高精細 (400)', value: '400' },
-                                            { label: 'カスタム', value: 'custom' },
+                                            { label: '省エネ (150)', value: '150' },
+                                            { label: '標準 (200)', value: '200' },
+                                            { label: '高精細 (300)', value: '300' },
                                         ]}
                                     />
-                                    {dpiPreset === 'custom' && (
-                                        <NumberInput
-                                            label="カスタム DPI"
-                                            min={72}
-                                            max={600}
-                                            value={options.pdfDpi ?? 200}
-                                            onChange={(v) => {
-                                                const parsed = typeof v === 'number' ? v : null
-                                                if (!parsed) return
-                                                setOptions((prev) => ({ ...prev, pdfDpi: parsed }))
-                                            }}
-                                        />
-                                    )}
                                 </Stack>
 
                             </Stack>
