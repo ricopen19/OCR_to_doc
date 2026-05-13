@@ -175,16 +175,27 @@ async fn ocr_image_to_md(
         {
             if script.exists() {
                 if let Some(cb) = &on_progress {
-                    cb(page_num, total, &format!("図表検出中: {page_num}/{total}"));
+                    cb(page_num, total, &format!("図表検出中: {page_num}/{total}（初回はモデルDL数分かかる場合あり）"));
                 }
-                match super::figure_extraction::extract_figures(
-                    image_path, result_dir, page_num, py_bin, script,
-                ) {
-                    Ok(fig_paths) if !fig_paths.is_empty() => {
+                let py_bin_c = py_bin.clone();
+                let script_c = script.clone();
+                let img_c = image_path.to_path_buf();
+                let dir_c = result_dir.to_path_buf();
+                let result = tokio::time::timeout(
+                    tokio::time::Duration::from_secs(600),
+                    tokio::task::spawn_blocking(move || {
+                        super::figure_extraction::extract_figures(
+                            &img_c, &dir_c, page_num, &py_bin_c, &script_c,
+                        )
+                    }),
+                ).await;
+                match result {
+                    Ok(Ok(Ok(fig_paths))) if !fig_paths.is_empty() => {
                         log::info!("Page {page_num}: {} 件の図を抽出", fig_paths.len());
                         append_figure_links(&md_path, &fig_paths);
                     }
-                    Err(e) => log::warn!("Page {page_num}: 図表抽出失敗（続行）: {e}"),
+                    Ok(Ok(Err(e))) => log::warn!("Page {page_num}: 図表抽出失敗（続行）: {e}"),
+                    Err(_) => log::warn!("Page {page_num}: 図表抽出タイムアウト（スキップ）"),
                     _ => {}
                 }
             }
