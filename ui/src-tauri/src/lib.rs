@@ -1229,6 +1229,15 @@ fn open_result_file(dir_name: String) -> Result<(), String> {
 }
 
 #[tauri::command]
+fn get_pdf_page_count(path: String) -> Result<u32, String> {
+    let p = PathBuf::from(&path);
+    if !p.exists() {
+        return Err(format!("ファイルが見つかりません: {path}"));
+    }
+    crate::ocr::pdf_to_images::pdf_page_count(&p, None)
+}
+
+#[tauri::command]
 async fn check_environment() -> Result<EnvironmentStatus, String> {
     environment::check_environment().await
 }
@@ -1269,7 +1278,8 @@ pub fn run() {
             open_result_file,
             check_environment,
             load_settings,
-            save_settings
+            save_settings,
+            get_pdf_page_count
         ])
         .plugin(tauri_plugin_dialog::init())
         .on_window_event(|window, event| {

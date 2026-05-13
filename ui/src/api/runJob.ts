@@ -95,6 +95,16 @@ export async function openOutputDir(jobId: string): Promise<void> {
   console.log('Mock open dir for job:', jobId)
 }
 
+export async function getPdfPageCount(path: string): Promise<number | null> {
+  const hasTauri = typeof window !== 'undefined' && ('__TAURI__' in window || '__TAURI_INTERNALS__' in window)
+  if (!hasTauri) return null
+  try {
+    return await invoke<number>('get_pdf_page_count', { path })
+  } catch {
+    return null
+  }
+}
+
 export async function openInputFile(path: string): Promise<void> {
   const hasTauri = typeof window !== 'undefined' && '__TAURI__' in window
   if (hasTauri) {

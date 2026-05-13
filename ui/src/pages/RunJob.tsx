@@ -22,6 +22,7 @@ import {
 } from '@mantine/core'
 import { IconUpload, IconPlayerPlay, IconFile, IconX, IconAlertTriangle, IconCrop, IconDeviceFloppy } from '@tabler/icons-react'
 import { useCallback, useEffect, useRef, useState, type Dispatch, type SetStateAction } from 'react'
+import { getPdfPageCount } from '../api/runJob'
 import type { CropRect } from '../types/crop'
 import { CropModal } from '../components/CropModal'
 import { open } from '@tauri-apps/plugin-dialog'
@@ -118,15 +119,26 @@ export function RunJob({
     const [cropTarget, setCropTarget] = useState<string | null>(null)
     const [savingDefaults, setSavingDefaults] = useState(false)
     const deriveDpiPreset = (dpi: number) =>
-        ([150, 200, 300].includes(dpi) ? String(dpi) : 'custom') as '150' | '200' | '300' | 'custom'
+        ([100, 150, 200, 300].includes(dpi) ? String(dpi) : 'custom') as '100' | '150' | '200' | '300' | 'custom'
 
-    const [dpiPreset, setDpiPreset] = useState<'150' | '200' | '300' | 'custom'>(() =>
+    const [dpiPreset, setDpiPreset] = useState<'100' | '150' | '200' | '300' | 'custom'>(() =>
         deriveDpiPreset(options.pdfDpi ?? 150)
     )
+    const [pageCountMap, setPageCountMap] = useState<Record<string, number>>({})
 
     useEffect(() => {
         setDpiPreset(deriveDpiPreset(options.pdfDpi ?? 150))
     }, [options.pdfDpi])
+
+    useEffect(() => {
+        const pdfs = filePaths.filter((p) => p.toLowerCase().endsWith('.pdf'))
+        for (const p of pdfs) {
+            if (p in pageCountMap) continue
+            void getPdfPageCount(p).then((count) => {
+                if (count != null) setPageCountMap((prev) => ({ ...prev, [p]: count }))
+            })
+        }
+    }, [filePaths]) // eslint-disable-line react-hooks/exhaustive-deps
 
     useEffect(() => {
         const el = logBoxRef.current
@@ -406,13 +418,20 @@ export function RunJob({
                                         {filePaths.map((p) => {
                                             const isPdf = p.toLowerCase().endsWith('.pdf');
                                             const opts = options.fileOptions[p] || {};
+                                            const pageCount = pageCountMap[p]
+                                            const isHeavy = pageCount != null && pageCount > 50
                                             return (
-                                                <Card key={p} withBorder radius="md" padding="sm" bg="gray.0">
+                                                <Card key={p} withBorder radius="md" padding="sm" bg={isHeavy ? 'yellow.0' : 'gray.0'}>
                                                     <Stack gap="xs">
                                                         <Group justify="space-between" wrap="nowrap">
                                                             <Group gap="xs" wrap="nowrap" style={{ overflow: 'hidden' }}>
                                                                 <IconFile size={16} />
                                                                 <Text size="sm" style={{ wordBreak: 'break-all' }}>{p}</Text>
+                                                                {pageCount != null && (
+                                                                    <Badge size="sm" variant="light" color={isHeavy ? 'orange' : 'gray'}>
+                                                                        {pageCount}p
+                                                                    </Badge>
+                                                                )}
                                                             </Group>
                                                             <Group gap="xs" wrap="nowrap">
                                                                 <Button
@@ -494,6 +513,13 @@ export function RunJob({
                             }))
                         }}
                     />
+
+                    {/* ページ数警告 */}
+                    {Object.values(pageCountMap).some((c) => c > 50) && (
+                        <Alert icon={<IconAlertTriangle size={16} />} color="orange" variant="light">
+                            ページ数が多いファイルがあります。低スペックPCでは「超省エネ (100 DPI)」＋「ページ間休止 ON」を推奨します。
+                        </Alert>
+                    )}
 
                     {/* Right Column: Options & Action */}
                     <Stack gap="lg">
@@ -712,6 +738,7 @@ export function RunJob({
                                             setOptions((prev) => ({ ...prev, pdfDpi: parsed }))
                                         }}
                                         data={[
+                                            { label: '超省エネ (100)', value: '100' },
                                             { label: '省エネ (150)', value: '150' },
                                             { label: '標準 (200)', value: '200' },
                                             { label: '高精細 (300)', value: '300' },

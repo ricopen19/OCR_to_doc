@@ -223,6 +223,7 @@ fn encode_image_for_ocr(path: &Path) -> Result<String, String> {
     resized
         .write_to(&mut buf, image::ImageFormat::Png)
         .map_err(|e| format!("リサイズ画像のエンコード失敗: {e}"))?;
+    drop(resized); // ピクセルバッファを base64 エンコード前に解放
     Ok(BASE64.encode(buf.into_inner()))
 }
 
