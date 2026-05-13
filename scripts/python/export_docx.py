@@ -537,6 +537,11 @@ def convert_markdown(
 def _require_pandoc() -> str:
     pandoc_path = shutil.which("pandoc")
     if not pandoc_path:
+        for candidate in ["/opt/homebrew/bin/pandoc", "/usr/local/bin/pandoc"]:
+            if shutil.os.path.isfile(candidate):
+                pandoc_path = candidate
+                break
+    if not pandoc_path:
         raise RuntimeError("--use-pandoc には pandoc のインストールが必要です。")
     return pandoc_path
 
