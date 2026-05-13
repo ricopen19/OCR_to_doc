@@ -237,7 +237,7 @@ async fn run_job_ollama(
                                 let mut cmd = if let Some(uv) = find_uv() {
                                     let mut c = Command::new(uv);
                                     apply_python_env(&mut c);
-                                    c.arg("run").arg("--with").arg("python-docx");
+                                    c.arg("run").arg("--no-project").arg("--with").arg("python-docx");
                                     c
                                 } else {
                                     let mut c = Command::new(&python_bin);

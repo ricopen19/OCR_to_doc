@@ -18,10 +18,20 @@ pub fn extract_figures(
         ));
     }
 
-    let mut cmd = Command::new(python_bin);
-    crate::paths::apply_python_env(&mut cmd);
-    cmd.arg("-u")
-        .arg(script_path)
+    let mut cmd = if let Some(uv) = crate::paths::find_uv() {
+        let mut c = Command::new(uv);
+        crate::paths::apply_python_env(&mut c);
+        c.arg("run")
+            .arg("--no-project")
+            .arg("--with").arg("ultralytics,huggingface_hub,Pillow");
+        c
+    } else {
+        let mut c = Command::new(python_bin);
+        crate::paths::apply_python_env(&mut c);
+        c.arg("-u");
+        c
+    };
+    cmd.arg(script_path)
         .arg(page_image_path)
         .arg(result_dir)
         .arg(page_number.to_string());

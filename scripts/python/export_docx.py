@@ -19,6 +19,7 @@ TEX_TEXT_COMMAND_PATTERN = re.compile(r"\\text\{([^}]*)\}")
 TEX_COMMAND_PATTERN = re.compile(r"\\[A-Za-z]+")
 TEX_FRACTION_PATTERN = re.compile(r"\\frac\{([^{}]+)\}\{([^{}]+)\}")
 TEX_SUB_SUP_PATTERN = re.compile(r"([A-Za-z]+)\s*[_^]\s*\{?(\d+)\}?")
+TEXTCIRCLED_PATTERN = re.compile(r"\$+\\textcircled\{(\d+)\}\$+")
 
 TABLE_RULE = re.compile(r"^:?-{3,}:?$")
 # OCR 由来で区切り線のダッシュが短い場合があるため 1 文字以上で許容する
@@ -27,6 +28,20 @@ IMG_HTML_PATTERN = re.compile(r"<img[^>]*src=\"([^\"]+)\"[^>]*>")
 IMG_MD_PATTERN = re.compile(r"!\[[^\]]*\]\(([^)]+)\)")
 WIDTH_PATTERN = re.compile(r"width\s*=\s*\"?([0-9]+(?:\.[0-9]+)?)(px|cm|mm)?\"?")
 PAGE_HEADING_PATTERN = re.compile(r"^#\s+Page\s+(?P<page>\d+)\s*$")
+
+
+def _circled_char(n: int) -> str:
+    if 1 <= n <= 20:
+        return chr(0x2460 + n - 1)   # ① - ⑳
+    if 21 <= n <= 35:
+        return chr(0x3251 + n - 21)  # ㉑ - ㉟
+    if 36 <= n <= 50:
+        return chr(0x32B1 + n - 36)  # ㊱ - ㊿
+    return str(n)
+
+
+def _replace_textcircled(text: str) -> str:
+    return TEXTCIRCLED_PATTERN.sub(lambda m: _circled_char(int(m.group(1))), text)
 
 
 def read_markdown(path: Path) -> list[str]:
@@ -551,7 +566,8 @@ def _convert_with_pandoc(md_path: Path) -> Path:
         raise FileNotFoundError(f"Markdown ファイルが見つかりません: {md_path}")
     docx_path = md_path.with_suffix(".docx")
     pandoc_path = _require_pandoc()
-    processed = _preprocess_for_pandoc(read_markdown(md_path))
+    raw = _replace_textcircled("\n".join(read_markdown(md_path)))
+    processed = _preprocess_for_pandoc(raw.splitlines())
     with tempfile.NamedTemporaryFile(
         "w",
         encoding="utf-8",
@@ -595,7 +611,8 @@ def convert_file(md_path: Path, *, math_mode: str = "text", use_pandoc: bool = F
 
     docx_path = md_path.with_suffix(".docx")
     document = Document()
-    lines = read_markdown(md_path)
+    raw = _replace_textcircled("\n".join(read_markdown(md_path)))
+    lines = raw.splitlines()
     convert_markdown(document, lines, base_dir=md_path.parent, math_mode=math_mode)
     document.save(docx_path)
     return docx_path
