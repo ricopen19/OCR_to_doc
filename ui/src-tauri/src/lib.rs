@@ -135,6 +135,7 @@ async fn run_job_ollama(
     let rest_seconds = opts.rest_seconds.unwrap_or(10) as u64;
     let formats = opts.formats.clone();
     let file_options = opts.file_options.clone();
+    let docx_engine = opts.docx_engine.clone();
     let python_bin = resolve_python_bin(&project_root);
     let project_root_clone = project_root.clone();
 
@@ -236,7 +237,38 @@ async fn run_job_ollama(
                                 let mut cmd = Command::new(&python_bin);
                                 apply_python_env(&mut cmd);
                                 cmd.arg(&export_script).arg(&merged_md);
-                                let _ = cmd.status();
+                                if docx_engine.as_deref() == Some("pandoc") {
+                                    cmd.arg("--use-pandoc");
+                                }
+                                match cmd.status() {
+                                    Ok(s) if s.success() => {}
+                                    Ok(s) => {
+                                        if let Ok(mut jobs) = state_arc.jobs.lock() {
+                                            if let Some(job) = jobs.get_mut(&job_id_clone) {
+                                                job.log.push(format!(
+                                                    "[warn] export_docx.py 終了コード: {}",
+                                                    s.code().unwrap_or(-1)
+                                                ));
+                                            }
+                                        }
+                                    }
+                                    Err(e) => {
+                                        if let Ok(mut jobs) = state_arc.jobs.lock() {
+                                            if let Some(job) = jobs.get_mut(&job_id_clone) {
+                                                job.log.push(format!(
+                                                    "[error] export_docx.py 実行失敗: {e}"
+                                                ));
+                                            }
+                                        }
+                                    }
+                                }
+                            } else if let Ok(mut jobs) = state_arc.jobs.lock() {
+                                if let Some(job) = jobs.get_mut(&job_id_clone) {
+                                    job.log.push(format!(
+                                        "[warn] export_docx.py が見つかりません: {}",
+                                        export_script.display()
+                                    ));
+                                }
                             }
                         }
                     }
@@ -283,7 +315,7 @@ async fn run_job_ollama(
                                 for entry in entries.flatten() {
                                     let path = entry.path();
                                     if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
-                                        if name.ends_with("_merged.md")
+                                        if (name.ends_with("_merged.md") && formats.iter().any(|f| f == "md"))
                                             || name.ends_with("_merged.docx")
                                             || name.ends_with(".xlsx")
                                             || name.ends_with(".csv")
