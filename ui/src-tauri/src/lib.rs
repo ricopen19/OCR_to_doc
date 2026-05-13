@@ -16,7 +16,7 @@ use job::{
     EnvironmentStatus, PreviewResponse,
 };
 use paths::{
-    apply_python_env, default_gpu_device, resolve_python_entry, resolve_python_bin,
+    apply_python_env, default_gpu_device, find_uv, resolve_python_entry, resolve_python_bin,
     resolve_config_dir, resolve_output_root, resolve_output_root_from_disk,
     resolve_project_root,
 };
@@ -234,8 +234,16 @@ async fn run_job_ollama(
                             let export_script =
                                 resolve_python_entry(&project_root_clone, "export_docx.py");
                             if export_script.exists() {
-                                let mut cmd = Command::new(&python_bin);
-                                apply_python_env(&mut cmd);
+                                let mut cmd = if let Some(uv) = find_uv() {
+                                    let mut c = Command::new(uv);
+                                    apply_python_env(&mut c);
+                                    c.arg("run").arg("--with").arg("python-docx");
+                                    c
+                                } else {
+                                    let mut c = Command::new(&python_bin);
+                                    apply_python_env(&mut c);
+                                    c
+                                };
                                 cmd.arg(&export_script).arg(&merged_md);
                                 if docx_engine.as_deref() == Some("pandoc") {
                                     cmd.arg("--use-pandoc");

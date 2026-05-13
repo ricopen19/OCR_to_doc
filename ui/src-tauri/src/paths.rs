@@ -232,3 +232,26 @@ pub fn resolve_project_root(exe_dir: &Path) -> Option<PathBuf> {
     }
     None
 }
+
+/// uv バイナリのパスを返す。Homebrew、cargo、PATH の順に探す。
+pub fn find_uv() -> Option<String> {
+    for candidate in &["/opt/homebrew/bin/uv", "/usr/local/bin/uv"] {
+        if Path::new(candidate).exists() {
+            return Some(candidate.to_string());
+        }
+    }
+    if let Some(home) = std::env::var_os("HOME") {
+        let p = PathBuf::from(home).join(".cargo/bin/uv");
+        if p.exists() {
+            return Some(p.to_string_lossy().to_string());
+        }
+    }
+    let out = Command::new("which").arg("uv").output().ok()?;
+    if out.status.success() {
+        let s = String::from_utf8_lossy(&out.stdout).trim().to_string();
+        if !s.is_empty() {
+            return Some(s);
+        }
+    }
+    None
+}
