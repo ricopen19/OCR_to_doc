@@ -20,6 +20,9 @@ export type EnvironmentStatus = {
   popplerFound: boolean
   popplerPath?: string
   resourceRoots?: string[]
+  ollamaRunning: boolean
+  ocrModelReady: boolean
+  ocrModelName: string
 }
 
 export async function listRecentResults(limit = 10): Promise<RecentResultEntry[]> {
@@ -56,5 +59,8 @@ export async function checkEnvironment(): Promise<EnvironmentStatus> {
     popplerFound: false,
     popplerPath: undefined,
     resourceRoots: [],
+    ollamaRunning: false,
+    ocrModelReady: false,
+    ocrModelName: 'glm-ocr',
   }
 }

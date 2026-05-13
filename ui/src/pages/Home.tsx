@@ -12,6 +12,7 @@ import {
     Tooltip,
     Badge,
     Divider,
+    Code,
 } from '@mantine/core'
 import {
     IconPlayerPlay,
@@ -23,6 +24,9 @@ import {
     IconAlertTriangle,
     IconChevronDown,
     IconChevronUp,
+    IconCopy,
+    IconCheck,
+    IconRefresh,
 } from '@tabler/icons-react'
 import { useEffect, useState } from 'react'
 import { checkEnvironment, listRecentResults, openResultDir, openResultFile, type EnvironmentStatus, type RecentResultEntry } from '../api/history'
@@ -31,12 +35,54 @@ interface HomeProps {
     onNavigate: (page: 'run') => void
 }
 
+function CopyRow({ cmd, copyKey, copiedKey, onCopy }: {
+    cmd: string
+    copyKey: string
+    copiedKey: string | null
+    onCopy: (text: string, key: string) => void
+}) {
+    const copied = copiedKey === copyKey
+    return (
+        <Group gap="xs" pl="sm" align="center">
+            <Code style={{ flex: 1, fontSize: 11 }}>{cmd}</Code>
+            <Tooltip label={copied ? 'コピー済み' : 'コピー'} withArrow>
+                <ActionIcon
+                    variant="subtle"
+                    size="sm"
+                    color={copied ? 'green' : 'gray'}
+                    onClick={() => onCopy(cmd, copyKey)}
+                >
+                    {copied ? <IconCheck size={13} /> : <IconCopy size={13} />}
+                </ActionIcon>
+            </Tooltip>
+        </Group>
+    )
+}
+
 export function Home({ onNavigate }: HomeProps) {
     const [recent, setRecent] = useState<RecentResultEntry[]>([])
     const [loadingRecent, setLoadingRecent] = useState(false)
     const [showAllHistory, setShowAllHistory] = useState(false)
     const [env, setEnv] = useState<EnvironmentStatus | null>(null)
+    const [envLoading, setEnvLoading] = useState(false)
+    const [copiedKey, setCopiedKey] = useState<string | null>(null)
     const hasTauri = typeof window !== 'undefined' && ('__TAURI__' in window || '__TAURI_INTERNALS__' in window)
+
+    const copyToClipboard = (text: string, key: string) => {
+        navigator.clipboard.writeText(text).then(() => {
+            setCopiedKey(key)
+            setTimeout(() => setCopiedKey(null), 1500)
+        })
+    }
+
+    const refreshEnv = () => {
+        if (!hasTauri || envLoading) return
+        setEnvLoading(true)
+        checkEnvironment()
+            .then(setEnv)
+            .catch(console.error)
+            .finally(() => setEnvLoading(false))
+    }
 
     useEffect(() => {
         if (!hasTauri) {
@@ -53,12 +99,14 @@ export function Home({ onNavigate }: HomeProps) {
             })
             .finally(() => setLoadingRecent(false))
 
+        setEnvLoading(true)
         checkEnvironment()
             .then(setEnv)
             .catch((e) => {
                 console.error(e)
                 setEnv(null)
             })
+            .finally(() => setEnvLoading(false))
     }, [hasTauri])
 
     const formatUpdated = (ms: number) => {
@@ -86,6 +134,18 @@ export function Home({ onNavigate }: HomeProps) {
     }
 
     const visibleRecent = showAllHistory ? recent : recent.slice(0, 3)
+
+    const envAllOk = env
+        ? env.dispatcherFound && env.resultDirFound && env.popplerFound && env.ollamaRunning && env.ocrModelReady
+        : false
+
+    const ocrModelBadge = () => {
+        if (!env) return { label: '...', color: 'gray' }
+        if (!env.ollamaRunning) return { label: '確認不可', color: 'orange' }
+        return env.ocrModelReady
+            ? { label: 'OK', color: 'green' }
+            : { label: 'NG', color: 'red' }
+    }
 
     return (
         <Container size="lg" px={0}>
@@ -226,14 +286,23 @@ export function Home({ onNavigate }: HomeProps) {
 
                 <Card withBorder radius="lg" padding="xl">
                     <Stack gap="md">
-                        <Group>
-                            <ThemeIcon size="lg" radius="md" color={env && env.dispatcherFound && env.resultDirFound ? 'green' : 'yellow'} variant="light">
-                                {env && env.dispatcherFound && env.resultDirFound ? <IconCircleCheck size={20} /> : <IconAlertTriangle size={20} />}
-                            </ThemeIcon>
-                            <div>
-                                <Text fw={600} size="lg">環境チェック</Text>
-                                <Text size="sm" c="dimmed">実行に必要な要素が見つかるかを確認します。</Text>
-                            </div>
+                        <Group justify="space-between">
+                            <Group>
+                                <ThemeIcon size="lg" radius="md" color={envAllOk ? 'green' : 'yellow'} variant="light">
+                                    {envAllOk ? <IconCircleCheck size={20} /> : <IconAlertTriangle size={20} />}
+                                </ThemeIcon>
+                                <div>
+                                    <Text fw={600} size="lg">環境チェック</Text>
+                                    <Text size="sm" c="dimmed">実行に必要な要素が見つかるかを確認します。</Text>
+                                </div>
+                            </Group>
+                            {hasTauri && (
+                                <Tooltip label="再チェック" withArrow>
+                                    <ActionIcon variant="subtle" color="gray" loading={envLoading} onClick={refreshEnv}>
+                                        <IconRefresh size={16} />
+                                    </ActionIcon>
+                                </Tooltip>
+                            )}
                         </Group>
 
                         <Divider />
@@ -244,12 +313,15 @@ export function Home({ onNavigate }: HomeProps) {
                             </Text>
                         ) : (
                             <Stack gap="xs">
+                                {/* OS */}
                                 <Group justify="space-between">
                                     <Text size="sm">OS</Text>
                                     <Badge color="blue" variant="light">
                                         {env?.os || 'unknown'}
                                     </Badge>
                                 </Group>
+
+                                {/* dispatcher.py */}
                                 <Group justify="space-between">
                                     <Text size="sm">dispatcher.py</Text>
                                     <Badge color={env?.dispatcherFound ? 'green' : 'red'} variant="light">
@@ -259,6 +331,8 @@ export function Home({ onNavigate }: HomeProps) {
                                 {env?.dispatcherPath && (
                                     <Text size="xs" c="dimmed">{env.dispatcherPath}</Text>
                                 )}
+
+                                {/* result フォルダ */}
                                 <Group justify="space-between">
                                     <Text size="sm">result フォルダ</Text>
                                     <Badge color={env?.resultDirFound ? 'green' : 'red'} variant="light">
@@ -266,6 +340,8 @@ export function Home({ onNavigate }: HomeProps) {
                                     </Badge>
                                 </Group>
                                 <Text size="xs" c="dimmed">{env?.resultRoot || '-'}</Text>
+
+                                {/* Python */}
                                 <Group justify="space-between">
                                     <Text size="sm">Python</Text>
                                     <Badge color={env?.pythonFound ? 'green' : 'red'} variant="light">
@@ -273,13 +349,69 @@ export function Home({ onNavigate }: HomeProps) {
                                     </Badge>
                                 </Group>
                                 <Text size="xs" c="dimmed">{env?.pythonPath || env?.pythonBin || '-'}</Text>
+
+                                <Divider />
+
+                                {/* Poppler */}
                                 <Group justify="space-between">
-                                    <Text size="sm">Poppler</Text>
+                                    <Text size="sm">Poppler (PDF 変換)</Text>
                                     <Badge color={env?.popplerFound ? 'green' : 'red'} variant="light">
                                         {env?.popplerFound ? 'OK' : 'NG'}
                                     </Badge>
                                 </Group>
-                                <Text size="xs" c="dimmed">{env?.popplerPath || '-'}</Text>
+                                {env?.popplerPath && (
+                                    <Text size="xs" c="dimmed">{env.popplerPath}</Text>
+                                )}
+                                {env && !env.popplerFound && (
+                                    <CopyRow
+                                        cmd="brew install poppler"
+                                        copyKey="poppler"
+                                        copiedKey={copiedKey}
+                                        onCopy={copyToClipboard}
+                                    />
+                                )}
+
+                                {/* Ollama */}
+                                <Group justify="space-between">
+                                    <Text size="sm">Ollama</Text>
+                                    <Badge color={env?.ollamaRunning ? 'green' : 'red'} variant="light">
+                                        {env?.ollamaRunning ? '起動中' : '停止中'}
+                                    </Badge>
+                                </Group>
+                                {env && !env.ollamaRunning && (
+                                    <Stack gap={4}>
+                                        <Text size="xs" c="dimmed" pl="sm">起動:</Text>
+                                        <CopyRow
+                                            cmd="ollama serve"
+                                            copyKey="ollama-serve"
+                                            copiedKey={copiedKey}
+                                            onCopy={copyToClipboard}
+                                        />
+                                        <Text size="xs" c="dimmed" pl="sm">未インストールの場合:</Text>
+                                        <CopyRow
+                                            cmd="brew install ollama"
+                                            copyKey="ollama-install"
+                                            copiedKey={copiedKey}
+                                            onCopy={copyToClipboard}
+                                        />
+                                    </Stack>
+                                )}
+
+                                {/* glm-ocr モデル */}
+                                <Group justify="space-between">
+                                    <Text size="sm">{env?.ocrModelName || 'glm-ocr'} モデル</Text>
+                                    <Badge color={ocrModelBadge().color} variant="light">
+                                        {ocrModelBadge().label}
+                                    </Badge>
+                                </Group>
+                                {env && !env.ocrModelReady && (
+                                    <CopyRow
+                                        cmd={`ollama pull ${env.ocrModelName || 'glm-ocr'}:latest`}
+                                        copyKey="glm-ocr-pull"
+                                        copiedKey={copiedKey}
+                                        onCopy={copyToClipboard}
+                                    />
+                                )}
                             </Stack>
                         )}
                     </Stack>
