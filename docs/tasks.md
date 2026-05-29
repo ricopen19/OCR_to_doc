@@ -65,11 +65,16 @@
 - [ ] Python は export のみに縮小
 - [ ] 配布パッケージのサイズ検証
 
-## Mac 対応（保留）
+## Mac 対応（進行中）
 
-ADR-011 に基づき配布対象は Windows のみ。Mac 対応は以下のどちらかが成立した時点で再開する（優先度低）。
+ADR-011 の保留方針を撤回。Ollama バージョンダウンで glm-ocr が M5 Metal で動作確認済み。DMG 配布を開始。
 
-- [ ] (a) Ollama の M5 Metal 修正（Ollama issue #15541）を待つ
-- [ ] (b) MLX 版 glm-ocr (`mlx-community/GLM-OCR-bf16`) に差し替え
-  - PoC 済み: `/tmp/glm-ocr-poc` で 112 tok/s 動作確認（2026-04-19）
-  - 実装時に必要な作業: pipeline.rs のバッチ化・JSONL 進捗・`EnvironmentStatus` に backend フィールド追加・mlx-vlm の配布方法（brew + uv sync など）
+- [x] macOS 環境チェック（Python3・Poppler の検出を macOS に対応）
+- [x] PDF ページ単位変換（pdftoppm 1ページずつ、CPU バースト分散）
+- [x] デフォルト DPI 150（リサイズ処理スキップ、44% ピクセル数削減）
+- [x] Ollama モデル自動アンロード（keep_alive 3分 + アプリ終了時即時解放）
+- [x] ページ間休止 UI（デフォルト ON / 5秒）
+- [x] 図表抽出デフォルト OFF
+- [x] DMG ビルド（aarch64）
+- [ ] 環境チェック画面で Python / Poppler の NG 表示が残っている（動作はしているが表示上の問題）
+- [ ] Python プロセスの孤児化対策（AppState で PID 追跡 + 終了時 kill）

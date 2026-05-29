@@ -44,6 +44,45 @@ RE_SLASH_ALONE = re.compile(r"^\s*/\s*$")
 RE_SLASH_HEAD = re.compile(r"^\s*/\s+(.*)$")
 RE_URL_HEAD = re.compile(r"^\s*https?://", re.IGNORECASE)
 
+_HEADING_SKIP_PREFIXES = ("#", "-", "*", "|", "<img", "![", "<br", "/", "$")
+_SENTENCE_ENDINGS = ("。", "、", ".", ",", "…", "?", "？", "!", "！")
+
+
+_NUMBERED_ITEM_PATTERN = re.compile(r"^\d+[\s\.\)、)]\s*")
+
+
+def _looks_like_heading_candidate(text: str) -> bool:
+    if any(text.startswith(p) for p in _HEADING_SKIP_PREFIXES):
+        return False
+    if any(text.endswith(e) for e in _SENTENCE_ENDINGS):
+        return False
+    if re.match(r"^\d+$", text):
+        return False
+    if _NUMBERED_ITEM_PATTERN.match(text):
+        return False
+    return True
+
+
+def promote_isolated_lines_to_headings(text: str, *, max_len: int = 40) -> str:
+    """前の行が空行で、短くタイトルらしい行を ## 見出しに昇格させる。"""
+    lines = text.splitlines()
+    out: list[str] = []
+    for i, line in enumerate(lines):
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            out.append(line)
+            continue
+        prev_empty = i > 0 and not lines[i - 1].strip()
+        if (
+            prev_empty
+            and len(stripped) <= max_len
+            and _looks_like_heading_candidate(stripped)
+        ):
+            out.append(f"## {stripped}")
+        else:
+            out.append(line)
+    return "\n".join(out)
+
 
 def strip_trailing_backslashes(text: str) -> str:
     return TRAILING_BACKSLASH_PATTERN.sub(r"\1", text)
@@ -493,6 +532,7 @@ def demote_inner_headings_between_pages(text: str) -> str:
 
 def clean_file(path: Path, inplace: bool = True) -> Path:
     text = path.read_text(encoding="utf-8")
+    text = promote_isolated_lines_to_headings(text)
     lines = text.splitlines()
     cleaned_lines: list[str] = []
     for line in lines:

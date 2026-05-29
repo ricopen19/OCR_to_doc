@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -42,6 +43,10 @@ def _circled_char(n: int) -> str:
 
 def _replace_textcircled(text: str) -> str:
     return TEXTCIRCLED_PATTERN.sub(lambda m: _circled_char(int(m.group(1))), text)
+
+
+def _read_preprocessed(md_path: Path) -> list[str]:
+    return _replace_textcircled("\n".join(read_markdown(md_path))).splitlines()
 
 
 def read_markdown(path: Path) -> list[str]:
@@ -171,7 +176,7 @@ def add_table(document: Document, table_lines: list[str]) -> None:
 def flush_paragraph(document: Document, buffer: list[str], base_dir: Path | None = None) -> None:
     if not buffer:
         return
-    text = " ".join(buffer).strip()
+    text = "\n".join(buffer).strip()
     buffer.clear()
     if not text:
         return
@@ -210,7 +215,12 @@ def render_text_content(paragraph, text: str) -> None:
     working = strip_tex_math_delimiters(working)
     if not working:
         return
-    paragraph.add_run(working)
+    parts = working.split("\n")
+    for idx, part in enumerate(parts):
+        if idx > 0:
+            paragraph.add_run().add_break()
+        if part:
+            paragraph.add_run(part)
 
 
 def to_width(value: str | None):
@@ -553,7 +563,7 @@ def _require_pandoc() -> str:
     pandoc_path = shutil.which("pandoc")
     if not pandoc_path:
         for candidate in ["/opt/homebrew/bin/pandoc", "/usr/local/bin/pandoc"]:
-            if shutil.os.path.isfile(candidate):
+            if os.path.isfile(candidate):
                 pandoc_path = candidate
                 break
     if not pandoc_path:
@@ -566,8 +576,7 @@ def _convert_with_pandoc(md_path: Path) -> Path:
         raise FileNotFoundError(f"Markdown ファイルが見つかりません: {md_path}")
     docx_path = md_path.with_suffix(".docx")
     pandoc_path = _require_pandoc()
-    raw = _replace_textcircled("\n".join(read_markdown(md_path)))
-    processed = _preprocess_for_pandoc(raw.splitlines())
+    processed = _preprocess_for_pandoc(_read_preprocessed(md_path))
     with tempfile.NamedTemporaryFile(
         "w",
         encoding="utf-8",
@@ -611,9 +620,7 @@ def convert_file(md_path: Path, *, math_mode: str = "text", use_pandoc: bool = F
 
     docx_path = md_path.with_suffix(".docx")
     document = Document()
-    raw = _replace_textcircled("\n".join(read_markdown(md_path)))
-    lines = raw.splitlines()
-    convert_markdown(document, lines, base_dir=md_path.parent, math_mode=math_mode)
+    convert_markdown(document, _read_preprocessed(md_path), base_dir=md_path.parent, math_mode=math_mode)
     document.save(docx_path)
     return docx_path
 
