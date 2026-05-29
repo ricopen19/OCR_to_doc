@@ -38,6 +38,9 @@ ui/src-tauri/resources/
 !ui/src-tauri/resources/.gitkeep
 ui/cpython-*.tar.gz
 
+# Runtime downloads (setup.bat で取得)
+poppler/
+
 # Local results / caches
 result/
 tmp/
