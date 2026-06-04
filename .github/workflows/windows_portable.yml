@@ -66,6 +66,15 @@ jobs:
             Copy-Item -Recurse -Force -Path "configs" -Destination $appDir
           }
 
+          # セットアップ / アンインストールバッチ
+          foreach ($bat in @("setup.bat", "uninstall.bat")) {
+            if (Test-Path $bat) {
+              Copy-Item -Force -Path $bat -Destination $appDir
+            } else {
+              throw "$bat not found at repo root"
+            }
+          }
+
           # Python scripts are placed under scripts/python (matches paths.rs resolution)
           $pyDir = Join-Path $appDir "scripts/python"
           New-Item -ItemType Directory -Force -Path $pyDir | Out-Null
