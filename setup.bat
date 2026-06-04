@@ -41,7 +41,7 @@ echo       OK
 :: ============================================================
 echo.
 echo [2/5] Python 依存パッケージをインストール中...
-uv sync
+uv sync --no-install-project
 if errorlevel 1 (
     echo [ERROR] uv sync に失敗しました。
     pause & exit /b 1
