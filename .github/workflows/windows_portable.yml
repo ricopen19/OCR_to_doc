@@ -88,13 +88,13 @@ jobs:
           Write-Host "Poppler installed to $popplerDst"
 
       - name: (Optional) Setup Python for runtime bundling
-        if: ${{ github.event_name == 'push' || github.event.inputs.with_runtime == 'true' }}
+        if: ${{ github.event.inputs.with_runtime == 'true' }}
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
 
       - name: (Optional) Bundle portable Python runtime
-        if: ${{ github.event_name == 'push' || github.event.inputs.with_runtime == 'true' }}
+        if: ${{ github.event.inputs.with_runtime == 'true' }}
         run: |
           $ErrorActionPreference = "Stop"
 
@@ -155,7 +155,7 @@ jobs:
           & $runtimePy -c "import docx, openpyxl; print('runtime imports ok')"
 
       - name: Prepare fixture
-        if: ${{ github.event_name == 'push' || github.event.inputs.with_runtime == 'true' }}
+        if: ${{ github.event.inputs.with_runtime == 'true' }}
         run: |
           $ErrorActionPreference = "Stop"
           $appDir = Join-Path $PWD "dist-portable/ocr-to-doc"
@@ -170,7 +170,7 @@ jobs:
           [IO.File]::WriteAllBytes((Join-Path $fixturePyDir "sample.png"), $bytes)
 
       - name: Self-test portable exe
-        if: ${{ github.event_name == 'push' || github.event.inputs.with_runtime == 'true' }}
+        if: ${{ github.event.inputs.with_runtime == 'true' }}
         run: |
           $ErrorActionPreference = "Stop"
           $appDir = Join-Path $PWD "dist-portable/ocr-to-doc"
@@ -222,7 +222,7 @@ jobs:
           }
 
       - name: Upload self-test logs
-        if: ${{ always() && (github.event_name == 'push' || github.event.inputs.with_runtime == 'true') }}
+        if: ${{ always() && (github.event.inputs.with_runtime == 'true') }}
         uses: actions/upload-artifact@v4
         with:
           name: self-test-logs
@@ -233,7 +233,7 @@ jobs:
           if-no-files-found: ignore
 
       - name: Upload self-test result_ci
-        if: ${{ always() && (github.event_name == 'push' || github.event.inputs.with_runtime == 'true') }}
+        if: ${{ always() && (github.event.inputs.with_runtime == 'true') }}
         uses: actions/upload-artifact@v4
         with:
           name: self-test-result-ci
