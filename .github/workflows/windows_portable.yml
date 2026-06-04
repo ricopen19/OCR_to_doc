@@ -75,6 +75,15 @@ jobs:
             }
           }
 
+          # uv sync に必要なマニフェスト
+          foreach ($f in @("pyproject.toml", "uv.lock")) {
+            if (Test-Path $f) {
+              Copy-Item -Force -Path $f -Destination $appDir
+            } else {
+              throw "$f not found at repo root"
+            }
+          }
+
           # Python scripts are placed under scripts/python (matches paths.rs resolution)
           $pyDir = Join-Path $appDir "scripts/python"
           New-Item -ItemType Directory -Force -Path $pyDir | Out-Null
