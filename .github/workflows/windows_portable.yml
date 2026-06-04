@@ -71,12 +71,21 @@ jobs:
           New-Item -ItemType Directory -Force -Path $pyDir | Out-Null
           Copy-Item -Force -Path "scripts/python/*.py" -Destination $pyDir
 
-          # Poppler is bundled at app root (matches environment.rs resolution)
-          if (Test-Path "poppler") {
-            Copy-Item -Recurse -Force -Path "poppler" -Destination $appDir
-          } else {
-            throw "poppler directory not found at repo root"
-          }
+          # Poppler: CI 上でダウンロード・展開（setup.bat と同じバージョン）
+          $popplerVer = "24.02.0-0"
+          $popplerUrl = "https://github.com/oschwartz10612/poppler-Windows/releases/download/v$popplerVer/Release-$popplerVer.zip"
+          $popplerZip = Join-Path $env:TEMP "poppler-windows.zip"
+          $popplerExtract = Join-Path $env:TEMP "poppler-extract"
+          Write-Host "Downloading Poppler $popplerVer..."
+          Invoke-WebRequest -Uri $popplerUrl -OutFile $popplerZip -UseBasicParsing
+          Expand-Archive -Path $popplerZip -DestinationPath $popplerExtract -Force
+          $popplerSrc = (Get-ChildItem $popplerExtract -Directory | Select-Object -First 1).FullName
+          $popplerDst = Join-Path $appDir "poppler"
+          New-Item -ItemType Directory -Force -Path $popplerDst | Out-Null
+          Copy-Item -Recurse -Force -Path "$popplerSrc\*" -Destination $popplerDst
+          Remove-Item -Force $popplerZip
+          Remove-Item -Recurse -Force $popplerExtract
+          Write-Host "Poppler installed to $popplerDst"
 
       - name: (Optional) Setup Python for runtime bundling
         if: ${{ github.event_name == 'push' || github.event.inputs.with_runtime == 'true' }}
