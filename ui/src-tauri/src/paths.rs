@@ -233,9 +233,8 @@ pub fn resolve_project_root(exe_dir: &Path) -> Option<PathBuf> {
     None
 }
 
-/// project_root 直下の poppler バイナリディレクトリを返す（setup.bat / CI インストール先）。
-/// Windows: poppler\Library\bin\ または poppler\win\bin\
-/// macOS: poppler\macos\bin\ または Homebrew 標準パス
+/// project_root 直下の poppler バイナリディレクトリを返す（Windows 専用）。
+/// macOS は pdf_to_images::resolve_poppler_tool と ui_preview.py が自力でフォールバックする。
 pub fn resolve_poppler_bin_dir(project_root: &Path) -> Option<PathBuf> {
     #[cfg(target_os = "windows")]
     {
@@ -248,26 +247,8 @@ pub fn resolve_poppler_bin_dir(project_root: &Path) -> Option<PathBuf> {
                 return Some(p);
             }
         }
-        return None;
     }
-    #[cfg(target_os = "macos")]
-    {
-        let local = join_segments(project_root, &["poppler", "macos", "bin"]);
-        if local.join("pdfinfo").exists() {
-            return Some(local);
-        }
-        for brew in &["/opt/homebrew/opt/poppler/bin", "/usr/local/opt/poppler/bin"] {
-            let p = PathBuf::from(brew);
-            if p.join("pdfinfo").exists() {
-                return Some(p);
-            }
-        }
-        return None;
-    }
-    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
-    {
-        None
-    }
+    None
 }
 
 /// uv バイナリのパスを返す。Homebrew、cargo、PATH の順に探す。
