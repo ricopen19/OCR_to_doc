@@ -233,6 +233,43 @@ pub fn resolve_project_root(exe_dir: &Path) -> Option<PathBuf> {
     None
 }
 
+/// project_root 直下の poppler バイナリディレクトリを返す（setup.bat / CI インストール先）。
+/// Windows: poppler\Library\bin\ または poppler\win\bin\
+/// macOS: poppler\macos\bin\ または Homebrew 標準パス
+pub fn resolve_poppler_bin_dir(project_root: &Path) -> Option<PathBuf> {
+    #[cfg(target_os = "windows")]
+    {
+        for subpath in [
+            &["poppler", "Library", "bin"] as &[&str],
+            &["poppler", "win", "bin"],
+        ] {
+            let p = join_segments(project_root, subpath);
+            if p.join("pdfinfo.exe").exists() {
+                return Some(p);
+            }
+        }
+        return None;
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let local = join_segments(project_root, &["poppler", "macos", "bin"]);
+        if local.join("pdfinfo").exists() {
+            return Some(local);
+        }
+        for brew in &["/opt/homebrew/opt/poppler/bin", "/usr/local/opt/poppler/bin"] {
+            let p = PathBuf::from(brew);
+            if p.join("pdfinfo").exists() {
+                return Some(p);
+            }
+        }
+        return None;
+    }
+    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
+    {
+        None
+    }
+}
+
 /// uv バイナリのパスを返す。Homebrew、cargo、PATH の順に探す。
 pub fn find_uv() -> Option<String> {
     for candidate in &["/opt/homebrew/bin/uv", "/usr/local/bin/uv"] {

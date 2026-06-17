@@ -18,7 +18,7 @@ use job::{
 use paths::{
     apply_python_env, default_gpu_device, find_uv, resolve_python_entry, resolve_python_bin,
     resolve_config_dir, resolve_output_root, resolve_output_root_from_disk,
-    resolve_project_root,
+    resolve_project_root, resolve_poppler_bin_dir,
 };
 use results::{
     collect_output_files, find_output_path, open_path_with_default_app,
@@ -170,7 +170,7 @@ async fn run_job_ollama(
             let ocr_options = ocr::pipeline::OcrOptions {
                 ocr_model: "glm-ocr".to_string(),
                 dpi,
-                poppler_path: None,
+                poppler_path: resolve_poppler_bin_dir(&project_root_clone),
                 enable_figure,
                 python_bin: Some(python_bin.clone()),
                 detect_figures_script: Some(detect_script),
@@ -973,6 +973,9 @@ fn render_preview(
     }
     if let Some(dpi) = pdf_dpi {
         cmd.arg("--pdf-dpi").arg(dpi.to_string());
+    }
+    if let Some(poppler_bin) = resolve_poppler_bin_dir(&project_root) {
+        cmd.arg("--poppler-path").arg(poppler_bin);
     }
 
     cmd.current_dir(&project_root);

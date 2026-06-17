@@ -93,6 +93,7 @@ def main() -> None:
     parser.add_argument("--crop", help="正規化トリミング（left,top,width,height / 0〜1）")
     parser.add_argument("--max-long-edge", type=int, default=1400, help="長辺の最大 px（プレビュー用）")
     parser.add_argument("--pdf-dpi", type=int, default=150, help="PDF ラスター化の DPI（プレビュー用）")
+    parser.add_argument("--poppler-path", help="Poppler バイナリディレクトリ（Rust 側から渡される）")
     args = parser.parse_args()
 
     base_dir = Path(__file__).resolve().parent
@@ -113,7 +114,10 @@ def main() -> None:
     if input_path.suffix.lower() == ".pdf":
         from pdf2image import convert_from_path, pdfinfo_from_path
 
-        poppler_path = resolve_poppler_path(base_dir)
+        if args.poppler_path:
+            poppler_path = Path(args.poppler_path)
+        else:
+            poppler_path = resolve_poppler_path(base_dir)
         os.environ["PATH"] = str(poppler_path) + os.pathsep + os.environ.get("PATH", "")
 
         info = pdfinfo_from_path(str(input_path), poppler_path=str(poppler_path))
