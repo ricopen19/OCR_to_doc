@@ -235,14 +235,14 @@ pub fn resolve_project_root(exe_dir: &Path) -> Option<PathBuf> {
 
 /// project_root 直下の poppler バイナリディレクトリを返す（Windows 専用）。
 /// macOS は pdf_to_images::resolve_poppler_tool と ui_preview.py が自力でフォールバックする。
-pub fn resolve_poppler_bin_dir(project_root: &Path) -> Option<PathBuf> {
+pub fn resolve_poppler_bin_dir(_project_root: &Path) -> Option<PathBuf> {
     #[cfg(target_os = "windows")]
     {
         for subpath in [
             &["poppler", "Library", "bin"] as &[&str],
             &["poppler", "win", "bin"],
         ] {
-            let p = join_segments(project_root, subpath);
+            let p = join_segments(_project_root, subpath);
             if p.join("pdfinfo.exe").exists() {
                 return Some(p);
             }
