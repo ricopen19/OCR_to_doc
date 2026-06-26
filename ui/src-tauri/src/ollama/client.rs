@@ -73,6 +73,10 @@ impl OllamaClient {
             }],
             stream: false,
             keep_alive: Some("3m".to_string()),
+            options: Some(ChatOptions {
+                num_predict: Some(8192),
+                temperature: Some(0.0),
+            }),
         };
 
         let resp = self

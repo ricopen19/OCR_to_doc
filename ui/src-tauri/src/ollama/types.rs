@@ -1,5 +1,15 @@
 use serde::{Deserialize, Serialize};
 
+/// POST /api/chat の推論オプション
+#[derive(Debug, Serialize)]
+pub struct ChatOptions {
+    /// 最大生成トークン数。stop token のないモデルの暴走を防ぐ。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub num_predict: Option<i32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub temperature: Option<f32>,
+}
+
 /// POST /api/chat のリクエスト
 #[derive(Debug, Serialize)]
 pub struct ChatRequest {
@@ -9,6 +19,8 @@ pub struct ChatRequest {
     /// モデルのメモリ保持時間。"3m" = 3分後に自動アンロード。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub keep_alive: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub options: Option<ChatOptions>,
 }
 
 #[derive(Debug, Serialize)]
