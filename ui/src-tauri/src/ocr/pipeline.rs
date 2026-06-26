@@ -30,21 +30,92 @@ fn is_unlimited_ocr_format(s: &str) -> bool {
     const TOKENS: &[&str] = &[
         "title [", "text [", "table [", "header [", "section_header [",
         "footer [", "page_number [", "caption [", "figure [",
-        "aside_text [", "list_item [",
+        "aside_text [", "list_item [", "image [",
     ];
     let first = s.lines().find(|l| !l.trim().is_empty()).unwrap_or("");
     TOKENS.iter().any(|t| first.starts_with(t))
 }
 
+/// HTML テーブルの <td>/<th> テキストを抽出して Markdown テーブル形式に変換する。
+/// モデルが <tr> を省略した不正 HTML を出力する場合でも全セルを 1 行として扱う。
+fn html_table_to_markdown(html: &str) -> String {
+    let lower = html.to_ascii_lowercase();
+    let mut cells: Vec<String> = Vec::new();
+    let mut pos = 0;
+
+    loop {
+        let td = lower[pos..].find("<td").map(|i| i + pos);
+        let th = lower[pos..].find("<th").map(|i| i + pos);
+        let tag_start = match (td, th) {
+            (Some(a), Some(b)) => Some(a.min(b)),
+            (Some(a), None) | (None, Some(a)) => Some(a),
+            (None, None) => break,
+        };
+        let tag_start = tag_start.unwrap();
+
+        // 開始タグの > を探す
+        let after_open = match html[tag_start..].find('>') {
+            Some(i) => tag_start + i + 1,
+            None => break,
+        };
+
+        // 次のセルまたは </table> を探してセル内容の終端を決める
+        let rest_lower = &lower[after_open..];
+        let end = [
+            rest_lower.find("<td"),
+            rest_lower.find("<th"),
+            rest_lower.find("</td"),
+            rest_lower.find("</th"),
+            rest_lower.find("</table"),
+        ]
+        .into_iter()
+        .flatten()
+        .min()
+        .unwrap_or(rest_lower.len());
+
+        let cell_html = &html[after_open..after_open + end];
+        let cell_text = strip_html_tags(cell_html);
+        let cell_text = cell_text.trim().replace('|', "｜");
+        if !cell_text.is_empty() {
+            cells.push(cell_text);
+        }
+
+        pos = after_open + end;
+    }
+
+    if cells.is_empty() {
+        return String::new();
+    }
+
+    let row = format!("| {} |", cells.join(" | "));
+    let divider = format!("| {} |", vec!["---"; cells.len()].join(" | "));
+    format!("{row}\n{divider}")
+}
+
+/// HTML タグを除去してテキストだけを返す。
+fn strip_html_tags(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut in_tag = false;
+    for c in s.chars() {
+        match c {
+            '<' => in_tag = true,
+            '>' => in_tag = false,
+            _ if !in_tag => out.push(c),
+            _ => {}
+        }
+    }
+    out
+}
+
 /// Unlimited OCR のトークン形式を Markdown に変換する。
 /// - title / header / section_header → 見出し
 /// - text / caption / list_item / aside_text → 本文
-/// - table → <table> HTML をそのまま保持（Markdown はインライン HTML を許容）
-/// - footer / page_number / figure → スキップ
+/// - table → <td> を抽出して Markdown テーブル形式に変換
+/// - footer / page_number / figure / image → スキップ
 fn unlimited_ocr_to_markdown(raw: &str) -> String {
     const ELEM_TYPES: &[&str] = &[
         "title", "header", "section_header", "text", "caption",
-        "table", "footer", "page_number", "figure", "aside_text", "list_item",
+        "table", "footer", "page_number", "figure", "aside_text", "list_item", "image",
     ];
 
     let mut result = String::new();
@@ -100,10 +171,13 @@ fn unlimited_ocr_to_markdown(raw: &str) -> String {
                 result.push_str("\n\n");
             }
             "table" => {
-                result.push_str(content);
-                result.push_str("\n\n");
+                let md_table = html_table_to_markdown(content);
+                if !md_table.is_empty() {
+                    result.push_str(&md_table);
+                    result.push_str("\n\n");
+                }
             }
-            // footer / page_number / figure はスキップ
+            // footer / page_number / figure / image はスキップ
             _ => {}
         }
     }
