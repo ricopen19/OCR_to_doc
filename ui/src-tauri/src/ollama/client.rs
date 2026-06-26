@@ -116,6 +116,7 @@ impl OllamaClient {
             }],
             stream: false,
             keep_alive: Some("3m".to_string()),
+            options: None,
         };
 
         let resp = self

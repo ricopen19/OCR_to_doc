@@ -168,7 +168,6 @@ async fn run_job_ollama(
 
             let detect_script = resolve_python_entry(&project_root_clone, "detect_figures.py");
             let ocr_options = ocr::pipeline::OcrOptions {
-                ocr_model: "glm-ocr".to_string(),
                 dpi,
                 poppler_path: resolve_poppler_bin_dir(&project_root_clone),
                 enable_figure,
@@ -178,6 +177,7 @@ async fn run_job_ollama(
                 end_page,
                 enable_rest,
                 rest_seconds,
+                ..ocr::pipeline::OcrOptions::default()
             };
 
             // 進捗コールバック
