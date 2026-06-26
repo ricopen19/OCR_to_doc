@@ -12,8 +12,104 @@ use super::pdf_to_images::{
     pdf_page_count, pdf_single_page_to_image,
 };
 
-const OCR_MODEL: &str = "glm-ocr";
-const OCR_PROMPT: &str = "OCR";
+const OCR_MODEL: &str = "hf.co/sahilchachra/Unlimited-OCR-GGUF:Q4_K_M";
+
+/// モデルごとの推奨プロンプトを返す。
+/// Unlimited OCR は "<image>" トークンを含む専用プロンプトが必要。
+fn ocr_prompt_for(model: &str) -> &'static str {
+    if model.contains("Unlimited-OCR") {
+        "<image>document parsing."
+    } else {
+        "OCR"
+    }
+}
+
+/// 出力が Unlimited OCR のトークン形式（座標付き構造体）かを判定する。
+/// 先頭の非空行が "title [" / "text [" 等で始まる場合に true を返す。
+fn is_unlimited_ocr_format(s: &str) -> bool {
+    const TOKENS: &[&str] = &[
+        "title [", "text [", "table [", "header [", "section_header [",
+        "footer [", "page_number [", "caption [", "figure [",
+        "aside_text [", "list_item [",
+    ];
+    let first = s.lines().find(|l| !l.trim().is_empty()).unwrap_or("");
+    TOKENS.iter().any(|t| first.starts_with(t))
+}
+
+/// Unlimited OCR のトークン形式を Markdown に変換する。
+/// - title / header / section_header → 見出し
+/// - text / caption / list_item / aside_text → 本文
+/// - table → <table> HTML をそのまま保持（Markdown はインライン HTML を許容）
+/// - footer / page_number / figure → スキップ
+fn unlimited_ocr_to_markdown(raw: &str) -> String {
+    const ELEM_TYPES: &[&str] = &[
+        "title", "header", "section_header", "text", "caption",
+        "table", "footer", "page_number", "figure", "aside_text", "list_item",
+    ];
+
+    let mut result = String::new();
+
+    for line in raw.lines() {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+
+        let matched = ELEM_TYPES.iter().find_map(|&t| {
+            line.strip_prefix(&format!("{t} ")).map(|rest| (t, rest))
+        });
+
+        let (elem_type, rest) = match matched {
+            Some(m) => m,
+            None => {
+                result.push_str(line);
+                result.push_str("\n\n");
+                continue;
+            }
+        };
+
+        // "[x1, y1, x2, y2]content" → content
+        let content = if rest.starts_with('[') {
+            rest.find(']').map(|i| rest[i + 1..].trim()).unwrap_or(rest)
+        } else {
+            rest.trim()
+        };
+
+        if content.is_empty() {
+            continue;
+        }
+
+        match elem_type {
+            "title" => {
+                result.push_str("# ");
+                result.push_str(content);
+                result.push_str("\n\n");
+            }
+            "header" | "section_header" => {
+                result.push_str("## ");
+                result.push_str(content);
+                result.push_str("\n\n");
+            }
+            "text" | "caption" | "list_item" => {
+                result.push_str(content);
+                result.push_str("\n\n");
+            }
+            "aside_text" => {
+                result.push_str("> ");
+                result.push_str(content);
+                result.push_str("\n\n");
+            }
+            "table" => {
+                result.push_str(content);
+                result.push_str("\n\n");
+            }
+            // footer / page_number / figure はスキップ
+            _ => {}
+        }
+    }
+
+    result
+}
 
 /// OCR 処理の進捗コールバック
 pub type ProgressCallback = Box<dyn Fn(u32, u32, &str) + Send + Sync>;
@@ -161,9 +257,15 @@ async fn ocr_image_to_md(
 ) -> Result<PathBuf, String> {
     let image_base64 = encode_image_for_ocr(image_path)?;
 
-    let markdown = client
-        .chat_vision(&options.ocr_model, OCR_PROMPT, &image_base64)
+    let prompt = ocr_prompt_for(&options.ocr_model);
+    let raw_ocr = client
+        .chat_vision(&options.ocr_model, prompt, &image_base64)
         .await?;
+    let markdown = if is_unlimited_ocr_format(&raw_ocr) {
+        unlimited_ocr_to_markdown(&raw_ocr)
+    } else {
+        raw_ocr
+    };
 
     let md_path = result_dir.join(format!("page_{page_num:03}.md"));
     fs::write(&md_path, &markdown)
@@ -205,10 +307,10 @@ async fn ocr_image_to_md(
     Ok(md_path)
 }
 
-/// glm-ocr が安定して処理できる画像サイズの上限（長辺）。
+/// OCR モデルに送る画像の長辺上限。これ以上は縮小してから送る。
 const MAX_IMAGE_DIMENSION: u32 = 1792;
 
-/// 画像を glm-ocr に適したサイズにリサイズして base64 エンコード。
+/// 画像を OCR モデル向けにリサイズして base64 エンコード。
 /// リサイズフィルタは Triangle（高速・OCR 用途で Lanczos3 と差なし）。
 fn encode_image_for_ocr(path: &Path) -> Result<String, String> {
     let img = image::open(path)
