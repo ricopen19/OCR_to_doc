@@ -78,3 +78,8 @@ ADR-011 の保留方針を撤回。Ollama バージョンダウンで glm-ocr �
 - [x] DMG ビルド（aarch64）
 - [ ] 環境チェック画面で Python / Poppler の NG 表示が残っている（動作はしているが表示上の問題）
 - [ ] Python プロセスの孤児化対策（AppState で PID 追跡 + 終了時 kill）
+
+## Unlimited OCR 表対応
+
+- [ ] ハイブリッド表再OCR（Unlimited OCR の table bbox で切り出し → glm-ocr で再OCR）+ GUI トグル `enableTableReocr`（デフォルト OFF）。仕様: docs/hybrid-table-ocr-spec.md
+  → 検証: サンプル PDF 2ページ目で、トグル OFF なら表内容が平坦テキストで残る／ON なら 11行×6列の Markdown テーブルが page_002.md に出力される
