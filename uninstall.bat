@@ -10,13 +10,19 @@ echo ====================================================
 echo.
 
 :: ============================================================
-:: Step 1: glm-ocr モデルの削除
+:: Step 1: Ollama モデルの削除
 :: ============================================================
-echo [1/4] Ollama モデル (glm-ocr) を削除中...
+echo [1/4] Ollama モデル (Unlimited OCR, glm-ocr) を削除中...
 where ollama > nul 2>&1
 if errorlevel 1 (
     echo       Ollama が見つかりません。スキップします。
     goto SKIP_OLLAMA
+)
+ollama rm hf.co/sahilchachra/Unlimited-OCR-GGUF:Q4_K_M
+if errorlevel 1 (
+    echo       [WARNING] Unlimited OCR の削除に失敗しました（既に存在しない可能性があります）。
+) else (
+    echo       完了
 )
 ollama rm glm-ocr
 if errorlevel 1 (

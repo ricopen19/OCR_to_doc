@@ -76,10 +76,10 @@ set "PATH=%LOCALAPPDATA%\Programs\Ollama;%PATH%"
 echo       OK
 
 :: ============================================================
-:: Step 4: Ollama サービス起動 & glm-ocr モデル取得
+:: Step 4: Ollama サービス起動 & OCR モデル取得
 :: ============================================================
 echo.
-echo [4/5] glm-ocr モデルをダウンロード中...
+echo [4/5] OCR モデルをダウンロード中...
 echo       ※ モデルのダウンロードには数 GB の通信が発生します（数分〜十数分）。
 echo.
 start /b "" ollama serve > nul 2>&1
@@ -96,6 +96,12 @@ if %RETRY% geq 15 (
 timeout /t 2 /nobreak > nul
 goto WAIT_OLLAMA
 :OLLAMA_READY
+ollama pull hf.co/sahilchachra/Unlimited-OCR-GGUF:Q4_K_M
+if errorlevel 1 (
+    echo [ERROR] Unlimited OCR モデルのダウンロードに失敗しました。
+    echo         ネットワーク接続を確認して再実行してください。
+    pause & exit /b 1
+)
 ollama pull glm-ocr
 if errorlevel 1 (
     echo [ERROR] glm-ocr のダウンロードに失敗しました。
