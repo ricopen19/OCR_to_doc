@@ -118,3 +118,18 @@
 - **理由**: glm-ocr は OCR 専用 VLM であり、bbox 検出プロンプトに対して GGML_ASSERT エラーを返す（1ページ ~3分のタイムアウト）。YOLOv8x-DocLayNet は DocLayNet データセットで学習済みの軽量モデルで、数学教材（幾何図形・グラフ含む）に対して実用的な精度を確認。conf=0.35 + 最小サイズフィルタ 150x100px をデフォルトとする。
 - **却下案**: 別 VLM（LLaVA 等）で bbox 検出（数 GB の追加モデルが必要）、Rust + ONNX Runtime（Python がハイブリッド構成で残るため不要な複雑さ）
 - **検証データ**: 数的処理_7days P17-28（12ページ）で検証。筆算集中ページ以外はほぼ全図を検出
+
+## ADR-013: 表はハイブリッド再OCR（Unlimited OCR + glm-ocr）
+
+2026-07
+
+**決定**: Unlimited OCR の表出力は使わず、表領域だけ glm-ocr で再OCR する。GUI トグル `enableTableReocr`（デフォルト OFF）で切り替え可能とし、OFF・glm-ocr 不在・失敗時はセル内容を平坦テキストで出力する。
+
+**理由**:
+- Unlimited OCR は表を `<table>` 内のタグなし連結テキストとして出力する（学習仕様。3種のプロンプトで検証、"Treat all tabular layout as plain text with spacing." のエコーを確認）。プロンプトでは修正不可能で、行・列の復元も原理的に不可能
+- 一方で `table [x1,y1,x2,y2]`（0-1000 正規化）の座標は正確なため、切り出し → glm-ocr 再OCR で表構造をほぼ完全に復元できる（実測: 11行×6列を約15秒）
+- デフォルト OFF の理由: 低メモリ PC では 2 モデルの入れ替えロードが重い。実測でも glm-ocr のコールドロードが 60 秒を超えたため、再OCR タイムアウトは 300 秒に設定
+
+**却下案**:
+- HTML→Markdown の行パース改善: `<tr>`/`<td>` がそもそも出力されないため不成立
+- 表対応モデルへの全面乗り換え: Unlimited OCR の速度メリットを失う

@@ -81,5 +81,5 @@ ADR-011 の保留方針を撤回。Ollama バージョンダウンで glm-ocr �
 
 ## Unlimited OCR 表対応
 
-- [ ] ハイブリッド表再OCR（Unlimited OCR の table bbox で切り出し → glm-ocr で再OCR）+ GUI トグル `enableTableReocr`（デフォルト OFF）。仕様: docs/hybrid-table-ocr-spec.md
-  → 検証: サンプル PDF 2ページ目で、トグル OFF なら表内容が平坦テキストで残る／ON なら 11行×6列の Markdown テーブルが page_002.md に出力される
+- [x] ハイブリッド表再OCR（Unlimited OCR の table bbox で切り出し → glm-ocr で再OCR）+ GUI トグル `enableTableReocr`（デフォルト OFF）。経緯: docs/decisions.md ADR-013
+  → 検証: 統合テスト `table_reocr_end_to_end`（opt-in）で OFF=平坦テキスト保持／ON=11行×6列 Markdown テーブル復元を確認済み。GUI トグルの目視確認のみ未実施

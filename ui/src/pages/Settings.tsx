@@ -285,6 +285,17 @@ export const Settings = forwardRef<SettingsHandle, SettingsProps>(function Setti
                                 setSettings((prev) => (prev ? { ...prev, enableFigure: !prev.enableFigure } : prev))
                             }
                         />
+                        <Divider />
+                        <Switch
+                            label="表を高精度で再OCR（glm-ocr 使用）"
+                            description="表の行・列構造を復元します。メモリ 8GB 以下の PC では OFF 推奨"
+                            checked={settings.enableTableReocr}
+                            onChange={() =>
+                                setSettings((prev) =>
+                                    prev ? { ...prev, enableTableReocr: !prev.enableTableReocr } : prev
+                                )
+                            }
+                        />
                     </Stack>
                 </Card>
 

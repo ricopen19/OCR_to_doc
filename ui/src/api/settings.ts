@@ -5,6 +5,7 @@ export interface AppSettings {
     formats: string[]
     imageAsPdf: boolean
     enableFigure: boolean
+    enableTableReocr: boolean
     mode?: 'lite' | 'full'
     docxEngine?: 'python' | 'pandoc'
     excelMode?: 'layout' | 'table'
@@ -25,6 +26,7 @@ const DEFAULT_SETTINGS: AppSettings = {
     formats: ['md'],
     imageAsPdf: false,
     enableFigure: false,
+    enableTableReocr: false,
     mode: 'lite',
     docxEngine: 'python',
     excelMode: 'layout',
