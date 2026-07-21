@@ -83,3 +83,11 @@ ADR-011 の保留方針を撤回。Ollama バージョンダウンで glm-ocr �
 
 - [x] ハイブリッド表再OCR（Unlimited OCR の table bbox で切り出し → glm-ocr で再OCR）+ GUI トグル `enableTableReocr`（デフォルト OFF）。経緯: docs/decisions.md ADR-013
   → 検証: 統合テスト `table_reocr_end_to_end`（opt-in）で OFF=平坦テキスト保持／ON=11行×6列 Markdown テーブル復元を確認済み。GUI トグルの目視確認のみ未実施
+- [ ] `extract_table_markdown`（ocr/pipeline.rs）のフォールバック漏れを修正。glm-ocr が \`\`\`table フェンスも Markdown パイプ表も出さず生 HTML（`<table>...`）を返すと、パース失敗とみなされず生 HTML がそのまま本文に挿入される（実機で表が2重に生 HTML のまま出力される事象を確認）。フェンス/パイプ表のどちらも見つからない場合は `raw.trim()` を返す前に `html_table_to_markdown()` を通す
+  → 検証: 生 HTML を返すケースを再現するユニットテストを追加し、`extract_table_markdown` の戻り値に `<table` タグが含まれないことを確認
+- [ ] `enableTableReocr` ON 時に、ページごとの Unlimited OCR ⇔ glm-ocr モデル入れ替えで処理が実質停止する不具合の根本対策。実機（M5 MBA, 32GB）で `enableTableReocr` ON・19ページ中2ページ目で進捗が完全停止（アプリプロセスごと消失、クラッシュログなし）を確認。ADR-013 で「低メモリ PC では入れ替えロードが重い」ことは織り込み済みだったが、実際は「重い」ではなく「進行不能になる」レベルの不安定さがあり、現状の実装がモデルの気まぐれな挙動に振り回されている状態のため、設計そのものの見直しが必要
+  - 検討する案の例（優先順位は未確定）:
+    - 全ページ分の Unlimited OCR を先に一括処理し、検出した表領域をまとめて後段で glm-ocr に一括処理させる（モデル入れ替えをページ単位ではなく1回に集約）
+    - モデルを完全に使い分ける（例: 表ページの検出だけ Unlimited OCR、表の再OCRは常時 glm-ocr 常駐で行うなど、そもそも同一セッション内でモデルを切り替えない構成に分離する）
+    - `keep_alive` を伸ばして両モデルを同時常駐させられるか検証（VRAM/メモリに余裕がある環境限定の対応になる可能性）
+  → 検証: `enableTableReocr` ON で PDF 全ページ（表を含む複数ページ）を通しで実行し、途中停止・クラッシュなく完了することを確認
