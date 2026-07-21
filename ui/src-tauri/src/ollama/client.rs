@@ -31,20 +31,25 @@ impl OllamaClient {
         }
     }
 
-    /// 利用可能なモデル一覧を取得（GET /api/tags）
+    /// 利用可能なモデル一覧を取得（GET /api/tags）。
+    /// 一時的な通信不調（接続切れ・不完全なレスポンス body）を吸収するため最大3回リトライする。
     pub async fn list_models(&self) -> Result<Vec<ModelInfo>, String> {
         let url = format!("{}/api/tags", self.base_url);
-        let resp = self
-            .http
-            .get(&url)
-            .send()
-            .await
-            .map_err(|e| format!("Ollama への接続に失敗: {e}"))?;
-        let tags: TagsResponse = resp
-            .json()
-            .await
-            .map_err(|e| format!("レスポンスのパースに失敗: {e}"))?;
-        Ok(tags.models)
+        let mut last_err = String::new();
+
+        for attempt in 0..3 {
+            if attempt > 0 {
+                tokio::time::sleep(Duration::from_millis(500)).await;
+            }
+            match self.http.get(&url).send().await {
+                Ok(resp) => match resp.json::<TagsResponse>().await {
+                    Ok(tags) => return Ok(tags.models),
+                    Err(e) => last_err = format!("レスポンスのパースに失敗: {e}"),
+                },
+                Err(e) => last_err = format!("Ollama への接続に失敗: {e}"),
+            }
+        }
+        Err(last_err)
     }
 
     /// 指定モデルが利用可能か確認
@@ -75,7 +80,9 @@ impl OllamaClient {
             keep_alive: Some("3m".to_string()),
             options: Some(ChatOptions {
                 num_predict: Some(8192),
-                temperature: Some(0.0),
+                temperature: Some(0.2),
+                repeat_penalty: Some(1.3),
+                repeat_last_n: Some(256),
             }),
         };
 

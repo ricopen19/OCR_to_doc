@@ -8,6 +8,14 @@ pub struct ChatOptions {
     pub num_predict: Option<i32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub temperature: Option<f32>,
+    /// 直近トークンの再出現に対するペナルティ。greedy decoding (temperature=0) は
+    /// これが未設定だと座標付き要素や数式のような反復パターンで自己ループしやすいため設定する。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub repeat_penalty: Option<f32>,
+    /// repeat_penalty が遡って見るトークン数。bbox 座標付き要素の1サイクルは
+    /// 数十トークンに及ぶため、デフォルト(64)では反復検出の窓が狭すぎることがある。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub repeat_last_n: Option<i32>,
 }
 
 /// POST /api/chat のリクエスト

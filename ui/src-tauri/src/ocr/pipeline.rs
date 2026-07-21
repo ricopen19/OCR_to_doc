@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD as BASE64;
 use image::GenericImageView;
+use regex::Regex;
 
 use crate::ollama::client::OllamaClient;
 use super::pdf_to_images::{
@@ -140,9 +141,21 @@ fn parse_table_bbox(rest: &str) -> Option<(u32, u32, u32, u32)> {
     ))
 }
 
+/// `\( ... \)` / `\[ ... \]` を Obsidian 等のデフォルト Markdown レンダラが認識する
+/// `$ ... $` / `$$ ... $$` に変換する。Unlimited OCR は LaTeX 区切りとして
+/// `\(`/`\)`/`\[`/`\]` を出力するが、これらは MathJax の追加設定なしには
+/// 数式として描画されないビューアが多いため、書き込み前に統一する。
+fn sanitize_math_delimiters(text: &str) -> String {
+    let display = Regex::new(r"(?s)\\\[(.*?)\\\]").unwrap();
+    let text = display.replace_all(text, |caps: &regex::Captures| format!("$${}$$", &caps[1]));
+    let inline = Regex::new(r"(?s)\\\((.*?)\\\)").unwrap();
+    let text = inline.replace_all(&text, |caps: &regex::Captures| format!("${}$", &caps[1]));
+    text.into_owned()
+}
+
 /// Unlimited OCR のトークン形式を Markdown に変換する。
 /// - title / header / section_header → 見出し
-/// - text / caption / list_item / aside_text → 本文
+/// - text / caption / list_item / list / page_footnote / aside_text → 本文
 /// - table → bbox が取れればプレースホルダを挿入し TableRegion として収集
 ///   （呼び出し側が再OCR または平坦テキストで置換する）。bbox が取れなければ
 ///   その場で平坦テキスト変換する。
@@ -150,15 +163,19 @@ fn parse_table_bbox(rest: &str) -> Option<(u32, u32, u32, u32)> {
 fn unlimited_ocr_to_markdown(raw: &str) -> (String, Vec<TableRegion>) {
     const ELEM_TYPES: &[&str] = &[
         "title", "header", "section_header", "text", "caption",
-        "table", "footer", "page_number", "figure", "aside_text", "list_item", "image",
+        "table", "equation", "footer", "page_number", "figure", "aside_text",
+        "list_item", "list", "page_footnote", "image",
     ];
 
     let mut result = String::new();
     let mut table_regions: Vec<TableRegion> = Vec::new();
 
-    for line in raw.lines() {
-        let line = line.trim();
+    let lines: Vec<&str> = raw.lines().collect();
+    let mut i = 0;
+    while i < lines.len() {
+        let line = lines[i].trim();
         if line.is_empty() {
+            i += 1;
             continue;
         }
 
@@ -171,9 +188,46 @@ fn unlimited_ocr_to_markdown(raw: &str) -> (String, Vec<TableRegion>) {
             None => {
                 result.push_str(line);
                 result.push_str("\n\n");
+                i += 1;
                 continue;
             }
         };
+
+        // equation は \[ ... \] / \( ... \) の開閉が複数の生テキスト行に
+        // またがって出力されることがあるため、閉じ括弧が現れるまで後続行を
+        // 取り込んでから bbox プレフィックスを剥がして1つの数式として結合する。
+        if elem_type == "equation" {
+            let opening = if rest.starts_with('[') {
+                rest.find(']').map(|idx| rest[idx + 1..].trim_start()).unwrap_or(rest)
+            } else {
+                rest.trim_start()
+            };
+
+            let is_closed = |s: &str| {
+                let t = s.trim_end();
+                t.ends_with("\\]") || t.ends_with("\\)")
+            };
+
+            let mut buf = String::from(opening);
+            let mut j = i + 1;
+            while !is_closed(&buf) && j < lines.len() {
+                let next = lines[j].trim();
+                if !next.is_empty() {
+                    if !buf.is_empty() {
+                        buf.push(' ');
+                    }
+                    buf.push_str(next);
+                }
+                j += 1;
+            }
+
+            if !buf.trim().is_empty() {
+                result.push_str(buf.trim());
+                result.push_str("\n\n");
+            }
+            i = j;
+            continue;
+        }
 
         // "[x1, y1, x2, y2]content" → content
         let content = if rest.starts_with('[') {
@@ -183,6 +237,7 @@ fn unlimited_ocr_to_markdown(raw: &str) -> (String, Vec<TableRegion>) {
         };
 
         if content.is_empty() {
+            i += 1;
             continue;
         }
 
@@ -197,7 +252,7 @@ fn unlimited_ocr_to_markdown(raw: &str) -> (String, Vec<TableRegion>) {
                 result.push_str(content);
                 result.push_str("\n\n");
             }
-            "text" | "caption" | "list_item" => {
+            "text" | "caption" | "list_item" | "list" | "page_footnote" => {
                 result.push_str(content);
                 result.push_str("\n\n");
             }
@@ -224,6 +279,7 @@ fn unlimited_ocr_to_markdown(raw: &str) -> (String, Vec<TableRegion>) {
             // footer / page_number / figure / image はスキップ
             _ => {}
         }
+        i += 1;
     }
 
     (result, table_regions)
@@ -556,11 +612,12 @@ async fn ocr_image_to_md(
         .await?;
     let markdown = if is_unlimited_ocr_format(&raw_ocr) {
         let (md, table_regions) = unlimited_ocr_to_markdown(&raw_ocr);
-        resolve_table_placeholders(
+        let md = resolve_table_placeholders(
             md, table_regions, image_path,
             options.enable_table_reocr, table_reocr_available,
             client, page_num, total, on_progress,
-        ).await
+        ).await;
+        sanitize_math_delimiters(&md)
     } else {
         raw_ocr
     };
@@ -671,6 +728,44 @@ mod tests {
     }
 
     #[test]
+    fn sanitize_math_delimiters_converts_to_dollar_syntax() {
+        let text = "本文 \\( \\frac{5}{9} \\) の後に\n\n\\[ (0.4 \\times 0.6) = 0.24 \\]\n\n続き";
+        let result = sanitize_math_delimiters(text);
+        assert!(result.contains("$ \\frac{5}{9} $"));
+        assert!(result.contains("$$ (0.4 \\times 0.6) = 0.24 $$"));
+        assert!(!result.contains("\\("));
+        assert!(!result.contains("\\["));
+    }
+
+    #[test]
+    fn unlimited_ocr_to_markdown_joins_multiline_equation_and_strips_bbox() {
+        let raw = "equation [190, 639, 863, 660]\\[\n\n(0. 4 \\times 0. 6) = 0. 2 4\n\n\\]\n\ntext [1, 2, 3, 4]続きの本文";
+        let (md, regions) = unlimited_ocr_to_markdown(raw);
+        assert!(regions.is_empty());
+        assert!(!md.contains("equation ["));
+        assert!(!md.contains("639"));
+        assert!(md.contains("\\[ (0. 4 \\times 0. 6) = 0. 2 4 \\]"));
+        assert!(md.contains("続きの本文"));
+    }
+
+    #[test]
+    fn unlimited_ocr_to_markdown_handles_single_line_equation() {
+        let raw = "equation [1, 2, 3, 4]\\( x = 1 \\)";
+        let (md, _regions) = unlimited_ocr_to_markdown(raw);
+        assert_eq!(md.trim(), "\\( x = 1 \\)");
+    }
+
+    #[test]
+    fn unlimited_ocr_to_markdown_keeps_list_and_page_footnote_as_body_text() {
+        let raw = "list [137, 295, 941, 548]A：本文の内容\n\npage_footnote [120, 749, 411, 770]脚注の内容";
+        let (md, _regions) = unlimited_ocr_to_markdown(raw);
+        assert!(!md.contains("list ["));
+        assert!(!md.contains("page_footnote ["));
+        assert!(md.contains("A：本文の内容"));
+        assert!(md.contains("脚注の内容"));
+    }
+
+    #[test]
     fn unlimited_ocr_to_markdown_collects_table_region_with_bbox() {
         let raw = "table [10, 20, 900, 300]<table><td>A</td><td>B</td></table>";
         let (md, regions) = unlimited_ocr_to_markdown(raw);
@@ -709,6 +804,48 @@ mod tests {
         let raw = "テーブルが見つかりません";
         let result = extract_table_markdown(raw);
         assert_eq!(result, "テーブルが見つかりません");
+    }
+
+    /// equation/repeat_penalty 修正の動作確認用の使い捨て統合テスト。
+    /// Ollama 起動中 + Unlimited OCR + glm-ocr が必要。
+    /// REOCR_PDF に PDF パス、REOCR_OUT に出力先ディレクトリを指定して実行する:
+    /// REOCR_PDF=/path/to.pdf REOCR_OUT=/path/to/out cargo test --lib reocr_pdf_manual -- --ignored --nocapture
+    #[tokio::test]
+    #[ignore]
+    async fn reocr_pdf_manual() {
+        let pdf = std::env::var("REOCR_PDF").expect("REOCR_PDF に PDF パスを指定してください");
+        let pdf = std::path::PathBuf::from(pdf);
+        assert!(pdf.exists(), "PDF が存在しません: {pdf:?}");
+
+        let out_dir = std::env::var("REOCR_OUT").expect("REOCR_OUT に出力先ディレクトリを指定してください");
+        let out_dir = std::path::PathBuf::from(out_dir);
+        std::fs::create_dir_all(&out_dir).unwrap();
+
+        let stem = pdf.file_stem().and_then(|s| s.to_str()).unwrap_or("output").to_string();
+
+        let enable_table_reocr = std::env::var("REOCR_TABLE").as_deref() != Ok("0");
+        let start_page = std::env::var("REOCR_START").ok().and_then(|s| s.parse().ok());
+        let end_page = std::env::var("REOCR_END").ok().and_then(|s| s.parse().ok());
+        let options = OcrOptions {
+            enable_figure: false,
+            enable_table_reocr,
+            start_page,
+            end_page,
+            ..Default::default()
+        };
+
+        let progress: ProgressCallback = Box::new(|current, total, msg| {
+            println!("[reocr] {current}/{total}: {msg}");
+        });
+
+        let outputs = run_ocr_pipeline(&pdf, &out_dir, &options, Some(&progress))
+            .await
+            .unwrap_or_else(|e| panic!("pipeline 失敗: {e}"));
+        assert!(!outputs.is_empty(), "出力ファイルなし");
+
+        let merged = crate::markdown::merge_page_markdowns(&out_dir, &stem, true)
+            .unwrap_or_else(|e| panic!("merge 失敗: {e}"));
+        println!("merged markdown: {}", merged.display());
     }
 
     /// 実機統合テスト。Ollama 起動中 + Unlimited OCR + glm-ocr が必要。
