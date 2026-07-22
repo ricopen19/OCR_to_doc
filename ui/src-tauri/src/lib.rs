@@ -1293,7 +1293,8 @@ pub fn run() {
                 let app = window.app_handle().clone();
                 tauri::async_runtime::spawn(async move {
                     let client = crate::ollama::client::OllamaClient::new();
-                    let _ = client.unload_model("glm-ocr").await;
+                    let _ = client.unload_model(ocr::pipeline::OCR_MODEL).await;
+                    let _ = client.unload_model(ocr::pipeline::TABLE_OCR_MODEL).await;
                     app.exit(0);
                 });
             }

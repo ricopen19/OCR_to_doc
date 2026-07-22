@@ -16,6 +16,10 @@ pub struct ChatOptions {
     /// 数十トークンに及ぶため、デフォルト(64)では反復検出の窓が狭すぎることがある。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub repeat_last_n: Option<i32>,
+    /// 既出トークンへの一律ペナルティ。repeat_penalty と異なり出現回数で強まらないため、
+    /// 単純な繰り返しループの抑制に副作用（低確率トークンへの逃避によるハルシネーション）が出にくい。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub presence_penalty: Option<f32>,
 }
 
 /// POST /api/chat のリクエスト

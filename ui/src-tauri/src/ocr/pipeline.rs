@@ -13,9 +13,9 @@ use super::pdf_to_images::{
     pdf_page_count, pdf_single_page_to_image,
 };
 
-const OCR_MODEL: &str = "hf.co/sahilchachra/Unlimited-OCR-GGUF:Q4_K_M";
+pub(crate) const OCR_MODEL: &str = "hf.co/sahilchachra/Unlimited-OCR-GGUF:Q4_K_M";
 /// 表の高精度再OCR に使うモデル（Unlimited OCR は表を <tr>/<td> なしで出力するため）。
-const TABLE_OCR_MODEL: &str = "glm-ocr";
+pub(crate) const TABLE_OCR_MODEL: &str = "glm-ocr";
 
 /// Unlimited OCR が出力した表領域。bbox はページ画像に対して 0-1000 正規化された座標。
 struct TableRegion {
@@ -153,6 +153,83 @@ fn sanitize_math_delimiters(text: &str) -> String {
     text.into_owned()
 }
 
+/// Unlimited OCR がまれに OCR 結果ではなく英語の思考・雑談（chain-of-thought の漏れ）を
+/// 出力し始めることがある。正規の OCR 出力には現れないはずの定型文言なので、
+/// 出現した時点でそこから後ろを切り捨てる。
+const THOUGHT_LEAK_MARKERS: &[&str] = &[
+    "Wait, looking at",
+    "Okay, I'm ready",
+    "Final transcription:",
+    "Let's re-read",
+];
+
+fn truncate_thought_leak(raw: &str) -> String {
+    let cut_at = THOUGHT_LEAK_MARKERS
+        .iter()
+        .filter_map(|marker| raw.find(marker))
+        .min();
+    match cut_at {
+        Some(idx) => raw[..idx].trim_end().to_string(),
+        None => raw.to_string(),
+    }
+}
+
+/// 直前の非空行とどれだけ類似しているかを、文字2-gram の Jaccard 係数で判定する。
+/// 完全一致だけでなく、途中の数文字が変化しながら劣化していく暴走生成（repeat_penalty
+/// を強めた結果よくある症状）も検知できるよう、部分一致に寛容な指標を使う。
+fn lines_similar(a: &str, b: &str) -> bool {
+    if a == b {
+        return true;
+    }
+    let bigrams = |s: &str| -> std::collections::HashSet<(char, char)> {
+        let chars: Vec<char> = s.chars().collect();
+        chars.windows(2).map(|w| (w[0], w[1])).collect()
+    };
+    let (sa, sb) = (bigrams(a), bigrams(b));
+    if sa.is_empty() || sb.is_empty() {
+        return false;
+    }
+    let inter = sa.intersection(&sb).count();
+    let union = sa.union(&sb).count().max(1);
+    (inter as f64 / union as f64) >= 0.5
+}
+
+/// repeat_penalty 等のサンプラー対策だけでは抑えきれない暴走生成
+/// （同一・酷似した短い行が延々と繰り返される）を検知し、繰り返しが
+/// 始まった位置で応答を打ち切る安全網。
+fn truncate_runaway_repetition(raw: &str) -> String {
+    const REPEAT_THRESHOLD: usize = 3;
+
+    let lines: Vec<&str> = raw.lines().collect();
+    let mut prev_idx: Option<usize> = None;
+    let mut prev_line: Option<&str> = None;
+    let mut run_len = 0usize;
+    let mut run_start_idx = 0usize;
+
+    for (i, line) in lines.iter().enumerate() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let is_similar = prev_line.map(|p| lines_similar(p, trimmed)).unwrap_or(false);
+        if is_similar {
+            if run_len == 0 {
+                run_start_idx = prev_idx.unwrap();
+            }
+            run_len += 1;
+            if run_len >= REPEAT_THRESHOLD {
+                return lines[..run_start_idx].join("\n").trim_end().to_string();
+            }
+        } else {
+            run_len = 0;
+        }
+        prev_idx = Some(i);
+        prev_line = Some(trimmed);
+    }
+
+    raw.to_string()
+}
+
 /// Unlimited OCR のトークン形式を Markdown に変換する。
 /// - title / header / section_header → 見出し
 /// - text / caption / list_item / list / page_footnote / aside_text → 本文
@@ -162,7 +239,7 @@ fn sanitize_math_delimiters(text: &str) -> String {
 /// - footer / page_number / figure / image → スキップ
 fn unlimited_ocr_to_markdown(raw: &str) -> (String, Vec<TableRegion>) {
     const ELEM_TYPES: &[&str] = &[
-        "title", "header", "section_header", "text", "caption",
+        "title", "header", "section_header", "text", "caption", "image_caption",
         "table", "equation", "footer", "page_number", "figure", "aside_text",
         "list_item", "list", "page_footnote", "image",
     ];
@@ -252,7 +329,7 @@ fn unlimited_ocr_to_markdown(raw: &str) -> (String, Vec<TableRegion>) {
                 result.push_str(content);
                 result.push_str("\n\n");
             }
-            "text" | "caption" | "list_item" | "list" | "page_footnote" => {
+            "text" | "caption" | "image_caption" | "list_item" | "list" | "page_footnote" => {
                 result.push_str(content);
                 result.push_str("\n\n");
             }
@@ -313,7 +390,14 @@ fn extract_table_markdown(raw: &str) -> String {
         return block.join("\n").trim().to_string();
     }
 
-    raw.trim().to_string()
+    // フェンスもパイプ表も見つからない場合、生 HTML の <table> が返っていることがある。
+    // そのまま本文に混入させず Markdown テーブルに変換してから返す。
+    let trimmed = raw.trim();
+    if trimmed.contains("<table") {
+        return html_table_to_markdown(trimmed);
+    }
+
+    trimmed.to_string()
 }
 
 /// 0-1000 正規化された bbox をページ画像から切り出す。各辺に 1%（座標値で ±10）の
@@ -368,23 +452,69 @@ fn encode_table_crop_for_ocr(img: image::DynamicImage) -> Result<String, String>
     Ok(BASE64.encode(buf.into_inner()))
 }
 
-/// 1つの表領域を切り出して glm-ocr で再OCR し、Markdown テーブルを返す。
-async fn reocr_single_table(
-    base_img: &image::DynamicImage,
-    region: &TableRegion,
-    client: &OllamaClient,
-) -> Result<String, String> {
-    let cropped = crop_table_region(base_img, region.bbox);
-    let image_base64 = encode_table_crop_for_ocr(cropped)?;
+/// Phase1（各ページの Unlimited OCR）で切り出し済みの表画像。Phase2 でまとめて
+/// glm-ocr に渡すことで、モデル入れ替えをページごとではなく全体で1回に集約する。
+struct PendingTable {
+    md_path: PathBuf,
+    placeholder: String,
+    image_base64: String,
+    html_fallback: String,
+}
 
-    // glm-ocr のコールドロード（Unlimited OCR 常駐下でのモデル入れ替え）は
-    // 60秒を超えることがあるため、図表抽出と同等の余裕を持たせる
+/// markdown 内の `<!--TABLE_REOCR_N-->` を処理する。表クロップ画像の切り出し・
+/// エンコードは Ollama を呼ばない純粋な画像処理なので Phase1 のうちに済ませてしまい、
+/// enable_table_reocr が ON の場合は PendingTable として持ち越す（プレースホルダは
+/// markdown 内に残したまま）。OFF またはクロップ失敗時はその場で平坦テキストに解決する。
+fn stage_table_placeholders(
+    markdown: String,
+    table_regions: Vec<TableRegion>,
+    image_path: &Path,
+    md_path: &Path,
+    enable_table_reocr: bool,
+) -> (String, Vec<PendingTable>) {
+    if table_regions.is_empty() {
+        return (markdown, Vec::new());
+    }
+
+    let base_img = if enable_table_reocr {
+        image::open(image_path).ok()
+    } else {
+        None
+    };
+
+    let mut result = markdown;
+    let mut pending = Vec::new();
+    for (idx, region) in table_regions.iter().enumerate() {
+        let placeholder = format!("<!--TABLE_REOCR_{idx}-->");
+        let staged = base_img.as_ref().and_then(|img| {
+            let cropped = crop_table_region(img, region.bbox);
+            encode_table_crop_for_ocr(cropped).ok()
+        });
+        match staged {
+            Some(image_base64) => pending.push(PendingTable {
+                md_path: md_path.to_path_buf(),
+                placeholder,
+                image_base64,
+                html_fallback: region.html.clone(),
+            }),
+            None => {
+                result = result.replace(&placeholder, &html_table_to_markdown(&region.html));
+            }
+        }
+    }
+    (result, pending)
+}
+
+/// 保留しておいた表クロップ画像を glm-ocr で再OCR し、Markdown テーブルを返す。
+async fn reocr_table_image(image_base64: &str, client: &OllamaClient) -> Result<String, String> {
     let raw = tokio::time::timeout(
         tokio::time::Duration::from_secs(300),
-        client.chat_vision(TABLE_OCR_MODEL, "OCR", &image_base64),
+        client.chat_vision(TABLE_OCR_MODEL, "OCR", image_base64),
     )
     .await
     .map_err(|_| "glm-ocr 再OCR タイムアウト（300秒）".to_string())??;
+    let raw = truncate_thought_leak(&raw);
+    let raw = truncate_runaway_repetition(&raw);
 
     let table_md = extract_table_markdown(&raw);
     if table_md.is_empty() {
@@ -393,54 +523,69 @@ async fn reocr_single_table(
     Ok(table_md)
 }
 
-/// markdown 内の `<!--TABLE_REOCR_N-->` プレースホルダをすべて置換する。
-/// enable_table_reocr が ON かつ glm-ocr が利用可能なら再OCR結果、
-/// それ以外・失敗時は平坦テキストで埋める（プレースホルダを残さない）。
-async fn resolve_table_placeholders(
-    markdown: String,
-    table_regions: Vec<TableRegion>,
-    image_path: &Path,
-    enable_table_reocr: bool,
-    table_reocr_available: bool,
+/// Phase2: 保留していた表領域をまとめて glm-ocr で再OCR し、対応する page_*.md の
+/// プレースホルダを置換する。md_path ごとにまとめて読み書きする。
+async fn resolve_pending_tables(
+    pending_tables: &[PendingTable],
     client: &OllamaClient,
-    page_num: u32,
     total: u32,
     on_progress: Option<&ProgressCallback>,
-) -> String {
-    if table_regions.is_empty() {
-        return markdown;
+) {
+    use std::collections::HashMap;
+    let mut by_file: HashMap<&Path, Vec<&PendingTable>> = HashMap::new();
+    for t in pending_tables {
+        by_file.entry(t.md_path.as_path()).or_default().push(t);
     }
 
-    let use_reocr = enable_table_reocr && table_reocr_available;
-    let base_img = if use_reocr {
-        image::open(image_path).ok()
-    } else {
-        None
-    };
-
-    let mut result = markdown;
+    let total_tables = pending_tables.len();
+    let mut done = 0usize;
     let mut warned = false;
-    for (idx, region) in table_regions.iter().enumerate() {
-        let placeholder = format!("<!--TABLE_REOCR_{idx}-->");
-        let replacement = match &base_img {
-            Some(img) => match reocr_single_table(img, region, client).await {
+
+    for (md_path, tables) in by_file {
+        let Ok(mut content) = fs::read_to_string(md_path) else {
+            continue;
+        };
+        for t in tables {
+            done += 1;
+            if let Some(cb) = &on_progress {
+                cb(total, total, &format!("表を再OCR中: {done}/{total_tables}"));
+            }
+            let replacement = match reocr_table_image(&t.image_base64, client).await {
                 Ok(md) => md,
                 Err(e) => {
-                    log::warn!("Page {page_num}: 表{idx}の再OCR失敗（平坦テキストにフォールバック）: {e}");
+                    log::warn!("表の再OCR失敗（平坦テキストにフォールバック）: {e}");
                     if !warned {
                         if let Some(cb) = &on_progress {
-                            cb(page_num, total, "表の再OCRに失敗したため平坦テキストで出力します");
+                            cb(total, total, "表の再OCRに失敗したため平坦テキストで出力します");
                         }
                         warned = true;
                     }
-                    html_table_to_markdown(&region.html)
+                    html_table_to_markdown(&t.html_fallback)
                 }
-            },
-            None => html_table_to_markdown(&region.html),
-        };
-        result = result.replace(&placeholder, &replacement);
+            };
+            content = content.replace(&t.placeholder, &replacement);
+        }
+        let _ = fs::write(md_path, content);
     }
-    result
+}
+
+/// glm-ocr が利用できない場合、保留していた表を平坦テキストで解決する。
+fn flatten_pending_tables(pending_tables: &[PendingTable]) -> Result<(), String> {
+    use std::collections::HashMap;
+    let mut by_file: HashMap<&Path, Vec<&PendingTable>> = HashMap::new();
+    for t in pending_tables {
+        by_file.entry(t.md_path.as_path()).or_default().push(t);
+    }
+    for (md_path, tables) in by_file {
+        let mut content = fs::read_to_string(md_path)
+            .map_err(|e| format!("{}の読み込み失敗: {e}", md_path.display()))?;
+        for t in tables {
+            content = content.replace(&t.placeholder, &html_table_to_markdown(&t.html_fallback));
+        }
+        fs::write(md_path, content)
+            .map_err(|e| format!("{}の書き込み失敗: {e}", md_path.display()))?;
+    }
+    Ok(())
 }
 
 /// OCR 処理の進捗コールバック
@@ -501,21 +646,9 @@ pub async fn run_ocr_pipeline(
         ));
     }
 
-    // 表の高精度再OCR が ON の場合のみ、glm-ocr の存在を1回だけ確認する。
-    // 不在でもエラーにはせず、以降のページで平坦テキストにフォールバックする。
-    let table_reocr_available = if options.enable_table_reocr {
-        let available = client.has_model(TABLE_OCR_MODEL).await.unwrap_or(false);
-        if !available {
-            if let Some(cb) = &on_progress {
-                cb(0, 0, "glm-ocr が見つからないため表は平坦テキストで出力します");
-            }
-        }
-        available
-    } else {
-        false
-    };
-
     let mut md_paths = Vec::new();
+    let mut pending_tables: Vec<PendingTable> = Vec::new();
+    let total_for_progress;
 
     if is_pdf_file(input_path) {
         // ページ数を取得してページ単位で変換・OCR する
@@ -523,6 +656,7 @@ pub async fn run_ocr_pipeline(
         let range_start = options.start_page.unwrap_or(1).max(1).min(total_pages);
         let range_end = options.end_page.unwrap_or(total_pages).max(range_start).min(total_pages);
         let total = range_end - range_start + 1;
+        total_for_progress = total;
 
         for (i, absolute_page) in (range_start..=range_end).enumerate() {
             let relative_page = (i + 1) as u32;
@@ -545,14 +679,14 @@ pub async fn run_ocr_pipeline(
                 cb(relative_page, total, &format!("OCR 処理中: {relative_page}/{total}"));
             }
 
-            let md_path = ocr_image_to_md(
-                &image_path, result_dir, relative_page, total,
-                options, &client, table_reocr_available, on_progress,
+            let (md_path, mut pending) = ocr_image_to_md(
+                &image_path, result_dir, relative_page, total, options, &client, on_progress,
             ).await?;
 
             // ページ画像を即削除（メモリ・ディスク節約）
             let _ = fs::remove_file(&image_path);
 
+            pending_tables.append(&mut pending);
             md_paths.push(md_path);
 
             // ページ間休止（最終ページを除く）
@@ -567,33 +701,45 @@ pub async fn run_ocr_pipeline(
             let _ = fs::remove_dir_all(&images_dir);
         }
 
-        if let Some(cb) = on_progress {
-            cb(total, total, "OCR 完了");
-        }
-
     } else if is_image_file(input_path) {
+        total_for_progress = 1;
         if let Some(cb) = &on_progress {
             cb(1, 1, "OCR 処理中: 1/1");
         }
 
-        let md_path = ocr_image_to_md(
-            input_path, result_dir, 1, 1,
-            options, &client, table_reocr_available, on_progress,
+        let (md_path, mut pending) = ocr_image_to_md(
+            input_path, result_dir, 1, 1, options, &client, on_progress,
         ).await?;
+        pending_tables.append(&mut pending);
         md_paths.push(md_path);
-
-        if let Some(cb) = on_progress {
-            cb(1, 1, "OCR 完了");
-        }
 
     } else {
         return Err(format!("未対応のファイル形式です: {}", input_path.display()));
     }
 
+    // Phase2: 保留していた表領域をまとめて glm-ocr で再OCR する。
+    // モデル入れ替えはページごとではなく、全体を通じて最大1回に集約される。
+    if !pending_tables.is_empty() {
+        let table_reocr_available = client.has_model(TABLE_OCR_MODEL).await.unwrap_or(false);
+        if table_reocr_available {
+            resolve_pending_tables(&pending_tables, &client, total_for_progress, on_progress).await;
+        } else {
+            if let Some(cb) = &on_progress {
+                cb(total_for_progress, total_for_progress, "glm-ocr が見つからないため表は平坦テキストで出力します");
+            }
+            flatten_pending_tables(&pending_tables)?;
+        }
+    }
+
+    if let Some(cb) = on_progress {
+        cb(total_for_progress, total_for_progress, "OCR 完了");
+    }
+
     Ok(md_paths)
 }
 
-/// 1枚の画像を OCR して page_NNN.md に保存する。
+/// 1枚の画像を OCR して page_NNN.md に保存する。表領域が見つかった場合は
+/// PendingTable として返す（この時点では glm-ocr を呼ばない）。
 async fn ocr_image_to_md(
     image_path: &Path,
     result_dir: &Path,
@@ -601,28 +747,29 @@ async fn ocr_image_to_md(
     total: u32,
     options: &OcrOptions,
     client: &OllamaClient,
-    table_reocr_available: bool,
     on_progress: Option<&ProgressCallback>,
-) -> Result<PathBuf, String> {
+) -> Result<(PathBuf, Vec<PendingTable>), String> {
     let image_base64 = encode_image_for_ocr(image_path)?;
 
     let prompt = ocr_prompt_for(&options.ocr_model);
     let raw_ocr = client
         .chat_vision(&options.ocr_model, prompt, &image_base64)
         .await?;
-    let markdown = if is_unlimited_ocr_format(&raw_ocr) {
-        let (md, table_regions) = unlimited_ocr_to_markdown(&raw_ocr);
-        let md = resolve_table_placeholders(
-            md, table_regions, image_path,
-            options.enable_table_reocr, table_reocr_available,
-            client, page_num, total, on_progress,
-        ).await;
-        sanitize_math_delimiters(&md)
-    } else {
-        raw_ocr
-    };
+    let raw_ocr = truncate_thought_leak(&raw_ocr);
+    let raw_ocr = truncate_runaway_repetition(&raw_ocr);
 
     let md_path = result_dir.join(format!("page_{page_num:03}.md"));
+
+    let (markdown, pending_tables) = if is_unlimited_ocr_format(&raw_ocr) {
+        let (md, table_regions) = unlimited_ocr_to_markdown(&raw_ocr);
+        let (md, pending) = stage_table_placeholders(
+            md, table_regions, image_path, &md_path, options.enable_table_reocr,
+        );
+        (sanitize_math_delimiters(&md), pending)
+    } else {
+        (raw_ocr, Vec::new())
+    };
+
     fs::write(&md_path, &markdown)
         .map_err(|e| format!("page_{page_num:03}.md 書き込み失敗: {e}"))?;
 
@@ -659,7 +806,7 @@ async fn ocr_image_to_md(
         }
     }
 
-    Ok(md_path)
+    Ok((md_path, pending_tables))
 }
 
 /// OCR モデルに送る画像の長辺上限。これ以上は縮小してから送る。
@@ -756,6 +903,76 @@ mod tests {
     }
 
     #[test]
+    fn truncate_runaway_repetition_cuts_exact_repeated_short_lines() {
+        let raw = "本文の内容\n\n```\n```\n```\n```\n```\n```";
+        let result = truncate_runaway_repetition(raw);
+        assert_eq!(result.trim(), "本文の内容");
+    }
+
+    #[test]
+    fn truncate_runaway_repetition_cuts_near_duplicate_degenerating_lines() {
+        let raw = "見出し\n\ncontent诸葛亮王着的言訣 ApacheNullable(nullableない)?\ncontent诸葛亮王着的言置 ApacheNullablenullableない!)\ncontent诸葛亮王着的言詩apacheNullablenullableない?)\ncontent诸葛亮王着的言詩apacheNullablenullableない!)";
+        let result = truncate_runaway_repetition(raw);
+        assert_eq!(result.trim(), "見出し");
+    }
+
+    #[test]
+    fn truncate_runaway_repetition_keeps_normal_text_untouched() {
+        let raw = "第1段落。\n\n第2段落。\n\n第3段落。";
+        let result = truncate_runaway_repetition(raw);
+        assert_eq!(result, raw);
+    }
+
+    #[test]
+    fn truncate_thought_leak_cuts_at_first_marker() {
+        let raw = "B：小誌では，小謡家の成型申告中しないでも人知れず落している。\n\nOkay, I'm ready.\n```\n\nFinal transcription:\n\nB：小誌では、...";
+        let result = truncate_thought_leak(raw);
+        assert_eq!(
+            result,
+            "B：小誌では，小謡家の成型申告中しないでも人知れず落している。"
+        );
+    }
+
+    #[test]
+    fn truncate_thought_leak_keeps_normal_text_untouched() {
+        let raw = "第1段落。\n\n第2段落。";
+        let result = truncate_thought_leak(raw);
+        assert_eq!(result, raw);
+    }
+
+    #[test]
+    fn stage_table_placeholders_defers_to_pending_when_enabled() {
+        let md = "本文\n\n<!--TABLE_REOCR_0-->\n\n続き".to_string();
+        let regions = vec![TableRegion {
+            bbox: (0, 0, 10, 10),
+            html: "<table><td>A</td></table>".to_string(),
+        }];
+        let img_path = Path::new("this_file_does_not_exist.png");
+        let md_path = Path::new("page_001.md");
+        let (result, pending) =
+            stage_table_placeholders(md, regions, img_path, md_path, true);
+        // 画像が開けないので pending には積まれず、その場で平坦テキストに解決される
+        assert!(pending.is_empty());
+        assert!(!result.contains("TABLE_REOCR"));
+        assert!(result.contains('A'));
+    }
+
+    #[test]
+    fn stage_table_placeholders_flattens_immediately_when_disabled() {
+        let md = "本文\n\n<!--TABLE_REOCR_0-->".to_string();
+        let regions = vec![TableRegion {
+            bbox: (0, 0, 10, 10),
+            html: "<table><td>A</td><td>B</td></table>".to_string(),
+        }];
+        let img_path = Path::new("irrelevant.png");
+        let md_path = Path::new("page_001.md");
+        let (result, pending) =
+            stage_table_placeholders(md, regions, img_path, md_path, false);
+        assert!(pending.is_empty());
+        assert!(result.contains("| A | B |"));
+    }
+
+    #[test]
     fn unlimited_ocr_to_markdown_keeps_list_and_page_footnote_as_body_text() {
         let raw = "list [137, 295, 941, 548]A：本文の内容\n\npage_footnote [120, 749, 411, 770]脚注の内容";
         let (md, _regions) = unlimited_ocr_to_markdown(raw);
@@ -783,6 +1000,14 @@ mod tests {
         assert!(regions.is_empty());
         assert!(!md.contains("TABLE_REOCR"));
         assert!(md.contains("| A |"));
+    }
+
+    #[test]
+    fn extract_table_markdown_converts_raw_html_fallback_to_markdown() {
+        let raw = r#"<table border="1"><tr><td></td><td>要旨把握</td><td>内容把握</td></tr></table>"#;
+        let result = extract_table_markdown(raw);
+        assert!(!result.contains("<table"));
+        assert!(result.contains("要旨把握"));
     }
 
     #[test]
