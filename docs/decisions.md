@@ -133,3 +133,39 @@
 **却下案**:
 - HTML→Markdown の行パース改善: `<tr>`/`<td>` がそもそも出力されないため不成立
 - 表対応モデルへの全面乗り換え: Unlimited OCR の速度メリットを失う
+
+## ADR-014: RunOptions の機能ギャップ整理（配線 or 削除）
+
+2026-07
+
+**決定**: Phase1/Phase2 移行（YomiToku Python 版 → Ollama Rust 版）で `run_job_ollama` に
+引き継がれず無視されていた設定項目を、フィールドごとに「配線して直す」か「型・UI ごと削除」に仕分けた。
+
+- **配線して直す**: `crop`（per-file トリミング）、`excelMode`（layout/table）、`excelMetaSheet`
+  （メタ情報シート）。いずれも glm-ocr 移行後も意味を持つ設定であり、UI 上で active に
+  ユーザーが操作できる状態のまま実処理に反映されていなかった（`crop` は OCR に一切適用されず
+  プレビューのみ、`mode` は「Full は高負荷」という警告文まで出すのに処理が実際には変わらない
+  など、実害のある silent no-op だった）
+- **型・UI ごと削除**: `useGpu` / `imageAsPdf` / `chunkSize` / `mode`（lite/full）。いずれも
+  YomiToku 固有の設定（GPU デバイス選択・画像→PDF前処理・メモリチャンク分割・処理精度切替）で、
+  YomiToku は完全に廃止済みのため glm-ocr パイプラインに適用先が存在しない
+- `excelSymbolFallback`（表セルの記号OCR失敗時の画像フォールバック補完）も削除。
+  `export_excel_poc.py` の関数自体は対応しているが CLI 引数化されておらず、
+  subprocess 経由の `run_job_ollama` からは原理的に渡しようがなかった。効果に対して
+  実装コスト（CLI引数追加 + Python側配線）が見合わないため復活させず削除する判断とした
+
+**理由**: 「動くふりをして実は何もしない設定 UI」を残すより、実際に効くものだけを残す方が
+ユーザーの信頼を損なわない。壊れている機能を直すか消すかの基準は「glm-ocr パイプラインに
+対応する処理が存在するか」で切り分けた
+
+**却下案**:
+- 全フィールドをとりあえず配線する: `useGpu`/`imageAsPdf`/`chunkSize`/`mode` は
+  対応する Rust 側処理が存在せず、無理に配線すると意味のない no-op 引数が増えるだけ
+- 全フィールドをとりあえず削除する: `crop`/`excelMode`/`excelMetaSheet` は実装コストが
+  低く実害（設定を無視される）が大きいため、削除ではなく修正が妥当
+
+**影響**: `ui/src-tauri/src/job.rs`（`RunOptions`/`FileSpecificOptions`）、`settings.rs`
+（`AppSettings`）、フロントエンド5ファイル（`api/runJob.ts` / `api/settings.ts` / `App.tsx` /
+`pages/RunJob.tsx` / `pages/Settings.tsx`）の型・UI を変更。設定ファイル
+（`configs/settings.json`）に旧フィールドが残っていても `#[serde(default)]` で無視されるため
+後方互換は保たれる
