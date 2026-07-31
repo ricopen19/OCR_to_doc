@@ -16,13 +16,6 @@ impl OllamaClient {
         }
     }
 
-    pub fn with_base_url(base_url: &str) -> Self {
-        Self {
-            base_url: base_url.to_string(),
-            http: reqwest::Client::new(),
-        }
-    }
-
     /// Ollama が起動しているか確認（GET /）
     pub async fn health_check(&self) -> Result<bool, String> {
         match self.http.get(&self.base_url).send().await {
@@ -110,46 +103,6 @@ impl OllamaClient {
         Ok(chat_resp.message.content)
     }
 
-    /// テキストのみのチャット（LLM 校正用）
-    pub async fn chat_text(
-        &self,
-        model: &str,
-        prompt: &str,
-    ) -> Result<String, String> {
-        let url = format!("{}/api/chat", self.base_url);
-        let request = ChatRequest {
-            model: model.to_string(),
-            messages: vec![ChatMessage {
-                role: "user".to_string(),
-                content: prompt.to_string(),
-                images: None,
-            }],
-            stream: false,
-            keep_alive: Some("3m".to_string()),
-            options: None,
-        };
-
-        let resp = self
-            .http
-            .post(&url)
-            .json(&request)
-            .send()
-            .await
-            .map_err(|e| format!("Ollama LLM リクエスト失敗: {e}"))?;
-
-        if !resp.status().is_success() {
-            let status = resp.status();
-            let body = resp.text().await.unwrap_or_default();
-            return Err(format!("Ollama エラー (HTTP {status}): {body}"));
-        }
-
-        let chat_resp: ChatResponse = resp
-            .json()
-            .await
-            .map_err(|e| format!("LLM レスポンスのパースに失敗: {e}"))?;
-        Ok(chat_resp.message.content)
-    }
-
     /// モデルをアンロード（POST /api/generate / keep_alive: 0）。3秒でタイムアウト。
     pub async fn unload_model(&self, model: &str) -> Result<(), String> {
         let url = format!("{}/api/generate", self.base_url);
@@ -160,31 +113,6 @@ impl OllamaClient {
             .map_err(|_| "unload timeout".to_string())?
             .map_err(|e| format!("unload リクエスト失敗: {e}"))?;
         let _ = resp.bytes().await;
-        Ok(())
-    }
-
-    /// モデルをダウンロード（POST /api/pull）。非ストリーミング。
-    pub async fn pull_model(&self, model: &str) -> Result<(), String> {
-        let url = format!("{}/api/pull", self.base_url);
-        let request = PullRequest {
-            model: model.to_string(),
-            stream: false,
-        };
-
-        let resp = self
-            .http
-            .post(&url)
-            .json(&request)
-            .send()
-            .await
-            .map_err(|e| format!("モデル pull リクエスト失敗: {e}"))?;
-
-        if !resp.status().is_success() {
-            let status = resp.status();
-            let body = resp.text().await.unwrap_or_default();
-            return Err(format!("モデル pull 失敗 (HTTP {status}): {body}"));
-        }
-
         Ok(())
     }
 }

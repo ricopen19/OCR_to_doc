@@ -12,17 +12,6 @@ pub fn apply_python_env(cmd: &mut Command) {
     cmd.env("PYTHONIOENCODING", "utf-8");
 }
 
-pub fn default_gpu_device() -> &'static str {
-    #[cfg(target_os = "macos")]
-    {
-        "mps"
-    }
-    #[cfg(not(target_os = "macos"))]
-    {
-        "cuda"
-    }
-}
-
 fn join_segments(base: &Path, segs: &[&str]) -> PathBuf {
     let mut p = base.to_path_buf();
     for s in segs {

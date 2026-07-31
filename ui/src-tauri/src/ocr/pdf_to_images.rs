@@ -2,61 +2,6 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::fs;
 
-/// PDF をページ画像に変換する（ページ範囲指定・全ページ一括）。
-/// start_page / end_page は 1-indexed。None で全ページ。
-pub fn pdf_to_page_images_range(
-    pdf_path: &Path,
-    output_dir: &Path,
-    dpi: u32,
-    poppler_path: Option<&Path>,
-    start_page: Option<u32>,
-    end_page: Option<u32>,
-) -> Result<Vec<PathBuf>, String> {
-    let images_dir = output_dir.join("page_images");
-    fs::create_dir_all(&images_dir)
-        .map_err(|e| format!("page_images ディレクトリ作成失敗: {e}"))?;
-
-    let pdftoppm = resolve_poppler_tool("pdftoppm", poppler_path)?;
-
-    let mut cmd = Command::new(&pdftoppm);
-    cmd.arg("-png").arg("-r").arg(dpi.to_string());
-    if let Some(s) = start_page {
-        cmd.arg("-f").arg(s.to_string());
-    }
-    if let Some(e) = end_page {
-        cmd.arg("-l").arg(e.to_string());
-    }
-    cmd.arg(pdf_path.to_str().unwrap_or_default())
-        .arg(images_dir.join("page").to_str().unwrap_or_default());
-
-    let status = cmd.status()
-        .map_err(|e| format!("pdftoppm 実行失敗: {e}"))?;
-
-    if !status.success() {
-        return Err(format!("pdftoppm がエラーで終了 (code: {:?})", status.code()));
-    }
-
-    let mut page_images: Vec<PathBuf> = fs::read_dir(&images_dir)
-        .map_err(|e| format!("page_images 読み込み失敗: {e}"))?
-        .filter_map(|entry| {
-            let path = entry.ok()?.path();
-            if path.extension().and_then(|e| e.to_str()) == Some("png") {
-                Some(path)
-            } else {
-                None
-            }
-        })
-        .collect();
-
-    page_images.sort();
-
-    if page_images.is_empty() {
-        return Err("pdftoppm がページ画像を生成しませんでした".to_string());
-    }
-
-    Ok(page_images)
-}
-
 /// PDF の総ページ数を pdfinfo で取得する。
 pub fn pdf_page_count(pdf_path: &Path, poppler_path: Option<&Path>) -> Result<u32, String> {
     let pdfinfo = resolve_poppler_tool("pdfinfo", poppler_path)?;

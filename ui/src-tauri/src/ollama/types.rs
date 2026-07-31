@@ -46,16 +46,11 @@ pub struct ChatMessage {
 /// POST /api/chat のレスポンス（非ストリーミング）
 #[derive(Debug, Deserialize)]
 pub struct ChatResponse {
-    pub model: String,
     pub message: ResponseMessage,
-    pub done: bool,
-    pub total_duration: Option<u64>,
-    pub eval_count: Option<u64>,
 }
 
 #[derive(Debug, Deserialize)]
 pub struct ResponseMessage {
-    pub role: String,
     pub content: String,
 }
 
@@ -68,14 +63,6 @@ pub struct TagsResponse {
 #[derive(Debug, Deserialize)]
 pub struct ModelInfo {
     pub name: String,
-    pub size: Option<u64>,
-}
-
-/// POST /api/pull のリクエスト
-#[derive(Debug, Serialize)]
-pub struct PullRequest {
-    pub model: String,
-    pub stream: bool,
 }
 
 /// POST /api/generate — keep_alive: 0 でモデルをアンロード
@@ -83,13 +70,4 @@ pub struct PullRequest {
 pub struct GenerateUnloadRequest<'a> {
     pub model: &'a str,
     pub keep_alive: i64,
-}
-
-/// POST /api/pull のストリーミングレスポンス（1行ずつ）
-#[derive(Debug, Deserialize)]
-pub struct PullProgress {
-    pub status: String,
-    pub digest: Option<String>,
-    pub total: Option<u64>,
-    pub completed: Option<u64>,
 }

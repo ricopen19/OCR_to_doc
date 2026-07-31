@@ -61,20 +61,6 @@ pub fn merge_page_markdowns(
     Ok(output_path)
 }
 
-/// 基本的な Markdown クリーンアップ（Rust 実装）
-/// markdown_cleanup.py は YomiToku 固有の補正であり、GLM-OCR では不要。
-/// GLM-OCR 固有の問題が見つかったら最小限の cleanup をここに追加する。
-pub fn basic_cleanup(text: &str) -> String {
-    let mut result = text.to_string();
-    // 3つ以上の連続改行を2つに
-    let triple_newline = Regex::new(r"\n{3,}").unwrap();
-    result = triple_newline.replace_all(&result, "\n\n").to_string();
-    // 末尾の空白行を整理
-    result = result.trim_end().to_string();
-    result.push('\n');
-    result
-}
-
 #[derive(Debug)]
 struct PageFile {
     page: u32,

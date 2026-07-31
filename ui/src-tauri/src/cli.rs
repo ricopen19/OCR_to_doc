@@ -1,4 +1,4 @@
-use std::{fs, io::Write, path::PathBuf, process::Command};
+use std::{fs, io::Write, process::Command};
 
 use crate::paths::{
     apply_python_env, resolve_output_root, resolve_project_root, resolve_python_bin,
@@ -123,7 +123,7 @@ pub fn run_cli_if_requested() -> Option<i32> {
             fallback
         }
     };
-    let mut log_trace = |msg: &str| {
+    let log_trace = |msg: &str| {
         if let Ok(mut f) = fs::OpenOptions::new()
             .create(true)
             .append(true)
