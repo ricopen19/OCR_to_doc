@@ -9,15 +9,10 @@ export type FileSpecificOptions = {
 
 export type RunOptions = {
   formats: string[]
-  imageAsPdf: boolean
   enableFigure: boolean
-  useGpu?: boolean
-  mode: 'lite' | 'full'
   docxEngine?: 'python' | 'pandoc'
   excelMode?: 'layout' | 'table'
   excelMetaSheet?: boolean
-  excelSymbolFallback?: boolean
-  chunkSize?: number
   enableRest: boolean
   restSeconds?: number
   pdfDpi?: number

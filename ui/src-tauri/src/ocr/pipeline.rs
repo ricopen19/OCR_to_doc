@@ -7,6 +7,7 @@ use base64::engine::general_purpose::STANDARD as BASE64;
 use image::GenericImageView;
 use regex::Regex;
 
+use crate::job::CropRect;
 use crate::ollama::client::OllamaClient;
 use super::pdf_to_images::{
     is_pdf_file, is_image_file,
@@ -423,6 +424,37 @@ fn crop_table_region(img: &image::DynamicImage, bbox: (u32, u32, u32, u32)) -> i
     img.crop_imm(crop_x1, crop_y1, crop_x2 - crop_x1, crop_y2 - crop_y1)
 }
 
+/// ページ画像を正規化トリミング範囲（0〜1）で切り出し、dest_dir に一時 PNG として保存する。
+/// 座標変換は ui_preview.py の apply_crop と同じ仕様（クランプ→ピクセル丸め）。
+fn crop_page_image_to_temp(src: &Path, crop: &CropRect, dest_dir: &Path) -> Result<PathBuf, String> {
+    let img = image::open(src).map_err(|e| format!("画像読み込み失敗 {}: {e}", src.display()))?;
+    let (w, h) = img.dimensions();
+
+    let left = crop.left.clamp(0.0, 1.0);
+    let top = crop.top.clamp(0.0, 1.0);
+    let width = crop.width.clamp(0.0, 1.0 - left);
+    let height = crop.height.clamp(0.0, 1.0 - top);
+
+    let lpx = (left * w as f64).round() as u32;
+    let tpx = (top * h as f64).round() as u32;
+    let rpx = ((left + width) * w as f64).round() as u32;
+    let bpx = ((top + height) * h as f64).round() as u32;
+
+    if rpx <= lpx || bpx <= tpx {
+        // 不正なトリミング範囲。元画像をそのまま一時ファイルにコピーして続行する。
+        let dest = dest_dir.join(format!("crop_tmp_{}.png", uuid::Uuid::new_v4()));
+        img.save(&dest).map_err(|e| format!("トリミング画像の保存失敗: {e}"))?;
+        return Ok(dest);
+    }
+
+    let cropped = img.crop_imm(lpx, tpx, rpx - lpx, bpx - tpx);
+    let dest = dest_dir.join(format!("crop_tmp_{}.png", uuid::Uuid::new_v4()));
+    cropped
+        .save(&dest)
+        .map_err(|e| format!("トリミング画像の保存失敗: {e}"))?;
+    Ok(dest)
+}
+
 /// glm-ocr (ViT patch_size=14) は画像の縦横が 28 の倍数でないと GGML_ASSERT で落ちるため、
 /// 表クロップ画像はこの倍数に切り下げてから送る。
 const TABLE_IMAGE_ALIGN: u32 = 28;
@@ -604,6 +636,8 @@ pub struct OcrOptions {
     pub end_page: Option<u32>,
     pub enable_rest: bool,
     pub rest_seconds: u64,
+    /// 正規化トリミング範囲（left/top/width/height, 0〜1）。ページ画像に対して適用する。
+    pub crop: Option<CropRect>,
 }
 
 impl Default for OcrOptions {
@@ -620,6 +654,7 @@ impl Default for OcrOptions {
             end_page: None,
             enable_rest: false,
             rest_seconds: 10,
+            crop: None,
         }
     }
 }
@@ -666,7 +701,7 @@ pub async fn run_ocr_pipeline(
             }
 
             // 1ページだけ変換（CPU バーストを分散）
-            let image_path = pdf_single_page_to_image(
+            let raw_image_path = pdf_single_page_to_image(
                 input_path,
                 result_dir,
                 options.dpi,
@@ -674,6 +709,15 @@ pub async fn run_ocr_pipeline(
                 absolute_page,
                 relative_page,
             )?;
+
+            let image_path = match &options.crop {
+                Some(crop) => {
+                    let cropped = crop_page_image_to_temp(&raw_image_path, crop, result_dir)?;
+                    let _ = fs::remove_file(&raw_image_path);
+                    cropped
+                }
+                None => raw_image_path,
+            };
 
             if let Some(cb) = &on_progress {
                 cb(relative_page, total, &format!("OCR 処理中: {relative_page}/{total}"));
@@ -707,9 +751,19 @@ pub async fn run_ocr_pipeline(
             cb(1, 1, "OCR 処理中: 1/1");
         }
 
+        // 元ファイルは書き換えないため、トリミング時のみ一時ファイルを作る
+        let cropped_path = match &options.crop {
+            Some(crop) => Some(crop_page_image_to_temp(input_path, crop, result_dir)?),
+            None => None,
+        };
+        let image_path = cropped_path.as_deref().unwrap_or(input_path);
+
         let (md_path, mut pending) = ocr_image_to_md(
-            input_path, result_dir, 1, 1, options, &client, on_progress,
+            image_path, result_dir, 1, 1, options, &client, on_progress,
         ).await?;
+        if let Some(p) = &cropped_path {
+            let _ = fs::remove_file(p);
+        }
         pending_tables.append(&mut pending);
         md_paths.push(md_path);
 

@@ -38,17 +38,9 @@ pub struct RunOptions {
     #[serde(default)]
     pub formats: Vec<String>,
     #[serde(default)]
-    pub image_as_pdf: bool,
-    #[serde(default)]
     pub enable_figure: bool,
     #[serde(default)]
-    pub use_gpu: bool,
-    #[serde(default)]
-    pub mode: String,
-    #[serde(default)]
     pub docx_engine: Option<String>,
-    #[serde(default)]
-    pub chunk_size: Option<u32>,
     #[serde(default)]
     pub enable_rest: bool,
     #[serde(default)]
@@ -59,8 +51,6 @@ pub struct RunOptions {
     pub excel_mode: Option<String>,
     #[serde(default)]
     pub excel_meta_sheet: Option<bool>,
-    #[serde(default)]
-    pub excel_symbol_fallback: Option<bool>,
     #[serde(default)]
     pub file_options: Option<HashMap<String, FileSpecificOptions>>,
 }

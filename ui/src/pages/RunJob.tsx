@@ -62,15 +62,10 @@ function findClipboardImages(items: DataTransferItemList | undefined | null) {
 
 export interface RunJobOptions {
     formats: string[]
-    imageAsPdf: boolean
     enableFigure: boolean
-    useGpu: boolean
-    mode: 'lite' | 'full'
     docxEngine: 'python' | 'pandoc'
     excelMode: 'layout' | 'table'
     excelMetaSheet: boolean
-    excelSymbolFallback: boolean
-    chunkSize: number
     enableRest: boolean
     restSeconds: number
     pdfDpi: number
@@ -253,7 +248,6 @@ export function RunJob({
                 ...current,
                 formats: options.formats,
                 excelMode: options.excelMode,
-                mode: options.mode,
                 pdfDpi: options.pdfDpi,
                 docxEngine: options.docxEngine,
             }
@@ -701,25 +695,6 @@ export function RunJob({
                                         </Text>
                                     </Stack>
                                 )}
-
-                                <Divider />
-
-                                <Stack gap="xs">
-                                    <Text size="sm" fw={500}>処理モード</Text>
-                                    <SegmentedControl
-                                        value={options.mode}
-                                        onChange={(val) => setOptions(prev => ({ ...prev, mode: val as 'lite' | 'full' }))}
-                                        data={[
-                                            { label: 'Lite (高速)', value: 'lite' },
-                                            { label: 'Full (高精度)', value: 'full' },
-                                        ]}
-                                    />
-                                    {options.mode === 'full' && (
-                                        <Alert variant="light" color="yellow" title="注意" icon={<IconAlertTriangle size={16} />}>
-                                            Fullモードは非常に高負荷で時間がかかります。通常はLite推奨です。
-                                        </Alert>
-                                    )}
-                                </Stack>
 
                                 <Divider />
 

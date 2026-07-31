@@ -9,27 +9,17 @@ pub struct AppSettings {
     #[serde(default)]
     pub formats: Vec<String>,
     #[serde(default)]
-    pub image_as_pdf: bool,
-    #[serde(default)]
     pub enable_figure: bool,
     #[serde(default)]
     pub enable_table_reocr: bool,
-    #[serde(default)]
-    pub mode: Option<String>,
     #[serde(default)]
     pub docx_engine: Option<String>,
     #[serde(default)]
     pub excel_mode: Option<String>,
     #[serde(default)]
-    pub use_gpu: bool,
-    #[serde(default)]
     pub output_root: Option<String>,
     #[serde(default = "default_excel_meta_sheet")]
     pub excel_meta_sheet: bool,
-    #[serde(default = "default_excel_symbol_fallback")]
-    pub excel_symbol_fallback: bool,
-    #[serde(default)]
-    pub chunk_size: Option<u32>,
     #[serde(default)]
     pub enable_rest: bool,
     #[serde(default)]
@@ -45,10 +35,6 @@ pub struct AppSettings {
 }
 
 fn default_excel_meta_sheet() -> bool {
-    true
-}
-
-fn default_excel_symbol_fallback() -> bool {
     true
 }
 
@@ -82,17 +68,12 @@ pub fn load_settings_from_disk(
     // デフォルト値
     Ok(AppSettings {
         formats: vec!["md".into()],
-        image_as_pdf: false,
         enable_figure: false,
         enable_table_reocr: false,
-        mode: Some("lite".into()),
         docx_engine: Some("python".into()),
         excel_mode: Some("layout".into()),
-        use_gpu: false,
         output_root: None,
         excel_meta_sheet: true,
-        excel_symbol_fallback: true,
-        chunk_size: Some(10),
         enable_rest: true,
         rest_seconds: Some(5),
         pdf_dpi: Some(150),

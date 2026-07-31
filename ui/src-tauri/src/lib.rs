@@ -86,18 +86,13 @@ async fn run_job_ollama(
 
     let opts = options.unwrap_or_else(|| RunOptions {
         formats: vec!["md".into()],
-        image_as_pdf: false,
         enable_figure: false,
-        use_gpu: false,
-        mode: String::new(),
         docx_engine: None,
-        chunk_size: None,
         enable_rest: false,
         rest_seconds: None,
         pdf_dpi: None,
         excel_mode: None,
         excel_meta_sheet: None,
-        excel_symbol_fallback: None,
         file_options: None,
     });
 
@@ -132,6 +127,8 @@ async fn run_job_ollama(
     let formats = opts.formats.clone();
     let file_options = opts.file_options.clone();
     let docx_engine = opts.docx_engine.clone();
+    let excel_mode = opts.excel_mode.clone();
+    let excel_meta_sheet = opts.excel_meta_sheet;
     let python_bin = resolve_python_bin(&project_root);
     let project_root_clone = project_root.clone();
 
@@ -146,12 +143,12 @@ async fn run_job_ollama(
                 .and_then(|s| s.to_str())
                 .unwrap_or("output");
 
-            // file_options からページ範囲を取得
-            let (start_page, end_page) = file_options
+            // file_options からページ範囲・トリミング範囲を取得
+            let (start_page, end_page, crop) = file_options
                 .as_ref()
                 .and_then(|m| m.get(input_path_str))
-                .map(|fo| (fo.start, fo.end))
-                .unwrap_or((None, None));
+                .map(|fo| (fo.start, fo.end, fo.crop.clone()))
+                .unwrap_or((None, None, None));
 
             // ページ範囲指定があればディレクトリ名にサフィックスを付加
             let dir_name = match (start_page, end_page) {
@@ -174,6 +171,7 @@ async fn run_job_ollama(
                 end_page,
                 enable_rest,
                 rest_seconds,
+                crop,
                 ..ocr::pipeline::OcrOptions::default()
             };
 
@@ -302,6 +300,14 @@ async fn run_job_ollama(
                                 .arg("--format").arg("markdown");
                             if want_csv {
                                 cmd.arg("--csv-dir").arg(&result_dir);
+                            }
+                            if let Some(mode) = &excel_mode {
+                                cmd.arg("--excel-mode").arg(mode);
+                            }
+                            match excel_meta_sheet {
+                                Some(true) => { cmd.arg("--meta"); }
+                                Some(false) => { cmd.arg("--no-meta"); }
+                                None => {}
                             }
                             let _ = cmd.status();
                             // xlsx が不要なら削除

@@ -48,7 +48,6 @@ export const Settings = forwardRef<SettingsHandle, SettingsProps>(function Setti
             const normalized: AppSettings = {
                 ...s,
                 previewQuality: s.previewQuality ?? 'light',
-                excelSymbolFallback: s.excelSymbolFallback ?? true,
             }
             setSettings(normalized)
             setInitialSnapshot(settingsSnapshot(normalized))
@@ -249,17 +248,6 @@ export const Settings = forwardRef<SettingsHandle, SettingsProps>(function Setti
                             )
                         }
                     />
-                    <Switch
-                        mt="md"
-                        label="Excelの記号補完を有効化"
-                        description="空セルの記号（○/□/×など）を画像から補完します（tesseract未導入時はスキップ）"
-                        checked={settings.excelSymbolFallback ?? true}
-                        onChange={() =>
-                            setSettings((prev) =>
-                                prev ? { ...prev, excelSymbolFallback: !(prev.excelSymbolFallback ?? true) } : prev
-                            )
-                        }
-                    />
                 </Card>
 
                 {/* Processing Options */}
@@ -268,15 +256,6 @@ export const Settings = forwardRef<SettingsHandle, SettingsProps>(function Setti
                         処理オプション (デフォルト)
                     </Text>
                     <Stack gap="md">
-                        <Switch
-                            label="画像をPDF化してから処理"
-                            description="複数の画像を1つのPDFとしてまとめて処理します"
-                            checked={settings.imageAsPdf}
-                            onChange={() =>
-                                setSettings((prev) => (prev ? { ...prev, imageAsPdf: !prev.imageAsPdf } : prev))
-                            }
-                        />
-                        <Divider />
                         <Switch
                             label="図表抽出 (Experimental)"
                             description="図表を画像として切り出します"
@@ -331,15 +310,6 @@ export const Settings = forwardRef<SettingsHandle, SettingsProps>(function Setti
                                 ]}
                             />
                         </Stack>
-                        <Divider />
-                        <Switch
-                            label="GPU で処理する（対応環境のみ）"
-                            description="ON にすると GPU を優先して利用します。動作が不安定な場合は OFF を推奨します。"
-                            checked={Boolean(settings.useGpu)}
-                            onChange={() =>
-                                setSettings((prev) => (prev ? { ...prev, useGpu: !prev.useGpu } : prev))
-                            }
-                        />
                     </Stack>
                 </Card>
 
@@ -349,17 +319,6 @@ export const Settings = forwardRef<SettingsHandle, SettingsProps>(function Setti
                         安定運用設定
                     </Text>
                     <Stack gap="md">
-                        <NumberInput
-                            label="チャンクサイズ"
-                            description="1回に処理するページ数（メモリ不足対策）"
-                            min={1}
-                            max={100}
-                            value={settings.chunkSize ?? 10}
-                            onChange={(v) =>
-                                setSettings((prev) => (prev ? { ...prev, chunkSize: Number(v) } : prev))
-                            }
-                        />
-                        <Divider />
                         <Switch
                             label="休憩を有効にする"
                             description="Chunk処理ごとに待機時間を挟みます（CPU/API負荷軽減）"

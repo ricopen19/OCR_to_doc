@@ -3,42 +3,32 @@ import { invoke } from '@tauri-apps/api/core'
 
 export interface AppSettings {
     formats: string[]
-    imageAsPdf: boolean
     enableFigure: boolean
     enableTableReocr: boolean
-    mode?: 'lite' | 'full'
     docxEngine?: 'python' | 'pandoc'
     excelMode?: 'layout' | 'table'
     outputRoot?: string
     excelMetaSheet?: boolean
-    excelSymbolFallback?: boolean
-    chunkSize?: number
     enableRest: boolean
     restSeconds?: number
     pdfDpi?: number
     windowWidth?: number
     windowHeight?: number
-    useGpu?: boolean
     previewQuality?: 'light' | 'standard' | 'high'
 }
 
 const DEFAULT_SETTINGS: AppSettings = {
     formats: ['md'],
-    imageAsPdf: false,
     enableFigure: false,
     enableTableReocr: false,
-    mode: 'lite',
     docxEngine: 'python',
     excelMode: 'layout',
     excelMetaSheet: true,
-    excelSymbolFallback: true,
-    chunkSize: 10,
     enableRest: true,
     restSeconds: 5,
     pdfDpi: 150,
     windowWidth: 1200,
     windowHeight: 760,
-    useGpu: false,
     previewQuality: 'light',
 }
 

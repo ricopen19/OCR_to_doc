@@ -56,30 +56,20 @@ function App() {
   const [previewQuality, setPreviewQuality] = useState<'light' | 'standard' | 'high'>('light')
   const [options, setOptions] = useState<{
     formats: string[]
-    imageAsPdf: boolean
     enableFigure: boolean
-    useGpu: boolean
-    mode: 'lite' | 'full'
     docxEngine: 'python' | 'pandoc'
     excelMode: 'layout' | 'table'
     excelMetaSheet: boolean
-    excelSymbolFallback: boolean
-    chunkSize: number
     enableRest: boolean
     restSeconds: number
     pdfDpi: number
     fileOptions: Record<string, { start?: number; end?: number; crop?: CropRect }>
   }>({
     formats: ['md'],
-    imageAsPdf: false,
     enableFigure: false,
-    useGpu: false,
-    mode: 'lite',
     docxEngine: 'python',
     excelMode: 'layout',
     excelMetaSheet: true,
-    excelSymbolFallback: true,
-    chunkSize: 10,
     enableRest: true,
     restSeconds: 5,
     pdfDpi: 150,
@@ -109,15 +99,10 @@ function App() {
         setOptions((prev) => ({
           ...prev,
           formats: s.formats,
-          imageAsPdf: s.imageAsPdf,
           enableFigure: s.enableFigure,
-          useGpu: Boolean(s.useGpu),
-          mode: s.mode ?? 'lite',
           docxEngine: s.docxEngine ?? 'python',
           excelMode: s.excelMode ?? 'layout',
           excelMetaSheet: s.excelMetaSheet ?? true,
-          excelSymbolFallback: s.excelSymbolFallback ?? true,
-          chunkSize: s.chunkSize ?? 10,
           enableRest: s.enableRest,
           restSeconds: s.restSeconds ?? 10,
           pdfDpi: s.pdfDpi ?? 150,
@@ -141,14 +126,9 @@ function App() {
     setOptions((prev) => ({
       ...prev,
       formats: s.formats,
-      imageAsPdf: s.imageAsPdf,
       enableFigure: s.enableFigure,
-      useGpu: Boolean(s.useGpu),
-      mode: s.mode ?? 'lite',
       excelMode: s.excelMode ?? 'layout',
       excelMetaSheet: s.excelMetaSheet ?? true,
-      excelSymbolFallback: s.excelSymbolFallback ?? true,
-      chunkSize: s.chunkSize ?? 10,
       enableRest: s.enableRest,
       restSeconds: s.restSeconds ?? 10,
       pdfDpi: s.pdfDpi ?? 150,

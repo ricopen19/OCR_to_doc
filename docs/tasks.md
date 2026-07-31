@@ -79,6 +79,13 @@ ADR-011 の保留方針を撤回。Ollama バージョンダウンで glm-ocr �
 - [ ] 環境チェック画面で Python / Poppler の NG 表示が残っている（動作はしているが表示上の問題）
 - [ ] Python プロセスの孤児化対策（AppState で PID 追跡 + 終了時 kill）
 
+## デッドコード整理・機能ギャップ修正（Ollama 移行の取りこぼし対応）
+
+- [x] Rust 側デッドコード削除。GUI から到達不能だった `run_job`（旧 Python subprocess 経路、535行）と `invoke_handler` 登録を削除。派生して orphan 化した `default_gpu_device` / `collect_output_files`、および `cargo build` が検出していた未使用の Ollama クライアントメソッド・型フィールド・関数（`with_base_url` / `chat_text` / `pull_model` / `PullRequest` / `PullProgress` / 未読フィールド群 / `pdf_to_page_images_range` / `basic_cleanup`）を削除
+  → 検証: `cargo build`（warning 17→0件）、`cargo test --lib`（19 passed, 2 ignored）で確認済み
+- [x] Phase1/Phase2 移行（YomiToku Python 版 → Ollama Rust 版）で欠落していた RunOptions の機能ギャップを解消。`crop`（per-file トリミング）を `OcrOptions` に追加し OCR 前にページ画像を実際に切り出すよう修正（`crop_page_image_to_temp`、`ui_preview.py` の `apply_crop` と同じ正規化座標仕様）。`excelMode` / `excelMetaSheet` を `export_excel_poc.py` 呼び出しに `--excel-mode` / `--meta` / `--no-meta` として渡すよう修正。YomiToku 専用で glm-ocr パイプラインには適用先がなかった `useGpu` / `imageAsPdf` / `chunkSize` / `mode`（lite/full）と、CLI 引数化されておらず渡しようがなかった `excelSymbolFallback` は型・UI ごと削除（Rust: `job.rs` / `settings.rs`、フロント: `api/runJob.ts` / `api/settings.ts` / `App.tsx` / `pages/RunJob.tsx` / `pages/Settings.tsx`）
+  → 検証: `cargo build` / `cargo test --lib`（19 passed, 2 ignored）、フロント `npx tsc --noEmit`・`npm run build` で確認済み。実機での「トリミング適用後のOCR結果」「Excel出力モード切替」の目視確認は未実施
+
 ## Unlimited OCR 表対応
 
 - [x] ハイブリッド表再OCR（Unlimited OCR の table bbox で切り出し → glm-ocr で再OCR）+ GUI トグル `enableTableReocr`（デフォルト OFF）。経緯: docs/decisions.md ADR-013
