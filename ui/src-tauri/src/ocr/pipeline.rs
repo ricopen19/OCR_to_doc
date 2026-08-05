@@ -530,6 +530,86 @@ fn encode_table_crop_for_ocr(img: image::DynamicImage) -> Result<String, String>
     Ok(BASE64.encode(buf.into_inner()))
 }
 
+/// Unlimited OCR が出力した表の生 HTML/テキストに対する内容妥当性スコア（0.0〜1.0、
+/// 高いほど信頼できる）。現状はログ出力のみに使い、実際の再OCR要否判定には使わない
+/// （閾値は実データのスコア分布を見てから決める）。
+///
+/// Unlimited OCR は正常時・異常時のどちらでも `<tr>`/`<td>` を伴わないフラットな
+/// HTML を返す仕様（docs/decisions.md ADR-013）のため、HTML の構造的健全性では
+/// 良否を判別できない。ここでは中身の文字統計とブロック反復のみを見る:
+/// - 置換文字（U+FFFD）・制御文字の混入
+/// - かな/漢字/数字/一般的な記号・A〜Z 以外の文字が占める比率（文字化けの代理指標）
+/// - 固定長チャンク単位での内容反復（暴走生成の兆候）
+///
+/// 既知の限界: 「はい」→「是い」のような、統計的には自然に見える文字の誤認識は
+/// この関数では検知できない。あくまで粗いフィルタであり、精読の代替にはならない。
+fn table_content_confidence(html: &str) -> (f32, Vec<&'static str>) {
+    let text: String = strip_html_tags(html).chars().filter(|c| !c.is_whitespace()).collect();
+    let mut reasons = Vec::new();
+
+    if text.is_empty() {
+        return (0.0, vec!["空の抽出結果"]);
+    }
+
+    let total = text.chars().count() as f32;
+
+    let replacement_count = text.chars().filter(|&c| c == '\u{FFFD}').count() as f32;
+    if replacement_count > 0.0 {
+        reasons.push("置換文字(U+FFFD)を含む");
+    }
+
+    let plausible_count = text
+        .chars()
+        .filter(|c| {
+            c.is_ascii_digit()
+                || c.is_ascii_alphabetic()
+                || matches!(*c as u32,
+                    0x3040..=0x309F // ひらがな
+                    | 0x30A0..=0x30FF // カタカナ
+                    | 0x4E00..=0x9FFF // 漢字
+                    | 0x3000..=0x303F // 日本語の句読点・記号
+                    | 0xFF00..=0xFFEF // 全角英数・記号
+                )
+        })
+        .count() as f32;
+    let garbage_ratio = 1.0 - (plausible_count / total);
+    if garbage_ratio > 0.15 {
+        reasons.push("かな/漢字/数字以外の文字比率が高い");
+    }
+
+    // 周期反復の検出（暴走生成の兆候）。改行を含まないフラットなテーブル文字列にも
+    // 適用できるよう、行ベースではなく文字ベースで見る。繰り返し単位の長さが未知な
+    // ため、複数の候補周期長で走査し、最も長く一致が続いたものを採用する。
+    let chars: Vec<char> = text.chars().collect();
+    let mut max_repeat_run = 0usize;
+    for period in [4usize, 6, 8, 10, 12, 16] {
+        if chars.len() < period * 2 {
+            continue;
+        }
+        let mut repeat_run = 0usize;
+        for i in (0..chars.len() - period).step_by(period) {
+            let a = &chars[i..i + period];
+            let b_end = (i + period * 2).min(chars.len());
+            let b = &chars[i + period..b_end];
+            if b.len() == period && a == b {
+                repeat_run += 1;
+                max_repeat_run = max_repeat_run.max(repeat_run);
+            } else {
+                repeat_run = 0;
+            }
+        }
+    }
+    if max_repeat_run >= 2 {
+        reasons.push("同一チャンクの反復（暴走生成の疑い）");
+    }
+
+    let mut score: f32 = 1.0;
+    score -= (replacement_count / total).min(1.0) * 0.6;
+    score -= garbage_ratio.min(1.0) * 0.5;
+    score -= (max_repeat_run as f32 * 0.2).min(0.6);
+    (score.clamp(0.0, 1.0), reasons)
+}
+
 /// Phase1（各ページの Unlimited OCR）で切り出し済みの表画像。Phase2 でまとめて
 /// glm-ocr に渡すことで、モデル入れ替えをページごとではなく全体で1回に集約する。
 struct PendingTable {
@@ -563,6 +643,11 @@ fn stage_table_placeholders(
     let mut result = markdown;
     let mut pending = Vec::new();
     for (idx, region) in table_regions.iter().enumerate() {
+        let (confidence, reasons) = table_content_confidence(&region.html);
+        log::info!(
+            "table[{idx}] confidence={confidence:.2} reasons={reasons:?} (ログのみ、再OCR要否には未使用)"
+        );
+
         let placeholder = format!("<!--TABLE_REOCR_{idx}-->");
         let staged = base_img.as_ref().and_then(|img| {
             let cropped = crop_table_region(img, region.bbox);
@@ -1124,6 +1209,43 @@ mod tests {
     use super::*;
 
     #[test]
+    fn table_content_confidence_scores_clean_japanese_table_high() {
+        let html = "<table><td colspan=\"2\">男性女性Q1はい4540Q1いいえ510Q2はい2827Q2いいえ2223</table>";
+        let (score, reasons) = table_content_confidence(html);
+        assert!(score > 0.8, "score={score}, reasons={reasons:?}");
+    }
+
+    #[test]
+    fn table_content_confidence_penalizes_replacement_characters() {
+        let html = "<table><td>\u{FFFD}\u{FFFD}\u{FFFD}男性女性Q1はい4540</td></table>";
+        let (score, reasons) = table_content_confidence(html);
+        assert!(score < 0.8, "score={score}");
+        assert!(reasons.contains(&"置換文字(U+FFFD)を含む"));
+    }
+
+    #[test]
+    fn table_content_confidence_penalizes_garbage_ratio() {
+        let html = "<table><td>@#$%^&*()_+-=[]{}|;:,.<>?/~`@#$%^&*()</td></table>";
+        let (score, _reasons) = table_content_confidence(html);
+        assert!(score < 0.6, "score={score}");
+    }
+
+    #[test]
+    fn table_content_confidence_penalizes_repeated_chunks() {
+        let html = "<table><td>A1通りB2通りC3通りA1通りB2通りC3通りA1通りB2通りC3通りA1通りB2通りC3通り</td></table>";
+        let (score, reasons) = table_content_confidence(html);
+        assert!(score < 0.6, "score={score}, reasons={reasons:?}");
+        assert!(reasons.contains(&"同一チャンクの反復（暴走生成の疑い）"));
+    }
+
+    #[test]
+    fn table_content_confidence_empty_extraction_scores_zero() {
+        let (score, reasons) = table_content_confidence("<table></table>");
+        assert_eq!(score, 0.0);
+        assert_eq!(reasons, vec!["空の抽出結果"]);
+    }
+
+    #[test]
     fn html_table_to_markdown_falls_back_to_flat_text_without_td() {
         let html = "<table>セル1セル2セル3</table>";
         let result = html_table_to_markdown(html);
@@ -1322,6 +1444,7 @@ mod tests {
     #[tokio::test]
     #[ignore]
     async fn reocr_pdf_manual() {
+        let _ = env_logger::builder().is_test(true).try_init();
         let pdf = std::env::var("REOCR_PDF").expect("REOCR_PDF に PDF パスを指定してください");
         let pdf = std::path::PathBuf::from(pdf);
         assert!(pdf.exists(), "PDF が存在しません: {pdf:?}");
