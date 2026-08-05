@@ -242,39 +242,92 @@ fn lines_similar(a: &str, b: &str) -> bool {
 }
 
 /// repeat_penalty 等のサンプラー対策だけでは抑えきれない暴走生成
-/// （同一・酷似した短い行が延々と繰り返される）を検知し、繰り返しが
-/// 始まった位置で応答を打ち切る安全網。
+/// （同一・酷似した行、または数行単位のブロックが延々と繰り返される）を検知し、
+/// 繰り返しが始まった位置で応答を打ち切る安全網。
+///
+/// 単一行の反復（block_len=1）だけでなく、表の行など複数行が1セットになって
+/// 周期的に反復するパターン（block_len=2..=MAX_REPEAT_BLOCK_LEN）も検知する。
+/// 各ブロック長ごとに、行の先頭位置をずらした全オフセットを試すことで、
+/// 反復の開始位置がブロック境界と揃っていないケースも見逃さない。
 fn truncate_runaway_repetition(raw: &str) -> String {
     const REPEAT_THRESHOLD: usize = 3;
+    const MAX_REPEAT_BLOCK_LEN: usize = 8;
 
     let lines: Vec<&str> = raw.lines().collect();
-    let mut prev_idx: Option<usize> = None;
-    let mut prev_line: Option<&str> = None;
-    let mut run_len = 0usize;
-    let mut run_start_idx = 0usize;
+    let non_empty: Vec<(usize, &str)> = lines
+        .iter()
+        .enumerate()
+        .filter_map(|(i, l)| {
+            let trimmed = l.trim();
+            if trimmed.is_empty() {
+                None
+            } else {
+                Some((i, trimmed))
+            }
+        })
+        .collect();
 
-    for (i, line) in lines.iter().enumerate() {
-        let trimmed = line.trim();
-        if trimmed.is_empty() {
-            continue;
-        }
-        let is_similar = prev_line.map(|p| lines_similar(p, trimmed)).unwrap_or(false);
-        if is_similar {
-            if run_len == 0 {
-                run_start_idx = prev_idx.unwrap();
-            }
-            run_len += 1;
-            if run_len >= REPEAT_THRESHOLD {
-                return lines[..run_start_idx].join("\n").trim_end().to_string();
-            }
-        } else {
-            run_len = 0;
-        }
-        prev_idx = Some(i);
-        prev_line = Some(trimmed);
+    let cut = (1..=MAX_REPEAT_BLOCK_LEN)
+        .filter_map(|block_len| detect_block_repeat_cut(&non_empty, block_len, REPEAT_THRESHOLD))
+        .min();
+
+    match cut {
+        Some(cut_idx) => lines[..cut_idx].join("\n").trim_end().to_string(),
+        None => raw.to_string(),
+    }
+}
+
+/// `non_empty`（空行を除いた (元の行番号, 行内容) の列）上で、長さ `block_len` の
+/// 連続ブロックが直前のブロックと類似する状態が `repeat_threshold` 回続いたら、
+/// 反復が始まった元の行番号を返す（打ち切り位置。この行を含めて捨てる）。
+/// ブロック長1の場合は従来の単一行判定と完全に一致する。
+fn detect_block_repeat_cut(
+    non_empty: &[(usize, &str)],
+    block_len: usize,
+    repeat_threshold: usize,
+) -> Option<usize> {
+    let n = non_empty.len();
+    if block_len == 0 || n < block_len * 2 {
+        return None;
     }
 
-    raw.to_string()
+    let block_text = |start: usize| -> String {
+        non_empty[start..start + block_len]
+            .iter()
+            .map(|&(_, s)| s)
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+
+    for offset in 0..block_len {
+        let mut prev: Option<String> = None;
+        let mut prev_start_orig_idx = 0usize;
+        let mut run_len = 0usize;
+        let mut run_start_orig_idx = 0usize;
+        let mut i = offset;
+        while i + block_len <= n {
+            let cur = block_text(i);
+            let cur_start_orig_idx = non_empty[i].0;
+            if let Some(p) = &prev {
+                if lines_similar(p, &cur) {
+                    if run_len == 0 {
+                        run_start_orig_idx = prev_start_orig_idx;
+                    }
+                    run_len += 1;
+                    if run_len >= repeat_threshold {
+                        return Some(run_start_orig_idx);
+                    }
+                } else {
+                    run_len = 0;
+                }
+            }
+            prev = Some(cur);
+            prev_start_orig_idx = cur_start_orig_idx;
+            i += block_len;
+        }
+    }
+
+    None
 }
 
 /// Unlimited OCR のトークン形式を Markdown に変換する。
@@ -1334,6 +1387,25 @@ mod tests {
     #[test]
     fn truncate_runaway_repetition_keeps_normal_text_untouched() {
         let raw = "第1段落。\n\n第2段落。\n\n第3段落。";
+        let result = truncate_runaway_repetition(raw);
+        assert_eq!(result, raw);
+    }
+
+    #[test]
+    fn truncate_runaway_repetition_cuts_multi_line_block_repetition() {
+        // reocr_pdf_manual の実機検証（yomitoku_ocr_table_sample_v1.pdf）で実際に観測した
+        // パターンを模した回帰テスト: 4行1セットの選択肢ブロックが微妙な文字化けを
+        // 伴いながら周期的に繰り返される暴走生成。
+        let raw = "問題文はここまで正常\n\nA 7人\nB 8人\nC 9人\nD 10人\nA 7人\nB 8人\nC 9人\nD10人\nA 7人\nB 8人\nC 9人\nD 10人\nA 7人\nB 8人\nC 9人\nD 10人";
+        let result = truncate_runaway_repetition(raw);
+        assert_eq!(result.trim(), "問題文はここまで正常");
+    }
+
+    #[test]
+    fn truncate_runaway_repetition_keeps_table_like_text_with_few_repeats() {
+        // 表の行が数回一致するだけの正常なケース（暴走ではない）まで誤って
+        // 切り捨てないことを確認する回帰テスト。
+        let raw = "A 7人\nB 8人\nC 9人\nD 10人\n\n次の設問はこちら\n\nE 11人\nF 12人";
         let result = truncate_runaway_repetition(raw);
         assert_eq!(result, raw);
     }
