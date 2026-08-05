@@ -47,6 +47,67 @@ fn is_unlimited_ocr_format(s: &str) -> bool {
     TOKENS.iter().any(|t| first.starts_with(t))
 }
 
+/// 行データ（セルの配列）の並びに対して、暴走生成による行の反復を検知し、
+/// 反復が始まった行番号を返す（この行を含めて捨てる）。
+///
+/// 表の再OCR（glm-ocr）が同じ行の集まりを2回出力してしまう暴走生成は、単純な
+/// 固定長ブロックを固定間隔で比較する方式では検知できないことが実機検証で
+/// 判明した（2回目の反復の前に見出し行が再掲される、区切り行が1回目にしかない
+/// など、反復の間隔が完全には揃わないため）。ここでは各行を「それより前に
+/// 出現した最初に一致する行」に対応付け、対応する過去の行番号が直前行のそれ+1と
+/// 連続する行が2行続いた時点で反復とみなす。間隔の不揃いには影響されず、かつ
+/// 同じ値を持つ行が偶然複数回現れるだけの正当なデータ（対応関係が連続しない）は
+/// 誤検知しない。
+fn find_repeating_rows_cut(rows: &[Vec<String>]) -> Option<usize> {
+    const CONSECUTIVE_TO_TRIGGER: usize = 2;
+    if rows.len() < 4 {
+        return None;
+    }
+
+    let row_text: Vec<String> = rows.iter().map(|r| r.join(" | ")).collect();
+
+    // 各行について、それより前に出現した「最初に一致する行」の番号を記録する。
+    let mut match_of: Vec<Option<usize>> = vec![None; rows.len()];
+    for i in 0..row_text.len() {
+        for j in 0..i {
+            if lines_similar(&row_text[j], &row_text[i]) {
+                match_of[i] = Some(j);
+                break;
+            }
+        }
+    }
+
+    let mut streak = 0usize;
+    let mut streak_start: Option<usize> = None;
+    for i in 0..rows.len() {
+        let continues_prev = i > 0
+            && match_of[i].is_some()
+            && match_of[i] == match_of[i - 1].map(|j| j + 1);
+
+        if continues_prev {
+            streak += 1;
+        } else if match_of[i].is_some() {
+            streak = 1;
+            streak_start = Some(i);
+        } else {
+            streak = 0;
+            streak_start = None;
+        }
+
+        if streak >= CONSECUTIVE_TO_TRIGGER {
+            return streak_start;
+        }
+    }
+
+    None
+}
+
+/// Markdown のパイプ表1行を `| a | b | c |` からセル配列 `["a","b","c"]` に分解する。
+fn parse_pipe_row(line: &str) -> Vec<String> {
+    let trimmed = line.trim().trim_start_matches('|').trim_end_matches('|');
+    trimmed.split('|').map(|c| c.trim().to_string()).collect()
+}
+
 /// HTML テーブルの <tr>/<td>/<th> を解釈して Markdown テーブル形式（複数行）に変換する。
 /// <tr> を1つも含まない不正 HTML（Unlimited OCR が稀に出力する）の場合は、
 /// 全体を単一行として扱う。
@@ -54,11 +115,15 @@ fn html_table_to_markdown(html: &str) -> String {
     let lower = html.to_ascii_lowercase();
     let row_spans = split_table_rows(html, &lower);
 
-    let rows: Vec<Vec<String>> = row_spans
+    let mut rows: Vec<Vec<String>> = row_spans
         .into_iter()
         .map(|(start, end)| extract_row_cells(&html[start..end], &lower[start..end]))
         .filter(|cells| !cells.is_empty())
         .collect();
+
+    if let Some(cut) = find_repeating_rows_cut(&rows) {
+        rows.truncate(cut);
+    }
 
     let col_count = rows.iter().map(|r| r.len()).max().unwrap_or(0);
     if rows.is_empty() || col_count == 0 {
@@ -242,92 +307,48 @@ fn lines_similar(a: &str, b: &str) -> bool {
 }
 
 /// repeat_penalty 等のサンプラー対策だけでは抑えきれない暴走生成
-/// （同一・酷似した行、または数行単位のブロックが延々と繰り返される）を検知し、
-/// 繰り返しが始まった位置で応答を打ち切る安全網。
+/// （同一・酷似した短い行が延々と繰り返される）を検知し、繰り返しが
+/// 始まった位置で応答を打ち切る安全網。
 ///
-/// 単一行の反復（block_len=1）だけでなく、表の行など複数行が1セットになって
-/// 周期的に反復するパターン（block_len=2..=MAX_REPEAT_BLOCK_LEN）も検知する。
-/// 各ブロック長ごとに、行の先頭位置をずらした全オフセットを試すことで、
-/// 反復の開始位置がブロック境界と揃っていないケースも見逃さない。
+/// 数行単位のブロック（表の行など）が周期的に反復するパターンへの拡張も
+/// 一時実装したが、実機検証（yomitoku_ocr_table_sample_v1.pdf のPage3）で、
+/// 見出し行の再掲や区切り行の有無により反復の間隔が不揃いになるケースに
+/// 対応できないことが判明し、表の行データは代わりに専用の
+/// `find_repeating_rows_cut`（行単位の対応追跡、間隔の不揃いに影響されない）
+/// で対応することにした。表以外の暴走生成に対する検証済みの実例がないまま
+/// ブロック拡張の複雑さと誤検知リスクだけを抱えるのは割に合わないため、
+/// ここでは単一行判定のみのシンプルな実装に戻している。
 fn truncate_runaway_repetition(raw: &str) -> String {
     const REPEAT_THRESHOLD: usize = 3;
-    const MAX_REPEAT_BLOCK_LEN: usize = 8;
 
     let lines: Vec<&str> = raw.lines().collect();
-    let non_empty: Vec<(usize, &str)> = lines
-        .iter()
-        .enumerate()
-        .filter_map(|(i, l)| {
-            let trimmed = l.trim();
-            if trimmed.is_empty() {
-                None
-            } else {
-                Some((i, trimmed))
-            }
-        })
-        .collect();
+    let mut prev_idx: Option<usize> = None;
+    let mut prev_line: Option<&str> = None;
+    let mut run_len = 0usize;
+    let mut run_start_idx = 0usize;
 
-    let cut = (1..=MAX_REPEAT_BLOCK_LEN)
-        .filter_map(|block_len| detect_block_repeat_cut(&non_empty, block_len, REPEAT_THRESHOLD))
-        .min();
-
-    match cut {
-        Some(cut_idx) => lines[..cut_idx].join("\n").trim_end().to_string(),
-        None => raw.to_string(),
-    }
-}
-
-/// `non_empty`（空行を除いた (元の行番号, 行内容) の列）上で、長さ `block_len` の
-/// 連続ブロックが直前のブロックと類似する状態が `repeat_threshold` 回続いたら、
-/// 反復が始まった元の行番号を返す（打ち切り位置。この行を含めて捨てる）。
-/// ブロック長1の場合は従来の単一行判定と完全に一致する。
-fn detect_block_repeat_cut(
-    non_empty: &[(usize, &str)],
-    block_len: usize,
-    repeat_threshold: usize,
-) -> Option<usize> {
-    let n = non_empty.len();
-    if block_len == 0 || n < block_len * 2 {
-        return None;
-    }
-
-    let block_text = |start: usize| -> String {
-        non_empty[start..start + block_len]
-            .iter()
-            .map(|&(_, s)| s)
-            .collect::<Vec<_>>()
-            .join("\n")
-    };
-
-    for offset in 0..block_len {
-        let mut prev: Option<String> = None;
-        let mut prev_start_orig_idx = 0usize;
-        let mut run_len = 0usize;
-        let mut run_start_orig_idx = 0usize;
-        let mut i = offset;
-        while i + block_len <= n {
-            let cur = block_text(i);
-            let cur_start_orig_idx = non_empty[i].0;
-            if let Some(p) = &prev {
-                if lines_similar(p, &cur) {
-                    if run_len == 0 {
-                        run_start_orig_idx = prev_start_orig_idx;
-                    }
-                    run_len += 1;
-                    if run_len >= repeat_threshold {
-                        return Some(run_start_orig_idx);
-                    }
-                } else {
-                    run_len = 0;
-                }
-            }
-            prev = Some(cur);
-            prev_start_orig_idx = cur_start_orig_idx;
-            i += block_len;
+    for (i, line) in lines.iter().enumerate() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
         }
+        let is_similar = prev_line.map(|p| lines_similar(p, trimmed)).unwrap_or(false);
+        if is_similar {
+            if run_len == 0 {
+                run_start_idx = prev_idx.unwrap();
+            }
+            run_len += 1;
+            if run_len >= REPEAT_THRESHOLD {
+                return lines[..run_start_idx].join("\n").trim_end().to_string();
+            }
+        } else {
+            run_len = 0;
+        }
+        prev_idx = Some(i);
+        prev_line = Some(trimmed);
     }
 
-    None
+    raw.to_string()
 }
 
 /// Unlimited OCR のトークン形式を Markdown に変換する。
@@ -487,7 +508,9 @@ fn extract_table_markdown(raw: &str) -> String {
         }
     }
     if !block.is_empty() {
-        return block.join("\n").trim().to_string();
+        let parsed_rows: Vec<Vec<String>> = block.iter().map(|l| parse_pipe_row(l)).collect();
+        let cut = find_repeating_rows_cut(&parsed_rows).unwrap_or(block.len());
+        return block[..cut].join("\n").trim().to_string();
     }
 
     // フェンスもパイプ表も見つからない場合、生 HTML の <table> が返っていることがある。
@@ -1338,6 +1361,26 @@ mod tests {
     }
 
     #[test]
+    fn html_table_to_markdown_truncates_repeated_tr_rows() {
+        // <tr> ベースの表でも、行データの反復（見出し行の再掲を挟む不揃いな
+        // 間隔）を検知して打ち切れることを確認する回帰テスト。
+        let rows = "<tr><td>部署</td><td>営業1課</td></tr>\
+<tr><td>担当</td><td>佐藤</td></tr>\
+<tr><td>状態</td><td>要確認</td></tr>\
+<tr><td>項目</td><td>値</td></tr>\
+<tr><td>部署</td><td>営業1課</td></tr>\
+<tr><td>担当</td><td>佐藤</td></tr>\
+<tr><td>状態</td><td>要確認</td></tr>";
+        let html = format!("<table>{rows}</table>");
+        let result = html_table_to_markdown(&html);
+        assert_eq!(
+            result.matches("営業1課").count(),
+            1,
+            "反復した2回目のデータ行が残っている: {result}"
+        );
+    }
+
+    #[test]
     fn html_table_to_markdown_preserves_multiple_rows() {
         let html = "<table><tr><td>A</td><td>B</td></tr><tr><td>C</td><td>D</td></tr></table>";
         let result = html_table_to_markdown(html);
@@ -1403,25 +1446,6 @@ mod tests {
     #[test]
     fn truncate_runaway_repetition_keeps_normal_text_untouched() {
         let raw = "第1段落。\n\n第2段落。\n\n第3段落。";
-        let result = truncate_runaway_repetition(raw);
-        assert_eq!(result, raw);
-    }
-
-    #[test]
-    fn truncate_runaway_repetition_cuts_multi_line_block_repetition() {
-        // reocr_pdf_manual の実機検証（yomitoku_ocr_table_sample_v1.pdf）で実際に観測した
-        // パターンを模した回帰テスト: 4行1セットの選択肢ブロックが微妙な文字化けを
-        // 伴いながら周期的に繰り返される暴走生成。
-        let raw = "問題文はここまで正常\n\nA 7人\nB 8人\nC 9人\nD 10人\nA 7人\nB 8人\nC 9人\nD10人\nA 7人\nB 8人\nC 9人\nD 10人\nA 7人\nB 8人\nC 9人\nD 10人";
-        let result = truncate_runaway_repetition(raw);
-        assert_eq!(result.trim(), "問題文はここまで正常");
-    }
-
-    #[test]
-    fn truncate_runaway_repetition_keeps_table_like_text_with_few_repeats() {
-        // 表の行が数回一致するだけの正常なケース（暴走ではない）まで誤って
-        // 切り捨てないことを確認する回帰テスト。
-        let raw = "A 7人\nB 8人\nC 9人\nD 10人\n\n次の設問はこちら\n\nE 11人\nF 12人";
         let result = truncate_runaway_repetition(raw);
         assert_eq!(result, raw);
     }
@@ -1580,6 +1604,50 @@ mod tests {
         let raw = "テーブルが見つかりません";
         let result = extract_table_markdown(raw);
         assert_eq!(result, "テーブルが見つかりません");
+    }
+
+    #[test]
+    fn extract_table_markdown_truncates_repeated_rows_despite_irregular_spacing() {
+        // reocr_pdf_manual の実機検証（yomitoku_ocr_table_sample_v1.pdf のPage3）で
+        // 実際に glm-ocr が返した内容を再現した回帰テスト: 12行の表データが2回
+        // 反復するが、1回目にしか罫線区切り行がなく、2回目の手前に見出し行が
+        // 再掲されるため、反復の間隔が完全には揃っていない。固定長ブロックの
+        // 周期比較（truncate_runaway_repetition）ではこの不揃いさに阻まれて検知
+        // できなかったため、行単位の対応追跡（find_repeating_rows_cut）で対応した。
+        let raw = "\
+| 項目 | 値 | 備考 |
+| --- | --- | --- |
+| 部署 | 営業1課 | 全角+数字 |
+| 担当 | Sato / 佐藤 | スラッシュ混在 |
+| 状態 | 要確認 | カテゴリ |
+| 判定 | &triangle; | 単発記号 |
+| 比率 | 0.5 | 小数（短い） |
+| 閾值 | 0.05 | 小数（0多め） |
+| 誤差 | ±1 | プラスマイナス |
+| コード | A_B-12 | アンダースコア+ハイフン |
+| 注記 | (仮) | 括弧 |
+| 金額 | ¥12,345 | 通貨+桁区切り |
+| 番号 | 123 | 全角数字 |
+| 期限 | 2025-12-31 | ハイフンの日付 |
+| 項目 | 値 | 備考 |
+| 部署 | 営業1課 | 全角+数字 |
+| 担当 | Sato / 佐藤 | スラッシュ混在 |
+| 状態 | 要確認 | カテゴリ |
+| 判定 | &triangle; | 単発記号 |
+| 比率 | 0.5 | 小数（短い） |
+| 閾值 | 0.05 | 小数（0多め） |
+| 誤差 | ±1 | プラスマイナス |
+| コード | A_B-12 | アンダースコア+ハイフン |
+| 注記事 | (仮) | 括弧 |
+| 金額 | ¥12,345 | 通貨+桁区切り |
+| 番号 | 123 | 全角数字 |
+| 期限 | 2025-12-31 | ハイフンの日付 |";
+        let result = extract_table_markdown(raw);
+        assert_eq!(
+            result.matches("営業1課").count(),
+            1,
+            "反復した2回目のデータ行群が残っている: {result}"
+        );
     }
 
     /// equation/repeat_penalty 修正の動作確認用の使い捨て統合テスト。
