@@ -46,10 +46,65 @@ fn is_unlimited_ocr_format(s: &str) -> bool {
     TOKENS.iter().any(|t| first.starts_with(t))
 }
 
-/// HTML テーブルの <td>/<th> テキストを抽出して Markdown テーブル形式に変換する。
-/// モデルが <tr> を省略した不正 HTML を出力する場合でも全セルを 1 行として扱う。
+/// HTML テーブルの <tr>/<td>/<th> を解釈して Markdown テーブル形式（複数行）に変換する。
+/// <tr> を1つも含まない不正 HTML（Unlimited OCR が稀に出力する）の場合は、
+/// 全体を単一行として扱う。
 fn html_table_to_markdown(html: &str) -> String {
     let lower = html.to_ascii_lowercase();
+    let row_spans = split_table_rows(html, &lower);
+
+    let rows: Vec<Vec<String>> = row_spans
+        .into_iter()
+        .map(|(start, end)| extract_row_cells(&html[start..end], &lower[start..end]))
+        .filter(|cells| !cells.is_empty())
+        .collect();
+
+    let col_count = rows.iter().map(|r| r.len()).max().unwrap_or(0);
+    if rows.is_empty() || col_count == 0 {
+        // <tr>/<td>/<th> が1つも取れない（Unlimited OCR の不正 HTML 等）場合は、
+        // 表構造を諦めて平坦テキストとして内容だけ保持する。
+        return strip_html_tags(html).trim().to_string();
+    }
+
+    let mut out = String::new();
+    for (i, row) in rows.iter().enumerate() {
+        let mut padded = row.clone();
+        padded.resize(col_count, String::new());
+        out.push_str(&format!("| {} |\n", padded.join(" | ")));
+        if i == 0 {
+            out.push_str(&format!("| {} |\n", vec!["---"; col_count].join(" | ")));
+        }
+    }
+    out.trim_end().to_string()
+}
+
+/// <tr>...</tr> の範囲（バイトオフセット）を列挙する。<tr> を1つも含まない場合は
+/// html 全体を単一行として返す（<tr> を省略する不正 HTML への既存フォールバック）。
+fn split_table_rows(html: &str, lower: &str) -> Vec<(usize, usize)> {
+    let mut spans = Vec::new();
+    let mut pos = 0;
+    while let Some(tr_start) = lower[pos..].find("<tr").map(|i| i + pos) {
+        let after_open = match html[tr_start..].find('>') {
+            Some(i) => tr_start + i + 1,
+            None => break,
+        };
+        let end = lower[after_open..]
+            .find("</tr")
+            .map(|i| after_open + i)
+            .unwrap_or(html.len());
+        spans.push((after_open, end));
+        pos = if end > after_open { end } else { after_open + 1 };
+    }
+
+    if spans.is_empty() {
+        spans.push((0, html.len()));
+    }
+    spans
+}
+
+/// 1行分の HTML 断片から <td>/<th> のテキストを順序通り抽出する。
+/// 空セルも列位置を保つために残す（詰めると後続セルが左にずれて列がずれるため）。
+fn extract_row_cells(html: &str, lower: &str) -> Vec<String> {
     let mut cells: Vec<String> = Vec::new();
     let mut pos = 0;
 
@@ -69,7 +124,7 @@ fn html_table_to_markdown(html: &str) -> String {
             None => break,
         };
 
-        // 次のセルまたは </table> を探してセル内容の終端を決める
+        // 次のセルまたは行末を探してセル内容の終端を決める
         let rest_lower = &lower[after_open..];
         let end = [
             rest_lower.find("<td"),
@@ -86,22 +141,12 @@ fn html_table_to_markdown(html: &str) -> String {
         let cell_html = &html[after_open..after_open + end];
         let cell_text = strip_html_tags(cell_html);
         let cell_text = cell_text.trim().replace('|', "｜");
-        if !cell_text.is_empty() {
-            cells.push(cell_text);
-        }
+        cells.push(cell_text);
 
         pos = after_open + end;
     }
 
-    if cells.is_empty() {
-        // <td>/<th> が1つも取れない（Unlimited OCR の不正 HTML 等）場合は、
-        // 表構造を諦めて平坦テキストとして内容だけ保持する。
-        return strip_html_tags(html).trim().to_string();
-    }
-
-    let row = format!("| {} |", cells.join(" | "));
-    let divider = format!("| {} |", vec!["---"; cells.len()].join(" | "));
-    format!("{row}\n{divider}")
+    cells
 }
 
 /// HTML タグを除去してテキストだけを返す。
@@ -926,6 +971,27 @@ mod tests {
         let html = "<table><td>A</td><td>B</td></table>";
         let result = html_table_to_markdown(html);
         assert_eq!(result, "| A | B |\n| --- | --- |");
+    }
+
+    #[test]
+    fn html_table_to_markdown_preserves_multiple_rows() {
+        let html = "<table><tr><td>A</td><td>B</td></tr><tr><td>C</td><td>D</td></tr></table>";
+        let result = html_table_to_markdown(html);
+        assert_eq!(result, "| A | B |\n| --- | --- |\n| C | D |");
+    }
+
+    #[test]
+    fn html_table_to_markdown_pads_ragged_rows_to_max_column_count() {
+        let html = "<table><tr><td>A</td><td>B</td></tr><tr><td>C</td></tr></table>";
+        let result = html_table_to_markdown(html);
+        assert_eq!(result, "| A | B |\n| --- | --- |\n| C |  |");
+    }
+
+    #[test]
+    fn html_table_to_markdown_keeps_empty_cells_to_preserve_column_alignment() {
+        let html = "<table><tr><td>A</td><td></td><td>C</td></tr></table>";
+        let result = html_table_to_markdown(html);
+        assert_eq!(result, "| A |  | C |\n| --- | --- | --- |");
     }
 
     #[test]

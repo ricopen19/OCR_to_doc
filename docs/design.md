@@ -4,6 +4,22 @@
 
 ---
 
+## 表の結合セル（rowspan/colspan）復元
+
+### 背景
+
+`html_table_to_markdown`（ui/src-tauri/src/ocr/pipeline.rs）の `<tr>` 無視バグを修正し、行構造は復元できるようになった（docs/tasks.md「Unlimited OCR 表対応」参照）。ただし glm-ocr が出力する `<td rowspan="2">` / `<td colspan="3">` 等の結合セル情報はまだ捨てられており、Excel 出力（`export_excel_poc.py`）でも結合セルは復元されない。
+
+### 検討事項（未確定）
+
+- `html_table_to_markdown` の手書き文字列サーチ方式のまま rowspan/colspan の属性パース・行またぎのセル追跡を拡張するか、`scraper`（html5ever ベース）等の HTML パーサ crate に置き換えるかを、着手時に判断する
+  - 手書き継続: 依存追加なし。ただし属性パース・複数行にまたがるセル位置の追跡はロジックが複雑になりやすい
+  - パーサ導入: 依存追加（Cargo.toml に crate 追加）が発生するが、rowspan/colspan の実装・保守は堅牢になる
+- Markdown 形式では rowspan/colspan を素直に表現できないため、中間表現（セル位置 + rowspan/colspan 情報を持つ構造体）を Rust 側で保持し、`export_excel_poc.py` の `load_tables_from_html`（既存・現状未使用）または同等のロジックに渡して `openpyxl` の `merge_cells` にマッピングする方針が有力
+- Markdown 出力（`page_*.md`）側での結合セル表現方法も要検討（例: 結合先セルを空欄のまま出力し、Excel 変換時にのみ結合情報を使う等）
+
+---
+
 ## GLM-OCR 移行設計
 
 ### 背景
