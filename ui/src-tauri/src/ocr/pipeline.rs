@@ -1,6 +1,7 @@
 use std::fs;
 use std::io::Cursor;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD as BASE64;
@@ -600,47 +601,93 @@ async fn reocr_table_image(image_base64: &str, client: &OllamaClient) -> Result<
     Ok(table_md)
 }
 
+/// 表の再OCR を同時に投げるリクエスト数の上限。
+///
+/// 実機検証（Apple Silicon + OLLAMA_MLX=1 の Ollama）では、同一モデルへの
+/// 同時リクエスト数を 3 にすると 1 に比べて大幅に遅くなった（6表で536秒 vs
+/// 5表で83秒）。単一GPU上での同時推論がリソースの奪い合いになり、真の並列化
+/// ではなくオーバーヘッドとして働いたためと考えられる。そのため既定値は 1
+/// （実質逐次実行）とする。複数GPU環境や OLLAMA_NUM_PARALLEL を明示的に
+/// 増やした環境で使う場合は、この値を上げる効果を再検証してから変更すること。
+const TABLE_REOCR_CONCURRENCY: usize = 1;
+
 /// Phase2: 保留していた表領域をまとめて glm-ocr で再OCR し、対応する page_*.md の
-/// プレースホルダを置換する。md_path ごとにまとめて読み書きする。
+/// プレースホルダを置換する。
+///
+/// 表ごとに逐次 await していた旧実装は Ollama サーバーの並列処理能力を活かせず、
+/// 表の数だけ待ち時間が線形に伸びる構造的なボトルネックだった。ここでは Ollama への
+/// リクエストのみを `TABLE_REOCR_CONCURRENCY` 件まで同時実行し、ファイルの読み込み・
+/// 置換・書き込みは全リクエストの結果が出揃ってから md_path ごとに1回だけ行う
+/// （同一ファイルへの並行読み書きによる競合を避けるため、I/O は並列化しない）。
 async fn resolve_pending_tables(
     pending_tables: &[PendingTable],
     client: &OllamaClient,
     total: u32,
     on_progress: Option<&ProgressCallback>,
 ) {
-    use std::collections::HashMap;
-    let mut by_file: HashMap<&Path, Vec<&PendingTable>> = HashMap::new();
-    for t in pending_tables {
-        by_file.entry(t.md_path.as_path()).or_default().push(t);
+    let total_tables = pending_tables.len();
+    let semaphore = Arc::new(tokio::sync::Semaphore::new(TABLE_REOCR_CONCURRENCY));
+    let mut join_set = tokio::task::JoinSet::new();
+
+    for (idx, t) in pending_tables.iter().enumerate() {
+        let sem = semaphore.clone();
+        let client = client.clone();
+        let image_base64 = t.image_base64.clone();
+        join_set.spawn(async move {
+            let _permit = sem.acquire_owned().await.expect("semaphore は閉じられない");
+            (idx, reocr_table_image(&image_base64, &client).await)
+        });
     }
 
-    let total_tables = pending_tables.len();
+    let mut replacements: Vec<Option<String>> = vec![None; total_tables];
     let mut done = 0usize;
     let mut warned = false;
 
-    for (md_path, tables) in by_file {
+    while let Some(joined) = join_set.join_next().await {
+        done += 1;
+        if let Some(cb) = &on_progress {
+            cb(total, total, &format!("表を再OCR中: {done}/{total_tables}"));
+        }
+
+        let (idx, result) = match joined {
+            Ok(pair) => pair,
+            Err(e) => {
+                log::warn!("表の再OCR タスクが失敗（平坦テキストにフォールバック）: {e}");
+                continue;
+            }
+        };
+
+        replacements[idx] = Some(match result {
+            Ok(md) => md,
+            Err(e) => {
+                log::warn!("表の再OCR失敗（平坦テキストにフォールバック）: {e}");
+                if !warned {
+                    if let Some(cb) = &on_progress {
+                        cb(total, total, "表の再OCRに失敗したため平坦テキストで出力します");
+                    }
+                    warned = true;
+                }
+                html_table_to_markdown(&pending_tables[idx].html_fallback)
+            }
+        });
+    }
+
+    use std::collections::HashMap;
+    let mut by_file: HashMap<&Path, Vec<usize>> = HashMap::new();
+    for (idx, t) in pending_tables.iter().enumerate() {
+        by_file.entry(t.md_path.as_path()).or_default().push(idx);
+    }
+
+    for (md_path, indices) in by_file {
         let Ok(mut content) = fs::read_to_string(md_path) else {
             continue;
         };
-        for t in tables {
-            done += 1;
-            if let Some(cb) = &on_progress {
-                cb(total, total, &format!("表を再OCR中: {done}/{total_tables}"));
-            }
-            let replacement = match reocr_table_image(&t.image_base64, client).await {
-                Ok(md) => md,
-                Err(e) => {
-                    log::warn!("表の再OCR失敗（平坦テキストにフォールバック）: {e}");
-                    if !warned {
-                        if let Some(cb) = &on_progress {
-                            cb(total, total, "表の再OCRに失敗したため平坦テキストで出力します");
-                        }
-                        warned = true;
-                    }
-                    html_table_to_markdown(&t.html_fallback)
-                }
-            };
-            content = content.replace(&t.placeholder, &replacement);
+        for idx in indices {
+            // タスクが JoinSet エラーで結果を返せなかった場合はプレースホルダを平坦テキストへ。
+            let replacement = replacements[idx]
+                .clone()
+                .unwrap_or_else(|| html_table_to_markdown(&pending_tables[idx].html_fallback));
+            content = content.replace(&pending_tables[idx].placeholder, &replacement);
         }
         let _ = fs::write(md_path, content);
     }

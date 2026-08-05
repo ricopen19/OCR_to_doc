@@ -105,3 +105,9 @@ ADR-011 の保留方針を撤回。Ollama バージョンダウンで glm-ocr �
   → 検証: `cargo test --lib`（22 passed, 2 ignored）、`cargo build`、フロント `npx tsc --noEmit`・`npm run build` で確認済み。実機検証: (1) `yomitoku_ocr_table_sample_v1.pdf`（文書全体は `TextBased` 判定だが全ページ `suspected_garbled_text` で `needs_ocr=true`）で `REOCR_EMBEDDED_TEXT=1` を指定しても全ページ通常OCR経路にフォールバックすることを確認、(2) `cupsfilter` で生成した英語テキストPDF（`needs_ocr=false`）で `REOCR_EMBEDDED_TEXT=1` 時に「埋め込みテキスト使用中」ログとともにOllama呼び出しなし・0.17秒で完了し、出力Markdownが元テキストと一致することを確認。GUI トグル表示・操作の目視確認は未実施
 - [ ] 「一度低品質OCRがかけられた既存の検索可能PDF」（スキャナ内蔵OCR等）のケースは、pdf-inspector の `needs_ocr` 判定（エンコード崩れ検出）では捕捉できない。文字コードとしては正しくデコードできるが認識自体が誤っている場合、現状の安全網はすり抜ける。ユーザーが明示的にトグルを選ぶ設計により実務上のリスクは緩和しているが、品質を積極的に検知する手段は未実装
   → 検証: 対応するかどうかも含め方針未確定。対応する場合は実際にそうしたPDF（スキャナのおまかせOCR済みPDF等）を用意し、既存の安全網で誤ってOCRスキップされないことを確認する
+
+## 表の再OCR 高速化（/review-loop での分析・実装）
+
+- [x] `resolve_pending_tables`（ocr/pipeline.rs）が表領域を1件ずつ逐次 `await` していた構造を、`tokio::task::JoinSet` + `Semaphore` によるリクエストの並行実行に再設計。Ollama への `chat_vision` 呼び出しのみを並行化し、md_path への読み込み・置換・書き込みは全リクエストの結果が出揃ってから1回ずつ行うことで、旧実装が持っていた「同一ファイルへの並行読み書きレースコンディション」リスクを構造ごと排除した。`OllamaClient` に `Clone` を追加（reqwest::Client は内部Arcで安価にクローン可能）
+  → 検証: `cargo test --lib`（22 passed, 2 ignored）で確認済み。実機検証（`reocr_pdf_manual`、`yomitoku_ocr_table_sample_v1.pdf`）で **並列度3は並列度1より大幅に遅い**（6表で536秒 vs 5表で83秒）ことを確認。このマシンの Ollama（`OLLAMA_MLX=1`、Apple Silicon MLXバックエンド）では同一モデルへの同時リクエストが真の並列処理にならず、GPU/メモリ資源の奪い合いで逐次実行より悪化するため、`TABLE_REOCR_CONCURRENCY` は 1（実質逐次）に設定して運用している。並列化によるI/O構造の安全性向上は活かしつつ、速度面の当初仮説（並列化で高速化）は本環境では成立しなかった
+  → 検証: 複数GPU環境やOllamaサーバーの並列度を明示的に上げた環境で `TABLE_REOCR_CONCURRENCY` を上げる効果を再検証する余地はあるが、未着手

@@ -3,6 +3,7 @@ use tokio::time::{timeout, Duration};
 
 const DEFAULT_BASE_URL: &str = "http://localhost:11434";
 
+#[derive(Clone)]
 pub struct OllamaClient {
     base_url: String,
     http: reqwest::Client,
