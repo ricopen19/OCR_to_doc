@@ -13,7 +13,7 @@ use settings::AppSettings;
 use job::{
     AppState, JobInfo, JobStatus, RunOptions, CropRect,
     RunJobResponse, ProgressResponse, ResultResponse, RecentResultEntry,
-    EnvironmentStatus, PreviewResponse,
+    EnvironmentStatus, PreviewResponse, PdfTextDetectionResponse,
 };
 use paths::{
     apply_python_env, find_uv, resolve_python_entry, resolve_python_bin,
@@ -94,6 +94,7 @@ async fn run_job_ollama(
         excel_mode: None,
         excel_meta_sheet: None,
         file_options: None,
+        use_embedded_text: false,
     });
 
     let job_id = Uuid::new_v4().to_string();
@@ -129,6 +130,7 @@ async fn run_job_ollama(
     let docx_engine = opts.docx_engine.clone();
     let excel_mode = opts.excel_mode.clone();
     let excel_meta_sheet = opts.excel_meta_sheet;
+    let use_embedded_text = opts.use_embedded_text;
     let python_bin = resolve_python_bin(&project_root);
     let project_root_clone = project_root.clone();
 
@@ -172,6 +174,7 @@ async fn run_job_ollama(
                 enable_rest,
                 rest_seconds,
                 crop,
+                use_embedded_text,
                 ..ocr::pipeline::OcrOptions::default()
             };
 
@@ -705,6 +708,24 @@ fn get_pdf_page_count(path: String) -> Result<u32, String> {
     crate::ocr::pdf_to_images::pdf_page_count(&p, None)
 }
 
+/// PDF が埋め込みテキストを持つか（OCR スキップ候補になり得るか）を高速判定する。
+/// ジョブ実行前のプレビュー用で、実際の抽出（extract_page_texts）はここでは行わない。
+#[tauri::command]
+async fn detect_pdf_text(path: String) -> Result<PdfTextDetectionResponse, String> {
+    let p = PathBuf::from(&path);
+    if !p.exists() {
+        return Err(format!("ファイルが見つかりません: {path}"));
+    }
+    tokio::task::spawn_blocking(move || crate::ocr::pdf_text::classify_pdf(&p))
+        .await
+        .map_err(|e| format!("PDF 判定タスク失敗: {e}"))?
+        .map(|c| PdfTextDetectionResponse {
+            pdf_type: c.pdf_type.to_string(),
+            confidence: c.confidence,
+            eligible: c.eligible,
+        })
+}
+
 #[tauri::command]
 async fn check_environment() -> Result<EnvironmentStatus, String> {
     environment::check_environment().await
@@ -746,7 +767,8 @@ pub fn run() {
             check_environment,
             load_settings,
             save_settings,
-            get_pdf_page_count
+            get_pdf_page_count,
+            detect_pdf_text
         ])
         .plugin(tauri_plugin_dialog::init())
         .on_window_event(|window, event| {

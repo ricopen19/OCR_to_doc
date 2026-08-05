@@ -22,7 +22,7 @@ import {
 } from '@mantine/core'
 import { IconUpload, IconPlayerPlay, IconFile, IconX, IconAlertTriangle, IconCrop, IconDeviceFloppy } from '@tabler/icons-react'
 import { useCallback, useEffect, useRef, useState, type Dispatch, type SetStateAction } from 'react'
-import { getPdfPageCount } from '../api/runJob'
+import { getPdfPageCount, detectPdfText, type PdfTextDetection } from '../api/runJob'
 import type { CropRect } from '../types/crop'
 import { CropModal } from '../components/CropModal'
 import { open } from '@tauri-apps/plugin-dialog'
@@ -70,6 +70,7 @@ export interface RunJobOptions {
     restSeconds: number
     pdfDpi: number
     fileOptions: Record<string, { start?: number; end?: number; crop?: CropRect }>
+    useEmbeddedText: boolean
 }
 
 interface RunJobProps {
@@ -120,6 +121,7 @@ export function RunJob({
         deriveDpiPreset(options.pdfDpi ?? 150)
     )
     const [pageCountMap, setPageCountMap] = useState<Record<string, number>>({})
+    const [pdfTextInfoMap, setPdfTextInfoMap] = useState<Record<string, PdfTextDetection>>({})
 
     useEffect(() => {
         setDpiPreset(deriveDpiPreset(options.pdfDpi ?? 150))
@@ -134,6 +136,20 @@ export function RunJob({
             })
         }
     }, [filePaths]) // eslint-disable-line react-hooks/exhaustive-deps
+
+    useEffect(() => {
+        const pdfs = filePaths.filter((p) => p.toLowerCase().endsWith('.pdf'))
+        for (const p of pdfs) {
+            if (p in pdfTextInfoMap) continue
+            void detectPdfText(p).then((info) => {
+                if (info != null) setPdfTextInfoMap((prev) => ({ ...prev, [p]: info }))
+            })
+        }
+    }, [filePaths]) // eslint-disable-line react-hooks/exhaustive-deps
+
+    // 選択中の PDF のいずれかが埋め込みテキストを持つ（TextBased / Mixed）場合のみ、
+    // 「埋め込みテキストを使用する」オプションを提示する。
+    const hasEligiblePdfText = Object.values(pdfTextInfoMap).some((info) => info.eligible)
 
     useEffect(() => {
         const el = logBoxRef.current
@@ -619,6 +635,17 @@ export function RunJob({
                                         <Checkbox value="csv" label="CSV" />
                                     </Group>
                                 </CheckboxGroup>
+
+                                {hasEligiblePdfText && (
+                                    <Switch
+                                        label="埋め込みテキストを使用する（OCRスキップ）"
+                                        description="選択したPDFにテキストが埋め込まれていることを検出しました。有効にすると、そのページはOCRを行わずPDF内のテキストをそのまま使用します（高速）。デフォルトはOFF（通常通りOCR）です。既存テキストの品質は保証されないため、以前スキャナ等で簡易OCR済みのPDFでは文字の誤りが残る場合があります。"
+                                        checked={options.useEmbeddedText}
+                                        onChange={(e) =>
+                                            setOptions((prev) => ({ ...prev, useEmbeddedText: e.currentTarget.checked }))
+                                        }
+                                    />
+                                )}
 
                                 <Switch
                                     label="図表抽出（YOLOv8）"

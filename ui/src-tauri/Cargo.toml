@@ -31,3 +31,4 @@ tokio = { version = "1", features = ["full"] }
 base64 = "0.22"
 image = "0.25"
 regex = "1"
+pdf-inspector = "0.1.7"

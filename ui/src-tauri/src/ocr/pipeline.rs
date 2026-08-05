@@ -683,6 +683,9 @@ pub struct OcrOptions {
     pub rest_seconds: u64,
     /// 正規化トリミング範囲（left/top/width/height, 0〜1）。ページ画像に対して適用する。
     pub crop: Option<CropRect>,
+    /// PDF に埋め込まれたテキストを（信頼できる場合に限り）そのまま使い、
+    /// 該当ページの Ollama OCR 呼び出しをスキップする。
+    pub use_embedded_text: bool,
 }
 
 impl Default for OcrOptions {
@@ -700,6 +703,7 @@ impl Default for OcrOptions {
             enable_rest: false,
             rest_seconds: 10,
             crop: None,
+            use_embedded_text: false,
         }
     }
 }
@@ -738,8 +742,82 @@ pub async fn run_ocr_pipeline(
         let total = range_end - range_start + 1;
         total_for_progress = total;
 
+        // 埋め込みテキスト使用が有効な場合、ページ単位の処理に入る前に一括抽出しておく。
+        // ページごとに毎回パースし直すと pdf-inspector のコストが人数分掛かってしまうため。
+        let embedded_texts = if options.use_embedded_text {
+            let input_path_owned = input_path.to_path_buf();
+            match tokio::task::spawn_blocking(move || super::pdf_text::extract_page_texts(&input_path_owned)).await {
+                Ok(Ok(texts)) => Some(texts),
+                Ok(Err(e)) => {
+                    log::warn!("埋め込みテキスト抽出に失敗したため通常の OCR にフォールバックします: {e}");
+                    None
+                }
+                Err(e) => {
+                    log::warn!("埋め込みテキスト抽出タスクが失敗したため通常の OCR にフォールバックします: {e}");
+                    None
+                }
+            }
+        } else {
+            None
+        };
+
         for (i, absolute_page) in (range_start..=range_end).enumerate() {
             let relative_page = (i + 1) as u32;
+
+            let use_embedded = embedded_texts.as_ref().and_then(|e| {
+                if e.needs_ocr.contains(&absolute_page) {
+                    None
+                } else {
+                    e.texts.get(&absolute_page)
+                }
+            });
+
+            if let Some(markdown) = use_embedded {
+                // 埋め込みテキストが信頼できるページは Ollama OCR を呼ばず、抽出済みテキストを使う。
+                // 図表抽出だけは必要ならページ画像を生成して従来通り実行する。
+                if let Some(cb) = &on_progress {
+                    cb(relative_page, total, &format!("埋め込みテキスト使用中: {relative_page}/{total}"));
+                }
+
+                let image_for_figures = if options.enable_figure {
+                    if let Some(cb) = &on_progress {
+                        cb(relative_page, total, &format!("PDF変換中: {relative_page}/{total}ページ"));
+                    }
+                    let raw_image_path = pdf_single_page_to_image(
+                        input_path,
+                        result_dir,
+                        options.dpi,
+                        options.poppler_path.as_deref(),
+                        absolute_page,
+                        relative_page,
+                    )?;
+                    Some(match &options.crop {
+                        Some(crop) => {
+                            let cropped = crop_page_image_to_temp(&raw_image_path, crop, result_dir)?;
+                            let _ = fs::remove_file(&raw_image_path);
+                            cropped
+                        }
+                        None => raw_image_path,
+                    })
+                } else {
+                    None
+                };
+
+                let md_path = embedded_text_to_md(
+                    markdown, image_for_figures.as_deref(), result_dir, relative_page, total, options, on_progress,
+                ).await?;
+
+                if let Some(image_path) = &image_for_figures {
+                    let _ = fs::remove_file(image_path);
+                }
+
+                md_paths.push(md_path);
+
+                if options.enable_rest && i + 1 < total as usize {
+                    tokio::time::sleep(tokio::time::Duration::from_secs(options.rest_seconds)).await;
+                }
+                continue;
+            }
 
             if let Some(cb) = &on_progress {
                 cb(relative_page, total, &format!("PDF変換中: {relative_page}/{total}ページ"));
@@ -872,40 +950,79 @@ async fn ocr_image_to_md(
     fs::write(&md_path, &markdown)
         .map_err(|e| format!("page_{page_num:03}.md 書き込み失敗: {e}"))?;
 
-    if options.enable_figure {
-        if let (Some(py_bin), Some(script)) =
-            (&options.python_bin, &options.detect_figures_script)
-        {
-            if script.exists() {
-                if let Some(cb) = &on_progress {
-                    cb(page_num, total, &format!("図表検出中: {page_num}/{total}（初回はモデルDL数分かかる場合あり）"));
-                }
-                let py_bin_c = py_bin.clone();
-                let script_c = script.clone();
-                let img_c = image_path.to_path_buf();
-                let dir_c = result_dir.to_path_buf();
-                let result = tokio::time::timeout(
-                    tokio::time::Duration::from_secs(600),
-                    tokio::task::spawn_blocking(move || {
-                        super::figure_extraction::extract_figures(
-                            &img_c, &dir_c, page_num, &py_bin_c, &script_c,
-                        )
-                    }),
-                ).await;
-                match result {
-                    Ok(Ok(Ok(fig_paths))) if !fig_paths.is_empty() => {
-                        log::info!("Page {page_num}: {} 件の図を抽出", fig_paths.len());
-                        append_figure_links(&md_path, &fig_paths);
-                    }
-                    Ok(Ok(Err(e))) => log::warn!("Page {page_num}: 図表抽出失敗（続行）: {e}"),
-                    Err(_) => log::warn!("Page {page_num}: 図表抽出タイムアウト（スキップ）"),
-                    _ => {}
-                }
-            }
-        }
-    }
+    maybe_extract_figures(image_path, result_dir, &md_path, page_num, total, options, on_progress).await;
 
     Ok((md_path, pending_tables))
+}
+
+/// `enable_figure` が有効な場合に限り、ページ画像から図表を検出して md_path に追記する。
+/// OCR 経路・埋め込みテキスト経路の両方から呼ばれる共通処理。
+async fn maybe_extract_figures(
+    image_path: &Path,
+    result_dir: &Path,
+    md_path: &Path,
+    page_num: u32,
+    total: u32,
+    options: &OcrOptions,
+    on_progress: Option<&ProgressCallback>,
+) {
+    if !options.enable_figure {
+        return;
+    }
+    let (Some(py_bin), Some(script)) = (&options.python_bin, &options.detect_figures_script) else {
+        return;
+    };
+    if !script.exists() {
+        return;
+    }
+
+    if let Some(cb) = &on_progress {
+        cb(page_num, total, &format!("図表検出中: {page_num}/{total}（初回はモデルDL数分かかる場合あり）"));
+    }
+    let py_bin_c = py_bin.clone();
+    let script_c = script.clone();
+    let img_c = image_path.to_path_buf();
+    let dir_c = result_dir.to_path_buf();
+    let result = tokio::time::timeout(
+        tokio::time::Duration::from_secs(600),
+        tokio::task::spawn_blocking(move || {
+            super::figure_extraction::extract_figures(
+                &img_c, &dir_c, page_num, &py_bin_c, &script_c,
+            )
+        }),
+    ).await;
+    match result {
+        Ok(Ok(Ok(fig_paths))) if !fig_paths.is_empty() => {
+            log::info!("Page {page_num}: {} 件の図を抽出", fig_paths.len());
+            append_figure_links(md_path, &fig_paths);
+        }
+        Ok(Ok(Err(e))) => log::warn!("Page {page_num}: 図表抽出失敗（続行）: {e}"),
+        Err(_) => log::warn!("Page {page_num}: 図表抽出タイムアウト（スキップ）"),
+        _ => {}
+    }
+}
+
+/// pdf-inspector が抽出したページ Markdown をそのまま page_###.md として書き出す。
+/// Ollama OCR は呼ばない。図表抽出用のページ画像が渡された場合のみ、それを使って
+/// 図表検出（YOLOv8x）を実行する。
+async fn embedded_text_to_md(
+    markdown: &str,
+    image_path: Option<&Path>,
+    result_dir: &Path,
+    page_num: u32,
+    total: u32,
+    options: &OcrOptions,
+    on_progress: Option<&ProgressCallback>,
+) -> Result<PathBuf, String> {
+    let md_path = result_dir.join(format!("page_{page_num:03}.md"));
+    fs::write(&md_path, markdown)
+        .map_err(|e| format!("page_{page_num:03}.md 書き込み失敗: {e}"))?;
+
+    if let Some(image_path) = image_path {
+        maybe_extract_figures(image_path, result_dir, &md_path, page_num, total, options, on_progress).await;
+    }
+
+    Ok(md_path)
 }
 
 /// OCR モデルに送る画像の長辺上限。これ以上は縮小してから送る。
@@ -1169,11 +1286,13 @@ mod tests {
         let stem = pdf.file_stem().and_then(|s| s.to_str()).unwrap_or("output").to_string();
 
         let enable_table_reocr = std::env::var("REOCR_TABLE").as_deref() != Ok("0");
+        let use_embedded_text = std::env::var("REOCR_EMBEDDED_TEXT").as_deref() == Ok("1");
         let start_page = std::env::var("REOCR_START").ok().and_then(|s| s.parse().ok());
         let end_page = std::env::var("REOCR_END").ok().and_then(|s| s.parse().ok());
         let options = OcrOptions {
             enable_figure: false,
             enable_table_reocr,
+            use_embedded_text,
             start_page,
             end_page,
             ..Default::default()

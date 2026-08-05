@@ -64,6 +64,7 @@ function App() {
     restSeconds: number
     pdfDpi: number
     fileOptions: Record<string, { start?: number; end?: number; crop?: CropRect }>
+    useEmbeddedText: boolean
   }>({
     formats: ['md'],
     enableFigure: false,
@@ -74,6 +75,7 @@ function App() {
     restSeconds: 5,
     pdfDpi: 150,
     fileOptions: {},
+    useEmbeddedText: false,
   })
 
   const closeNavConfirm = () => {

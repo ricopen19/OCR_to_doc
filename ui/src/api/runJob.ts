@@ -17,6 +17,13 @@ export type RunOptions = {
   restSeconds?: number
   pdfDpi?: number
   fileOptions?: Record<string, FileSpecificOptions>
+  useEmbeddedText?: boolean
+}
+
+export type PdfTextDetection = {
+  pdfType: 'TextBased' | 'Scanned' | 'ImageBased' | 'Mixed'
+  confidence: number
+  eligible: boolean
 }
 
 export type ProgressPayload = {
@@ -95,6 +102,16 @@ export async function getPdfPageCount(path: string): Promise<number | null> {
   if (!hasTauri) return null
   try {
     return await invoke<number>('get_pdf_page_count', { path })
+  } catch {
+    return null
+  }
+}
+
+export async function detectPdfText(path: string): Promise<PdfTextDetection | null> {
+  const hasTauri = typeof window !== 'undefined' && ('__TAURI__' in window || '__TAURI_INTERNALS__' in window)
+  if (!hasTauri) return null
+  try {
+    return await invoke<PdfTextDetection>('detect_pdf_text', { path })
   } catch {
     return null
   }

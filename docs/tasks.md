@@ -98,3 +98,10 @@ ADR-011 の保留方針を撤回。Ollama バージョンダウンで glm-ocr �
   → 検証: `cargo test --lib`（22 passed, 2 ignored、多行復元／セル数不揃いのパディング／空セル保持の新規テスト3件を含む）で確認済み。実機での glm-ocr 出力を通した動作確認は済み（`reocr_pdf_manual`、`yomitoku_ocr_table_sample_v1.pdf` で複数行テーブル復元を確認）
 - [ ] ハルシネーション対策のギャップ: `truncate_runaway_repetition` は直前1行との類似度しか見ておらず、数行単位のブロック（表の一部）が周期的に微妙な文字化けを伴いながら繰り返される暴走パターンを検知できない。`reocr_pdf_manual` の実機検証（`yomitoku_ocr_table_sample_v1.pdf`）で実際に4行ブロックが4〜5回重複する事象を確認した
   → 検証: 直前N行（ブロック単位）との類似度判定に拡張するか、出力全体に対する周期性検出を追加し、同PDFでの再検証時に重複ブロックが出力に残らないことを確認する
+
+## pdf-inspector 統合（テキストPDFのOCRスキップ）
+
+- [x] `pdf-inspector`（crates.io、MIT、純Rust・lopdf依存）を導入し、埋め込みテキストPDFでOllama OCR呼び出しをスキップできるオプションを追加。新規モジュール `ocr/pdf_text.rs`（`classify_pdf`: 文書全体の高速分類、`extract_page_texts`: ページ単位の抽出＋`needs_ocr`判定）。GUI トグル `useEmbeddedText`（デフォルト OFF、一括選択）は選択中PDFが `TextBased`/`Mixed` の場合のみ表示。ページ画像生成・図表抽出（YOLOv8x）は `enable_figure` が有効な場合のみ引き続き実行し、表抽出パイプラインとの依存関係を壊さないようにした。安全網として、pdf-inspector 側が `needs_ocr=true`（エンコード崩れ・置換文字等による garbled text 検出）と判定したページは埋め込みテキストを使わず通常の OCR にフォールバックする
+  → 検証: `cargo test --lib`（22 passed, 2 ignored）、`cargo build`、フロント `npx tsc --noEmit`・`npm run build` で確認済み。実機検証: (1) `yomitoku_ocr_table_sample_v1.pdf`（文書全体は `TextBased` 判定だが全ページ `suspected_garbled_text` で `needs_ocr=true`）で `REOCR_EMBEDDED_TEXT=1` を指定しても全ページ通常OCR経路にフォールバックすることを確認、(2) `cupsfilter` で生成した英語テキストPDF（`needs_ocr=false`）で `REOCR_EMBEDDED_TEXT=1` 時に「埋め込みテキスト使用中」ログとともにOllama呼び出しなし・0.17秒で完了し、出力Markdownが元テキストと一致することを確認。GUI トグル表示・操作の目視確認は未実施
+- [ ] 「一度低品質OCRがかけられた既存の検索可能PDF」（スキャナ内蔵OCR等）のケースは、pdf-inspector の `needs_ocr` 判定（エンコード崩れ検出）では捕捉できない。文字コードとしては正しくデコードできるが認識自体が誤っている場合、現状の安全網はすり抜ける。ユーザーが明示的にトグルを選ぶ設計により実務上のリスクは緩和しているが、品質を積極的に検知する手段は未実装
+  → 検証: 対応するかどうかも含め方針未確定。対応する場合は実際にそうしたPDF（スキャナのおまかせOCR済みPDF等）を用意し、既存の安全網で誤ってOCRスキップされないことを確認する

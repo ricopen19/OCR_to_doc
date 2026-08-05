@@ -53,6 +53,8 @@ pub struct RunOptions {
     pub excel_meta_sheet: Option<bool>,
     #[serde(default)]
     pub file_options: Option<HashMap<String, FileSpecificOptions>>,
+    #[serde(default)]
+    pub use_embedded_text: bool,
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -133,4 +135,14 @@ pub struct PreviewResponse {
     pub data_url: String,
     pub page_count: Option<u32>,
     pub page: Option<u32>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PdfTextDetectionResponse {
+    /// "TextBased" / "Scanned" / "ImageBased" / "Mixed"
+    pub pdf_type: String,
+    pub confidence: f32,
+    /// TextBased / Mixed の場合のみ true。埋め込みテキスト使用オプションを提示してよいか。
+    pub eligible: bool,
 }
