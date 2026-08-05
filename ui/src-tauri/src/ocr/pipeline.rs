@@ -1028,9 +1028,18 @@ pub async fn run_ocr_pipeline(
 
     // Phase2: 保留していた表領域をまとめて glm-ocr で再OCR する。
     // モデル入れ替えはページごとではなく、全体を通じて最大1回に集約される。
+    //
+    // Unlimited OCR の keep_alive（3分）は Phase1 終了直後にはまだ切れておらず、
+    // 明示的にアンロードしないと glm-ocr と同時にメモリへ乗ったままになる
+    // （実機で 2 モデル同時常駐によるメモリ超過・表再OCRの失敗を確認済み）。
+    // Phase2 に入る直前に Unlimited OCR を明示アンロードし、常時1モデルのみが
+    // 常駐する状態を保証する。
     if !pending_tables.is_empty() {
         let table_reocr_available = client.has_model(TABLE_OCR_MODEL).await.unwrap_or(false);
         if table_reocr_available {
+            if let Err(e) = client.unload_model(OCR_MODEL).await {
+                log::warn!("Unlimited OCR のアンロードに失敗（続行）: {e}");
+            }
             resolve_pending_tables(&pending_tables, &client, total_for_progress, on_progress).await;
         } else {
             if let Some(cb) = &on_progress {
