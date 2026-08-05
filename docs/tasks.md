@@ -95,4 +95,6 @@ ADR-011 の保留方針を撤回。Ollama バージョンダウンで glm-ocr �
 - [x] `enableTableReocr` ON 時に、ページごとの Unlimited OCR ⇔ glm-ocr モデル入れ替えで処理が実質停止する不具合の根本対策。Phase1/Phase2 方式に刷新: 全ページを Unlimited OCR のみで処理し、検出した表領域は画像を切り出して `PendingTable` として保留（`stage_table_placeholders`、Ollama 呼び出しなし）。全ページ処理後に一括で glm-ocr に切り替え、保留した表をまとめて再OCR（`resolve_pending_tables`）。モデル入れ替えはジョブ全体で最大1回に集約され、ページ単位の頻繁な入れ替えは撤廃。あわせて `truncate_thought_leak`（chain-of-thought 漏れのマーカー検出）と `presence_penalty` を追加し、ループ・ハルシネーション対策を強化。`keep_alive` は co-residency 実験（30m 延長）が不要になったため `3m` に復元
   → 検証: `cargo test --lib`（19 passed, 2 ignored）、`cargo build`（warning のみ、エラーなし）で確認済み。実機での `enableTableReocr` ON 通し実行（表を含む複数ページ）による途中停止・クラッシュなしの確認は未実施
 - [x] `html_table_to_markdown`（ocr/pipeline.rs）が `<tr>` を無視し表全体を1行に平坦化していた不具合を修正。`<tr>` ごとに行を分割して複数行 Markdown テーブルとして復元するよう書き換え。`<tr>` を含まない不正 HTML は従来通り単一行にフォールバック。行ごとのセル数が不揃いな場合は最大列数に合わせて空セルで埋める。あわせて、空セルを詰めて捨てていた既存挙動（後続セルが左にずれ列がずれる原因）をやめ、空セルも列位置として保持するよう修正。rowspan/colspan（結合セル）の復元は別タスク
-  → 検証: `cargo test --lib`（22 passed, 2 ignored、多行復元／セル数不揃いのパディング／空セル保持の新規テスト3件を含む）で確認済み。実機での glm-ocr 出力を通した動作確認は未実施
+  → 検証: `cargo test --lib`（22 passed, 2 ignored、多行復元／セル数不揃いのパディング／空セル保持の新規テスト3件を含む）で確認済み。実機での glm-ocr 出力を通した動作確認は済み（`reocr_pdf_manual`、`yomitoku_ocr_table_sample_v1.pdf` で複数行テーブル復元を確認）
+- [ ] ハルシネーション対策のギャップ: `truncate_runaway_repetition` は直前1行との類似度しか見ておらず、数行単位のブロック（表の一部）が周期的に微妙な文字化けを伴いながら繰り返される暴走パターンを検知できない。`reocr_pdf_manual` の実機検証（`yomitoku_ocr_table_sample_v1.pdf`）で実際に4行ブロックが4〜5回重複する事象を確認した
+  → 検証: 直前N行（ブロック単位）との類似度判定に拡張するか、出力全体に対する周期性検出を追加し、同PDFでの再検証時に重複ブロックが出力に残らないことを確認する
