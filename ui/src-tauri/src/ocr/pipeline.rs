@@ -672,10 +672,18 @@ struct PendingTable {
     html_fallback: String,
 }
 
+/// `table_content_confidence` がこの値以上の表は、Unlimited OCR の生HTMLが
+/// 既に信頼できるとみなし glm-ocr への再OCRをスキップする。実データ（正常表=1.00、
+/// 破綻表=0.90〜0.91）に基づく暫定値で、サンプル数が少ないため誤判定（見逃し／
+/// 過剰な再OCR）が実際にどの程度起きるかは未検証。閾値未満と判定した表・スキップ
+/// した表の両方をログに残し、後から目視で見逃しを洗い出せるようにしている。
+const TABLE_REOCR_CONFIDENCE_THRESHOLD: f32 = 0.95;
+
 /// markdown 内の `<!--TABLE_REOCR_N-->` を処理する。表クロップ画像の切り出し・
 /// エンコードは Ollama を呼ばない純粋な画像処理なので Phase1 のうちに済ませてしまい、
-/// enable_table_reocr が ON の場合は PendingTable として持ち越す（プレースホルダは
-/// markdown 内に残したまま）。OFF またはクロップ失敗時はその場で平坦テキストに解決する。
+/// enable_table_reocr が ON かつ内容妥当性スコアが閾値未満の場合のみ PendingTable
+/// として持ち越す（プレースホルダは markdown 内に残したまま）。OFF・閾値以上・
+/// クロップ失敗時はその場で平坦テキストに解決する。
 fn stage_table_placeholders(
     markdown: String,
     table_regions: Vec<TableRegion>,
@@ -697,11 +705,19 @@ fn stage_table_placeholders(
     let mut pending = Vec::new();
     for (idx, region) in table_regions.iter().enumerate() {
         let (confidence, reasons) = table_content_confidence(&region.html);
-        log::info!(
-            "table[{idx}] confidence={confidence:.2} reasons={reasons:?} (ログのみ、再OCR要否には未使用)"
-        );
-
         let placeholder = format!("<!--TABLE_REOCR_{idx}-->");
+
+        if confidence >= TABLE_REOCR_CONFIDENCE_THRESHOLD {
+            log::info!(
+                "table[{idx}] confidence={confidence:.2} reasons={reasons:?} → 再OCRをスキップ（閾値{TABLE_REOCR_CONFIDENCE_THRESHOLD:.2}以上）"
+            );
+            result = result.replace(&placeholder, &html_table_to_markdown(&region.html));
+            continue;
+        }
+
+        log::info!(
+            "table[{idx}] confidence={confidence:.2} reasons={reasons:?} → 再OCR対象（閾値{TABLE_REOCR_CONFIDENCE_THRESHOLD:.2}未満）"
+        );
         let staged = base_img.as_ref().and_then(|img| {
             let cropped = crop_table_region(img, region.bbox);
             encode_table_crop_for_ocr(cropped).ok()
@@ -1457,6 +1473,54 @@ mod tests {
             stage_table_placeholders(md, regions, img_path, md_path, false);
         assert!(pending.is_empty());
         assert!(result.contains("| A | B |"));
+    }
+
+    /// テスト用の実画像を一時ファイルに書き出す（クロップ処理が実際に走ることを
+    /// 検証するため、image::open が成功する必要がある）。
+    fn write_temp_test_image() -> PathBuf {
+        let img = image::RgbImage::new(200, 200);
+        let dest = std::env::temp_dir().join(format!("stage_table_test_{}.png", uuid::Uuid::new_v4()));
+        image::DynamicImage::ImageRgb8(img)
+            .save(&dest)
+            .expect("テスト用画像の保存に失敗");
+        dest
+    }
+
+    #[test]
+    fn stage_table_placeholders_defers_low_confidence_table_to_pending() {
+        let img_path = write_temp_test_image();
+        let md = "本文\n\n<!--TABLE_REOCR_0-->\n\n続き".to_string();
+        // 置換文字混入により confidence が閾値(0.95)を下回る表
+        let regions = vec![TableRegion {
+            bbox: (0, 0, 500, 500),
+            html: "<table><td>\u{FFFD}\u{FFFD}\u{FFFD}男性女性Q1はい4540</td></table>".to_string(),
+        }];
+        let md_path = Path::new("page_001.md");
+        let (result, pending) =
+            stage_table_placeholders(md, regions, &img_path, md_path, true);
+        let _ = fs::remove_file(&img_path);
+        assert_eq!(pending.len(), 1, "低confidenceの表はクロップ画像を再OCR保留すべき");
+        assert!(result.contains("TABLE_REOCR_0"), "保留中はプレースホルダを残すべき");
+    }
+
+    #[test]
+    fn stage_table_placeholders_skips_reocr_for_high_confidence_table_even_with_valid_image() {
+        let img_path = write_temp_test_image();
+        let md = "本文\n\n<!--TABLE_REOCR_0-->\n\n続き".to_string();
+        // クリーンな日本語表: table_content_confidence が閾値(0.95)以上になるはず
+        let regions = vec![TableRegion {
+            bbox: (0, 0, 500, 500),
+            html: "<table><td colspan=\"2\">男性女性Q1はい4540Q1いいえ510</td></table>".to_string(),
+        }];
+        let md_path = Path::new("page_001.md");
+        let (result, pending) =
+            stage_table_placeholders(md, regions, &img_path, md_path, true);
+        let _ = fs::remove_file(&img_path);
+        assert!(
+            pending.is_empty(),
+            "画像を開けても高confidenceならクロップ自体を試みず再OCRをスキップすべき"
+        );
+        assert!(!result.contains("TABLE_REOCR"));
     }
 
     #[test]
