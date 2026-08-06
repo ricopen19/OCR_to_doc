@@ -194,6 +194,65 @@ fn detect_block_repeat_cut(
     earliest_cut
 }
 
+/// glm-ocr はページ全体のOCR結果を一度出力した後、``` フェンスに包んで内容を
+/// もう一度出力し直すことがある（表クロップの再OCRで確認されていた「プレーン
+/// 出力→```table フェンス付き再出力」の癖が、ページ全体の出力でも起きる）。
+/// 実機データ（`1周間SPI_模擬4.pdf`）で、フェンス内の再出力は単なる重複ではなく、
+/// 誤字・意味不明な単語の混入・フェンスが閉じないまま出力が終わるなど、後半に
+/// いくほど劣化する「劣化する再生成」であることを確認した。そのためフェンス内の
+/// 内容がそれ以前の本文と大部分一致する場合は、健全な前半（フェンス開始位置より
+/// 前）を残し、フェンス以降をまるごと捨てる。
+///
+/// 既知の限界: フェンスを手がかりに検出しているため、フェンスを伴わない同様の
+/// 重複再生成が起きた場合は検知できない。現時点ではその実例は確認していない。
+fn truncate_duplicate_reemission(raw: &str) -> String {
+    const MATCH_RATIO_THRESHOLD: f64 = 0.5;
+
+    let lines: Vec<&str> = raw.lines().collect();
+
+    for (i, line) in lines.iter().enumerate() {
+        if !line.trim().starts_with("```") {
+            continue;
+        }
+
+        let before: Vec<&str> = lines[..i]
+            .iter()
+            .map(|l| l.trim())
+            .filter(|l| !l.is_empty())
+            .collect();
+        if before.is_empty() {
+            continue;
+        }
+
+        // フェンスの中身（閉じフェンスが見つからなければ末尾まで）を集める。
+        let close_offset = lines[i + 1..]
+            .iter()
+            .position(|l| l.trim() == "```")
+            .map(|p| i + 1 + p)
+            .unwrap_or(lines.len());
+        let fenced: Vec<&str> = lines[i + 1..close_offset]
+            .iter()
+            .map(|l| l.trim())
+            .filter(|l| !l.is_empty())
+            .collect();
+        if fenced.is_empty() {
+            continue;
+        }
+
+        let matched = fenced
+            .iter()
+            .filter(|f| before.iter().any(|b| lines_similar(b, f)))
+            .count();
+        let ratio = matched as f64 / fenced.len() as f64;
+
+        if ratio >= MATCH_RATIO_THRESHOLD {
+            return lines[..i].join("\n").trim_end().to_string();
+        }
+    }
+
+    raw.to_string()
+}
+
 /// ページ画像を正規化トリミング範囲（0〜1）で切り出し、dest_dir に一時 PNG として保存する。
 /// 座標変換は ui_preview.py の apply_crop と同じ仕様（クランプ→ピクセル丸め）。
 fn crop_page_image_to_temp(src: &Path, crop: &CropRect, dest_dir: &Path) -> Result<PathBuf, String> {
@@ -474,6 +533,7 @@ async fn ocr_image_to_md(
         .await?;
     let raw_ocr = truncate_thought_leak(&raw_ocr);
     let raw_ocr = truncate_runaway_repetition(&raw_ocr);
+    let raw_ocr = truncate_duplicate_reemission(&raw_ocr);
     let markdown = sanitize_math_delimiters(&raw_ocr);
 
     let md_path = result_dir.join(format!("page_{page_num:03}.md"));
@@ -683,6 +743,36 @@ G 0.2 H A〜Gのいずれでもない\n\
     fn truncate_thought_leak_keeps_normal_text_untouched() {
         let raw = "第1段落。\n\n第2段落。";
         let result = truncate_thought_leak(raw);
+        assert_eq!(result, raw);
+    }
+
+    #[test]
+    fn truncate_duplicate_reemission_cuts_at_fence_when_content_matches_earlier_text() {
+        // 実機（1周間SPI_模擬4.pdf Page3）で確認した回帰テスト。ページ全体を
+        // OCRした後、```markdown フェンスに包んで内容をもう一度出力し直す
+        // （後半は誤字混入で劣化している）。
+        let raw = "問題\n\n\
+X、Y、Zの3人が集まった。Xが2000円の食事を、Yが1450円のスイーツを買った。\n\
+A 550円 B 600円 C 650円\n\
+```markdown\n\n\
+問題\n\n\
+X、Y、Zの3人が集まった。Xが2000円の食事を、Yが1450円のスイーツを見い買った。\n\
+A 550円 B 600円 C 650円\n\
+```";
+        let result = truncate_duplicate_reemission(raw);
+        assert_eq!(
+            result.matches("問題").count(),
+            1,
+            "フェンス内の重複再生成が残っている: {result}"
+        );
+        assert!(!result.contains("```"));
+    }
+
+    #[test]
+    fn truncate_duplicate_reemission_keeps_normal_fenced_content_untouched() {
+        // フェンスの中身が本文と無関係な場合（一致率が低い）は切り捨てない。
+        let raw = "本文の説明。\n\n```\nprint(\"hello\")\n```";
+        let result = truncate_duplicate_reemission(raw);
         assert_eq!(result, raw);
     }
 
