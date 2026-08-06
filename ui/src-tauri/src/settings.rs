@@ -11,8 +11,6 @@ pub struct AppSettings {
     #[serde(default)]
     pub enable_figure: bool,
     #[serde(default)]
-    pub enable_table_reocr: bool,
-    #[serde(default)]
     pub docx_engine: Option<String>,
     #[serde(default)]
     pub excel_mode: Option<String>,
@@ -69,7 +67,6 @@ pub fn load_settings_from_disk(
     Ok(AppSettings {
         formats: vec!["md".into()],
         enable_figure: false,
-        enable_table_reocr: false,
         docx_engine: Some("python".into()),
         excel_mode: Some("layout".into()),
         output_root: None,

@@ -1,7 +1,6 @@
 use std::fs;
 use std::io::Cursor;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD as BASE64;
@@ -15,243 +14,11 @@ use super::pdf_to_images::{
     pdf_page_count, pdf_single_page_to_image,
 };
 
-pub(crate) const OCR_MODEL: &str = "hf.co/sahilchachra/Unlimited-OCR-GGUF:Q4_K_M";
-/// 表の高精度再OCR に使うモデル（Unlimited OCR は表を <tr>/<td> なしで出力するため）。
-pub(crate) const TABLE_OCR_MODEL: &str = "glm-ocr";
-
-/// Unlimited OCR が出力した表領域。bbox はページ画像に対して 0-1000 正規化された座標。
-struct TableRegion {
-    bbox: (u32, u32, u32, u32),
-    html: String,
-}
-
-/// モデルごとの推奨プロンプトを返す。
-/// Unlimited OCR は "<image>" トークンを含む専用プロンプトが必要。
-fn ocr_prompt_for(model: &str) -> &'static str {
-    if model.contains("Unlimited-OCR") {
-        "<image>document parsing."
-    } else {
-        "OCR"
-    }
-}
-
-/// 出力が Unlimited OCR のトークン形式（座標付き構造体）かを判定する。
-/// 先頭の非空行が "title [" / "text [" 等で始まる場合に true を返す。
-fn is_unlimited_ocr_format(s: &str) -> bool {
-    const TOKENS: &[&str] = &[
-        "title [", "text [", "table [", "header [", "section_header [",
-        "footer [", "page_number [", "caption [", "figure [",
-        "aside_text [", "list_item [", "image [",
-    ];
-    let first = s.lines().find(|l| !l.trim().is_empty()).unwrap_or("");
-    TOKENS.iter().any(|t| first.starts_with(t))
-}
-
-/// 行データ（セルの配列）の並びに対して、暴走生成による行の反復を検知し、
-/// 反復が始まった行番号を返す（この行を含めて捨てる）。
-///
-/// 表の再OCR（glm-ocr）が同じ行の集まりを2回出力してしまう暴走生成は、単純な
-/// 固定長ブロックを固定間隔で比較する方式では検知できないことが実機検証で
-/// 判明した（2回目の反復の前に見出し行が再掲される、区切り行が1回目にしかない
-/// など、反復の間隔が完全には揃わないため）。ここでは各行を「それより前に
-/// 出現した最初に一致する行」に対応付け、対応する過去の行番号が直前行のそれ+1と
-/// 連続する行が2行続いた時点で反復とみなす。間隔の不揃いには影響されず、かつ
-/// 同じ値を持つ行が偶然複数回現れるだけの正当なデータ（対応関係が連続しない）は
-/// 誤検知しない。
-fn find_repeating_rows_cut(rows: &[Vec<String>]) -> Option<usize> {
-    const CONSECUTIVE_TO_TRIGGER: usize = 2;
-    if rows.len() < 4 {
-        return None;
-    }
-
-    let row_text: Vec<String> = rows.iter().map(|r| r.join(" | ")).collect();
-
-    // 各行について、それより前に出現した「最初に一致する行」の番号を記録する。
-    let mut match_of: Vec<Option<usize>> = vec![None; rows.len()];
-    for i in 0..row_text.len() {
-        for j in 0..i {
-            if lines_similar(&row_text[j], &row_text[i]) {
-                match_of[i] = Some(j);
-                break;
-            }
-        }
-    }
-
-    let mut streak = 0usize;
-    let mut streak_start: Option<usize> = None;
-    for i in 0..rows.len() {
-        let continues_prev = i > 0
-            && match_of[i].is_some()
-            && match_of[i] == match_of[i - 1].map(|j| j + 1);
-
-        if continues_prev {
-            streak += 1;
-        } else if match_of[i].is_some() {
-            streak = 1;
-            streak_start = Some(i);
-        } else {
-            streak = 0;
-            streak_start = None;
-        }
-
-        if streak >= CONSECUTIVE_TO_TRIGGER {
-            return streak_start;
-        }
-    }
-
-    None
-}
-
-/// Markdown のパイプ表1行を `| a | b | c |` からセル配列 `["a","b","c"]` に分解する。
-fn parse_pipe_row(line: &str) -> Vec<String> {
-    let trimmed = line.trim().trim_start_matches('|').trim_end_matches('|');
-    trimmed.split('|').map(|c| c.trim().to_string()).collect()
-}
-
-/// HTML テーブルの <tr>/<td>/<th> を解釈して Markdown テーブル形式（複数行）に変換する。
-/// <tr> を1つも含まない不正 HTML（Unlimited OCR が稀に出力する）の場合は、
-/// 全体を単一行として扱う。
-fn html_table_to_markdown(html: &str) -> String {
-    let lower = html.to_ascii_lowercase();
-    let row_spans = split_table_rows(html, &lower);
-
-    let mut rows: Vec<Vec<String>> = row_spans
-        .into_iter()
-        .map(|(start, end)| extract_row_cells(&html[start..end], &lower[start..end]))
-        .filter(|cells| !cells.is_empty())
-        .collect();
-
-    if let Some(cut) = find_repeating_rows_cut(&rows) {
-        rows.truncate(cut);
-    }
-
-    let col_count = rows.iter().map(|r| r.len()).max().unwrap_or(0);
-    if rows.is_empty() || col_count == 0 {
-        // <tr>/<td>/<th> が1つも取れない（Unlimited OCR の不正 HTML 等）場合は、
-        // 表構造を諦めて平坦テキストとして内容だけ保持する。
-        return strip_html_tags(html).trim().to_string();
-    }
-
-    let mut out = String::new();
-    for (i, row) in rows.iter().enumerate() {
-        let mut padded = row.clone();
-        padded.resize(col_count, String::new());
-        out.push_str(&format!("| {} |\n", padded.join(" | ")));
-        if i == 0 {
-            out.push_str(&format!("| {} |\n", vec!["---"; col_count].join(" | ")));
-        }
-    }
-    out.trim_end().to_string()
-}
-
-/// <tr>...</tr> の範囲（バイトオフセット）を列挙する。<tr> を1つも含まない場合は
-/// html 全体を単一行として返す（<tr> を省略する不正 HTML への既存フォールバック）。
-fn split_table_rows(html: &str, lower: &str) -> Vec<(usize, usize)> {
-    let mut spans = Vec::new();
-    let mut pos = 0;
-    while let Some(tr_start) = lower[pos..].find("<tr").map(|i| i + pos) {
-        let after_open = match html[tr_start..].find('>') {
-            Some(i) => tr_start + i + 1,
-            None => break,
-        };
-        let end = lower[after_open..]
-            .find("</tr")
-            .map(|i| after_open + i)
-            .unwrap_or(html.len());
-        spans.push((after_open, end));
-        pos = if end > after_open { end } else { after_open + 1 };
-    }
-
-    if spans.is_empty() {
-        spans.push((0, html.len()));
-    }
-    spans
-}
-
-/// 1行分の HTML 断片から <td>/<th> のテキストを順序通り抽出する。
-/// 空セルも列位置を保つために残す（詰めると後続セルが左にずれて列がずれるため）。
-fn extract_row_cells(html: &str, lower: &str) -> Vec<String> {
-    let mut cells: Vec<String> = Vec::new();
-    let mut pos = 0;
-
-    loop {
-        let td = lower[pos..].find("<td").map(|i| i + pos);
-        let th = lower[pos..].find("<th").map(|i| i + pos);
-        let tag_start = match (td, th) {
-            (Some(a), Some(b)) => Some(a.min(b)),
-            (Some(a), None) | (None, Some(a)) => Some(a),
-            (None, None) => break,
-        };
-        let tag_start = tag_start.unwrap();
-
-        // 開始タグの > を探す
-        let after_open = match html[tag_start..].find('>') {
-            Some(i) => tag_start + i + 1,
-            None => break,
-        };
-
-        // 次のセルまたは行末を探してセル内容の終端を決める
-        let rest_lower = &lower[after_open..];
-        let end = [
-            rest_lower.find("<td"),
-            rest_lower.find("<th"),
-            rest_lower.find("</td"),
-            rest_lower.find("</th"),
-            rest_lower.find("</table"),
-        ]
-        .into_iter()
-        .flatten()
-        .min()
-        .unwrap_or(rest_lower.len());
-
-        let cell_html = &html[after_open..after_open + end];
-        let cell_text = strip_html_tags(cell_html);
-        let cell_text = cell_text.trim().replace('|', "｜");
-        cells.push(cell_text);
-
-        pos = after_open + end;
-    }
-
-    cells
-}
-
-/// HTML タグを除去してテキストだけを返す。
-fn strip_html_tags(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    let mut in_tag = false;
-    for c in s.chars() {
-        match c {
-            '<' => in_tag = true,
-            '>' => in_tag = false,
-            _ if !in_tag => out.push(c),
-            _ => {}
-        }
-    }
-    out
-}
-
-/// "[x1, y1, x2, y2]..." 形式の先頭から bbox の4値を読み取る。
-/// 形式が崩れている（'[' がない・値が4つでない等）場合は None。
-fn parse_table_bbox(rest: &str) -> Option<(u32, u32, u32, u32)> {
-    if !rest.starts_with('[') {
-        return None;
-    }
-    let end = rest.find(']')?;
-    let inner = &rest[1..end];
-    let parts: Vec<f64> = inner
-        .split(',')
-        .filter_map(|s| s.trim().parse::<f64>().ok())
-        .collect();
-    if parts.len() != 4 {
-        return None;
-    }
-    Some((
-        parts[0].round() as u32,
-        parts[1].round() as u32,
-        parts[2].round() as u32,
-        parts[3].round() as u32,
-    ))
-}
+/// OCR に使うモデル。以前は速度優先で Unlimited-OCR-GGUF（本文）と glm-ocr（表の
+/// 再OCR）を使い分けていたが、Unlimited OCR は本文生成でも既知の暴走生成
+/// （反復ハルシネーション）を起こすことが実機検証で判明したため撤去し、
+/// 過去に安定運用できていた glm-ocr 一本構成に戻した。
+pub(crate) const OCR_MODEL: &str = "glm-ocr";
 
 /// `\( ... \)` / `\[ ... \]` を Obsidian 等のデフォルト Markdown レンダラが認識する
 /// `$ ... $` / `$$ ... $$` に変換する。Unlimited OCR は LaTeX 区切りとして
@@ -307,243 +74,124 @@ fn lines_similar(a: &str, b: &str) -> bool {
 }
 
 /// repeat_penalty 等のサンプラー対策だけでは抑えきれない暴走生成
-/// （同一・酷似した短い行が延々と繰り返される）を検知し、繰り返しが
-/// 始まった位置で応答を打ち切る安全網。
+/// （同一・酷似した行、または数行単位のブロックが延々と繰り返される）を検知し、
+/// 繰り返しが始まった位置で応答を打ち切る安全網。
 ///
-/// 数行単位のブロック（表の行など）が周期的に反復するパターンへの拡張も
-/// 一時実装したが、実機検証（yomitoku_ocr_table_sample_v1.pdf のPage3）で、
-/// 見出し行の再掲や区切り行の有無により反復の間隔が不揃いになるケースに
-/// 対応できないことが判明し、表の行データは代わりに専用の
-/// `find_repeating_rows_cut`（行単位の対応追跡、間隔の不揃いに影響されない）
-/// で対応することにした。表以外の暴走生成に対する検証済みの実例がないまま
-/// ブロック拡張の複雑さと誤検知リスクだけを抱えるのは割に合わないため、
-/// ここでは単一行判定のみのシンプルな実装に戻している。
+/// ページ全体の生テキストにも、表とは無関係に数行単位のブロックが延々と
+/// 繰り返される暴走が実際に発生することを実機データ（`1周間SPI_模擬4.pdf`）で
+/// 確認した（選択肢テキストの3行ブロックが ``` フェンスに包まれながら
+/// 数十〜100回以上反復し、途中から無関係な中国語の歴史文献名を生成するなど
+/// 完全に暴走する事例）。表の行反復には別途 `find_repeating_rows_cut`
+/// （間隔の不揃いに対応した行単位の対応追跡）を用意しているが、ページ全体の
+/// 生テキストはそこを経由しないため、こちらのブロック検知も必要。
+///
+/// 単一行の反復（block_len=1）だけでなく、複数行が1セットになって周期的に
+/// 反復するパターン（block_len=2..=MAX_REPEAT_BLOCK_LEN）も検知する。各ブロック長
+/// ごとに、行の先頭位置をずらした全オフセットを試すことで、反復の開始位置が
+/// ブロック境界と揃っていないケースも見逃さない。ブロック内の類似判定は、結合
+/// テキスト全体のbigram類似度ではなく対応する位置の行を1行ずつ比較し、全行が
+/// 一致する場合のみ「反復」と判定する（語彙の狭い短い行同士が偶然噛み合って
+/// 誤検知するのを防ぐため）。出現回数の閾値はブロック長に応じて滑らかに下げる
+/// （短い行は偶然の一致が起きやすいため4回出現を要求するが、長いブロックほど
+/// 少ない出現回数でも安全に暴走とみなせる）。
 fn truncate_runaway_repetition(raw: &str) -> String {
-    const REPEAT_THRESHOLD: usize = 3;
+    const MAX_REPEAT_BLOCK_LEN: usize = 24;
+    const MIN_REPEATED_LINES: usize = 8;
 
-    let lines: Vec<&str> = raw.lines().collect();
-    let mut prev_idx: Option<usize> = None;
-    let mut prev_line: Option<&str> = None;
-    let mut run_len = 0usize;
-    let mut run_start_idx = 0usize;
-
-    for (i, line) in lines.iter().enumerate() {
-        let trimmed = line.trim();
-        if trimmed.is_empty() {
-            continue;
-        }
-        let is_similar = prev_line.map(|p| lines_similar(p, trimmed)).unwrap_or(false);
-        if is_similar {
-            if run_len == 0 {
-                run_start_idx = prev_idx.unwrap();
-            }
-            run_len += 1;
-            if run_len >= REPEAT_THRESHOLD {
-                return lines[..run_start_idx].join("\n").trim_end().to_string();
-            }
-        } else {
-            run_len = 0;
-        }
-        prev_idx = Some(i);
-        prev_line = Some(trimmed);
+    fn required_occurrences_for(block_len: usize) -> usize {
+        let by_content_volume = MIN_REPEATED_LINES.div_ceil(block_len);
+        by_content_volume.clamp(2, 4)
     }
 
-    raw.to_string()
-}
-
-/// Unlimited OCR のトークン形式を Markdown に変換する。
-/// - title / header / section_header → 見出し
-/// - text / caption / list_item / list / page_footnote / aside_text → 本文
-/// - table → bbox が取れればプレースホルダを挿入し TableRegion として収集
-///   （呼び出し側が再OCR または平坦テキストで置換する）。bbox が取れなければ
-///   その場で平坦テキスト変換する。
-/// - footer / page_number / figure / image → スキップ
-fn unlimited_ocr_to_markdown(raw: &str) -> (String, Vec<TableRegion>) {
-    const ELEM_TYPES: &[&str] = &[
-        "title", "header", "section_header", "text", "caption", "image_caption",
-        "table", "equation", "footer", "page_number", "figure", "aside_text",
-        "list_item", "list", "page_footnote", "image",
-    ];
-
-    let mut result = String::new();
-    let mut table_regions: Vec<TableRegion> = Vec::new();
-
     let lines: Vec<&str> = raw.lines().collect();
-    let mut i = 0;
-    while i < lines.len() {
-        let line = lines[i].trim();
-        if line.is_empty() {
-            i += 1;
-            continue;
-        }
-
-        let matched = ELEM_TYPES.iter().find_map(|&t| {
-            line.strip_prefix(&format!("{t} ")).map(|rest| (t, rest))
-        });
-
-        let (elem_type, rest) = match matched {
-            Some(m) => m,
-            None => {
-                result.push_str(line);
-                result.push_str("\n\n");
-                i += 1;
-                continue;
-            }
-        };
-
-        // equation は \[ ... \] / \( ... \) の開閉が複数の生テキスト行に
-        // またがって出力されることがあるため、閉じ括弧が現れるまで後続行を
-        // 取り込んでから bbox プレフィックスを剥がして1つの数式として結合する。
-        if elem_type == "equation" {
-            let opening = if rest.starts_with('[') {
-                rest.find(']').map(|idx| rest[idx + 1..].trim_start()).unwrap_or(rest)
+    let non_empty: Vec<(usize, &str)> = lines
+        .iter()
+        .enumerate()
+        .filter_map(|(i, l)| {
+            let trimmed = l.trim();
+            if trimmed.is_empty() {
+                None
             } else {
-                rest.trim_start()
-            };
-
-            let is_closed = |s: &str| {
-                let t = s.trim_end();
-                t.ends_with("\\]") || t.ends_with("\\)")
-            };
-
-            let mut buf = String::from(opening);
-            let mut j = i + 1;
-            while !is_closed(&buf) && j < lines.len() {
-                let next = lines[j].trim();
-                if !next.is_empty() {
-                    if !buf.is_empty() {
-                        buf.push(' ');
-                    }
-                    buf.push_str(next);
-                }
-                j += 1;
+                Some((i, trimmed))
             }
+        })
+        .collect();
 
-            if !buf.trim().is_empty() {
-                result.push_str(buf.trim());
-                result.push_str("\n\n");
-            }
-            i = j;
-            continue;
-        }
+    let cut = (1..=MAX_REPEAT_BLOCK_LEN)
+        .filter_map(|block_len| {
+            let repeat_threshold = required_occurrences_for(block_len).saturating_sub(1).max(1);
+            detect_block_repeat_cut(&non_empty, block_len, repeat_threshold)
+        })
+        .min();
 
-        // "[x1, y1, x2, y2]content" → content
-        let content = if rest.starts_with('[') {
-            rest.find(']').map(|i| rest[i + 1..].trim()).unwrap_or(rest)
-        } else {
-            rest.trim()
-        };
-
-        if content.is_empty() {
-            i += 1;
-            continue;
-        }
-
-        match elem_type {
-            "title" => {
-                result.push_str("# ");
-                result.push_str(content);
-                result.push_str("\n\n");
-            }
-            "header" | "section_header" => {
-                result.push_str("## ");
-                result.push_str(content);
-                result.push_str("\n\n");
-            }
-            "text" | "caption" | "image_caption" | "list_item" | "list" | "page_footnote" => {
-                result.push_str(content);
-                result.push_str("\n\n");
-            }
-            "aside_text" => {
-                result.push_str("> ");
-                result.push_str(content);
-                result.push_str("\n\n");
-            }
-            "table" => match parse_table_bbox(rest) {
-                Some(bbox) => {
-                    let idx = table_regions.len();
-                    table_regions.push(TableRegion { bbox, html: content.to_string() });
-                    result.push_str(&format!("<!--TABLE_REOCR_{idx}-->"));
-                    result.push_str("\n\n");
-                }
-                None => {
-                    let md_table = html_table_to_markdown(content);
-                    if !md_table.is_empty() {
-                        result.push_str(&md_table);
-                        result.push_str("\n\n");
-                    }
-                }
-            },
-            // footer / page_number / figure / image はスキップ
-            _ => {}
-        }
-        i += 1;
+    match cut {
+        Some(cut_idx) => lines[..cut_idx].join("\n").trim_end().to_string(),
+        None => raw.to_string(),
     }
-
-    (result, table_regions)
 }
 
-/// glm-ocr の出力から Markdown テーブル部分だけを取り出す。
-/// glm-ocr は同じ表を「プレーン出力 → ```table フェンス付き再出力」の順で
-/// 二重に返す癖があるため、フェンス内を優先的に採用して重複を除去する。
-fn extract_table_markdown(raw: &str) -> String {
-    if let Some(start) = raw.find("```table") {
-        let after = &raw[start + "```table".len()..];
-        let fenced = match after.find("```") {
-            Some(end) => &after[..end],
-            None => after,
-        };
-        return fenced.trim().to_string();
+/// 2つの同じ長さのブロックが「反復」とみなせるかを、対応する位置の行同士を
+/// 1行ずつ比較して判定する（結合テキスト全体のbigram類似度は、語彙が狭く
+/// 共通しやすい短い行の集まりで無関係なブロック同士でも誤検知するため使わない）。
+fn blocks_similar(a: &[&str], b: &[&str]) -> bool {
+    if a.len() != b.len() || a.is_empty() {
+        return false;
     }
-
-    // フェンスがなければ最初の Markdown テーブルブロック（| 始まりの連続行）を抽出
-    let mut block: Vec<&str> = Vec::new();
-    let mut started = false;
-    for line in raw.lines() {
-        if line.trim().starts_with('|') {
-            block.push(line);
-            started = true;
-        } else if started {
-            break;
-        }
-    }
-    if !block.is_empty() {
-        let parsed_rows: Vec<Vec<String>> = block.iter().map(|l| parse_pipe_row(l)).collect();
-        let cut = find_repeating_rows_cut(&parsed_rows).unwrap_or(block.len());
-        return block[..cut].join("\n").trim().to_string();
-    }
-
-    // フェンスもパイプ表も見つからない場合、生 HTML の <table> が返っていることがある。
-    // そのまま本文に混入させず Markdown テーブルに変換してから返す。
-    let trimmed = raw.trim();
-    if trimmed.contains("<table") {
-        return html_table_to_markdown(trimmed);
-    }
-
-    trimmed.to_string()
+    a.iter().zip(b.iter()).all(|(x, y)| lines_similar(x, y))
 }
 
-/// 0-1000 正規化された bbox をページ画像から切り出す。各辺に 1%（座標値で ±10）の
-/// パディングを加え、罫線が欠けないようにする（画像端でクランプ）。
-fn crop_table_region(img: &image::DynamicImage, bbox: (u32, u32, u32, u32)) -> image::DynamicImage {
-    const PAD: u32 = 10;
-    let (width, height) = img.dimensions();
-    let (x1, y1, x2, y2) = bbox;
+/// `non_empty`（空行を除いた (元の行番号, 行内容) の列）上で、長さ `block_len` の
+/// 連続ブロックが直前のブロックと類似する状態が `repeat_threshold` 回続いたら、
+/// 反復が始まった元の行番号を返す（打ち切り位置。この行を含めて捨てる）。
+fn detect_block_repeat_cut(
+    non_empty: &[(usize, &str)],
+    block_len: usize,
+    repeat_threshold: usize,
+) -> Option<usize> {
+    let n = non_empty.len();
+    if block_len == 0 || n < block_len * 2 {
+        return None;
+    }
 
-    let px1 = x1.saturating_sub(PAD).min(1000);
-    let py1 = y1.saturating_sub(PAD).min(1000);
-    let px2 = (x2 + PAD).min(1000);
-    let py2 = (y2 + PAD).min(1000);
+    let block_slice = |start: usize| -> Vec<&str> {
+        non_empty[start..start + block_len].iter().map(|&(_, s)| s).collect()
+    };
 
-    let to_px_x = |v: u32| (v as u64 * width as u64 / 1000) as u32;
-    let to_px_y = |v: u32| (v as u64 * height as u64 / 1000) as u32;
+    // オフセットによって最初に見つかる切り捨て位置が変わりうる（境界のずれで
+    // 反復の検知が遅れることがある）ため、全オフセットを試して最も早い
+    // 切り捨て位置を採用する。
+    let mut earliest_cut: Option<usize> = None;
 
-    let crop_x1 = to_px_x(px1).min(width.saturating_sub(1));
-    let crop_y1 = to_px_y(py1).min(height.saturating_sub(1));
-    let crop_x2 = to_px_x(px2).max(crop_x1 + 1).min(width);
-    let crop_y2 = to_px_y(py2).max(crop_y1 + 1).min(height);
+    for offset in 0..block_len {
+        let mut prev: Option<Vec<&str>> = None;
+        let mut prev_start_orig_idx = 0usize;
+        let mut run_len = 0usize;
+        let mut run_start_orig_idx = 0usize;
+        let mut i = offset;
+        while i + block_len <= n {
+            let cur = block_slice(i);
+            let cur_start_orig_idx = non_empty[i].0;
+            if let Some(p) = &prev {
+                if blocks_similar(p, &cur) {
+                    if run_len == 0 {
+                        run_start_orig_idx = prev_start_orig_idx;
+                    }
+                    run_len += 1;
+                    if run_len >= repeat_threshold {
+                        earliest_cut = Some(earliest_cut.map_or(run_start_orig_idx, |c| c.min(run_start_orig_idx)));
+                        break;
+                    }
+                } else {
+                    run_len = 0;
+                }
+            }
+            prev = Some(cur);
+            prev_start_orig_idx = cur_start_orig_idx;
+            i += block_len;
+        }
+    }
 
-    img.crop_imm(crop_x1, crop_y1, crop_x2 - crop_x1, crop_y2 - crop_y1)
+    earliest_cut
 }
 
 /// ページ画像を正規化トリミング範囲（0〜1）で切り出し、dest_dir に一時 PNG として保存する。
@@ -577,318 +225,6 @@ fn crop_page_image_to_temp(src: &Path, crop: &CropRect, dest_dir: &Path) -> Resu
     Ok(dest)
 }
 
-/// glm-ocr (ViT patch_size=14) は画像の縦横が 28 の倍数でないと GGML_ASSERT で落ちるため、
-/// 表クロップ画像はこの倍数に切り下げてから送る。
-const TABLE_IMAGE_ALIGN: u32 = 28;
-
-/// 切り出した表画像を glm-ocr 向けにリサイズ・アライメントして base64 エンコードする。
-fn encode_table_crop_for_ocr(img: image::DynamicImage) -> Result<String, String> {
-    let (w, h) = img.dimensions();
-    let (mut new_w, mut new_h) = if w > MAX_IMAGE_DIMENSION || h > MAX_IMAGE_DIMENSION {
-        let scale = MAX_IMAGE_DIMENSION as f64 / w.max(h) as f64;
-        ((w as f64 * scale) as u32, (h as f64 * scale) as u32)
-    } else {
-        (w, h)
-    };
-    new_w = ((new_w / TABLE_IMAGE_ALIGN).max(1)) * TABLE_IMAGE_ALIGN;
-    new_h = ((new_h / TABLE_IMAGE_ALIGN).max(1)) * TABLE_IMAGE_ALIGN;
-
-    let resized = if new_w == w && new_h == h {
-        img
-    } else {
-        img.resize_exact(new_w, new_h, image::imageops::FilterType::Triangle)
-    };
-
-    let mut buf = Cursor::new(Vec::new());
-    resized
-        .write_to(&mut buf, image::ImageFormat::Png)
-        .map_err(|e| format!("表画像のエンコード失敗: {e}"))?;
-    Ok(BASE64.encode(buf.into_inner()))
-}
-
-/// Unlimited OCR が出力した表の生 HTML/テキストに対する内容妥当性スコア（0.0〜1.0、
-/// 高いほど信頼できる）。現状はログ出力のみに使い、実際の再OCR要否判定には使わない
-/// （閾値は実データのスコア分布を見てから決める）。
-///
-/// Unlimited OCR は正常時・異常時のどちらでも `<tr>`/`<td>` を伴わないフラットな
-/// HTML を返す仕様（docs/decisions.md ADR-013）のため、HTML の構造的健全性では
-/// 良否を判別できない。ここでは中身の文字統計とブロック反復のみを見る:
-/// - 置換文字（U+FFFD）・制御文字の混入
-/// - かな/漢字/数字/一般的な記号・A〜Z 以外の文字が占める比率（文字化けの代理指標）
-/// - 固定長チャンク単位での内容反復（暴走生成の兆候）
-///
-/// 既知の限界: 「はい」→「是い」のような、統計的には自然に見える文字の誤認識は
-/// この関数では検知できない。あくまで粗いフィルタであり、精読の代替にはならない。
-fn table_content_confidence(html: &str) -> (f32, Vec<&'static str>) {
-    let text: String = strip_html_tags(html).chars().filter(|c| !c.is_whitespace()).collect();
-    let mut reasons = Vec::new();
-
-    if text.is_empty() {
-        return (0.0, vec!["空の抽出結果"]);
-    }
-
-    let total = text.chars().count() as f32;
-
-    let replacement_count = text.chars().filter(|&c| c == '\u{FFFD}').count() as f32;
-    if replacement_count > 0.0 {
-        reasons.push("置換文字(U+FFFD)を含む");
-    }
-
-    let plausible_count = text
-        .chars()
-        .filter(|c| {
-            c.is_ascii_digit()
-                || c.is_ascii_alphabetic()
-                || matches!(*c as u32,
-                    0x3040..=0x309F // ひらがな
-                    | 0x30A0..=0x30FF // カタカナ
-                    | 0x4E00..=0x9FFF // 漢字
-                    | 0x3000..=0x303F // 日本語の句読点・記号
-                    | 0xFF00..=0xFFEF // 全角英数・記号
-                )
-        })
-        .count() as f32;
-    let garbage_ratio = 1.0 - (plausible_count / total);
-    if garbage_ratio > 0.15 {
-        reasons.push("かな/漢字/数字以外の文字比率が高い");
-    }
-
-    // 周期反復の検出（暴走生成の兆候）。改行を含まないフラットなテーブル文字列にも
-    // 適用できるよう、行ベースではなく文字ベースで見る。繰り返し単位の長さが未知な
-    // ため、複数の候補周期長で走査し、最も長く一致が続いたものを採用する。
-    let chars: Vec<char> = text.chars().collect();
-    let mut max_repeat_run = 0usize;
-    for period in [4usize, 6, 8, 10, 12, 16] {
-        if chars.len() < period * 2 {
-            continue;
-        }
-        let mut repeat_run = 0usize;
-        for i in (0..chars.len() - period).step_by(period) {
-            let a = &chars[i..i + period];
-            let b_end = (i + period * 2).min(chars.len());
-            let b = &chars[i + period..b_end];
-            if b.len() == period && a == b {
-                repeat_run += 1;
-                max_repeat_run = max_repeat_run.max(repeat_run);
-            } else {
-                repeat_run = 0;
-            }
-        }
-    }
-    if max_repeat_run >= 2 {
-        reasons.push("同一チャンクの反復（暴走生成の疑い）");
-    }
-
-    let mut score: f32 = 1.0;
-    score -= (replacement_count / total).min(1.0) * 0.6;
-    score -= garbage_ratio.min(1.0) * 0.5;
-    score -= (max_repeat_run as f32 * 0.2).min(0.6);
-    (score.clamp(0.0, 1.0), reasons)
-}
-
-/// Phase1（各ページの Unlimited OCR）で切り出し済みの表画像。Phase2 でまとめて
-/// glm-ocr に渡すことで、モデル入れ替えをページごとではなく全体で1回に集約する。
-struct PendingTable {
-    md_path: PathBuf,
-    placeholder: String,
-    image_base64: String,
-    html_fallback: String,
-}
-
-/// `table_content_confidence` がこの値以上の表は、Unlimited OCR の生HTMLが
-/// 既に信頼できるとみなし glm-ocr への再OCRをスキップする。実データ（正常表=1.00、
-/// 破綻表=0.90〜0.91）に基づく暫定値で、サンプル数が少ないため誤判定（見逃し／
-/// 過剰な再OCR）が実際にどの程度起きるかは未検証。閾値未満と判定した表・スキップ
-/// した表の両方をログに残し、後から目視で見逃しを洗い出せるようにしている。
-const TABLE_REOCR_CONFIDENCE_THRESHOLD: f32 = 0.95;
-
-/// markdown 内の `<!--TABLE_REOCR_N-->` を処理する。表クロップ画像の切り出し・
-/// エンコードは Ollama を呼ばない純粋な画像処理なので Phase1 のうちに済ませてしまい、
-/// enable_table_reocr が ON かつ内容妥当性スコアが閾値未満の場合のみ PendingTable
-/// として持ち越す（プレースホルダは markdown 内に残したまま）。OFF・閾値以上・
-/// クロップ失敗時はその場で平坦テキストに解決する。
-fn stage_table_placeholders(
-    markdown: String,
-    table_regions: Vec<TableRegion>,
-    image_path: &Path,
-    md_path: &Path,
-    enable_table_reocr: bool,
-) -> (String, Vec<PendingTable>) {
-    if table_regions.is_empty() {
-        return (markdown, Vec::new());
-    }
-
-    let base_img = if enable_table_reocr {
-        image::open(image_path).ok()
-    } else {
-        None
-    };
-
-    let mut result = markdown;
-    let mut pending = Vec::new();
-    for (idx, region) in table_regions.iter().enumerate() {
-        let (confidence, reasons) = table_content_confidence(&region.html);
-        let placeholder = format!("<!--TABLE_REOCR_{idx}-->");
-
-        if confidence >= TABLE_REOCR_CONFIDENCE_THRESHOLD {
-            log::info!(
-                "table[{idx}] confidence={confidence:.2} reasons={reasons:?} → 再OCRをスキップ（閾値{TABLE_REOCR_CONFIDENCE_THRESHOLD:.2}以上）"
-            );
-            result = result.replace(&placeholder, &html_table_to_markdown(&region.html));
-            continue;
-        }
-
-        log::info!(
-            "table[{idx}] confidence={confidence:.2} reasons={reasons:?} → 再OCR対象（閾値{TABLE_REOCR_CONFIDENCE_THRESHOLD:.2}未満）"
-        );
-        let staged = base_img.as_ref().and_then(|img| {
-            let cropped = crop_table_region(img, region.bbox);
-            encode_table_crop_for_ocr(cropped).ok()
-        });
-        match staged {
-            Some(image_base64) => pending.push(PendingTable {
-                md_path: md_path.to_path_buf(),
-                placeholder,
-                image_base64,
-                html_fallback: region.html.clone(),
-            }),
-            None => {
-                result = result.replace(&placeholder, &html_table_to_markdown(&region.html));
-            }
-        }
-    }
-    (result, pending)
-}
-
-/// 保留しておいた表クロップ画像を glm-ocr で再OCR し、Markdown テーブルを返す。
-async fn reocr_table_image(image_base64: &str, client: &OllamaClient) -> Result<String, String> {
-    let raw = tokio::time::timeout(
-        tokio::time::Duration::from_secs(300),
-        client.chat_vision(TABLE_OCR_MODEL, "OCR", image_base64),
-    )
-    .await
-    .map_err(|_| "glm-ocr 再OCR タイムアウト（300秒）".to_string())??;
-    let raw = truncate_thought_leak(&raw);
-    let raw = truncate_runaway_repetition(&raw);
-
-    let table_md = extract_table_markdown(&raw);
-    if table_md.is_empty() {
-        return Err("glm-ocr 再OCR 結果が空でした".to_string());
-    }
-    Ok(table_md)
-}
-
-/// 表の再OCR を同時に投げるリクエスト数の上限。
-///
-/// 実機検証（Apple Silicon + OLLAMA_MLX=1 の Ollama）では、同一モデルへの
-/// 同時リクエスト数を 3 にすると 1 に比べて大幅に遅くなった（6表で536秒 vs
-/// 5表で83秒）。単一GPU上での同時推論がリソースの奪い合いになり、真の並列化
-/// ではなくオーバーヘッドとして働いたためと考えられる。そのため既定値は 1
-/// （実質逐次実行）とする。複数GPU環境や OLLAMA_NUM_PARALLEL を明示的に
-/// 増やした環境で使う場合は、この値を上げる効果を再検証してから変更すること。
-const TABLE_REOCR_CONCURRENCY: usize = 1;
-
-/// Phase2: 保留していた表領域をまとめて glm-ocr で再OCR し、対応する page_*.md の
-/// プレースホルダを置換する。
-///
-/// 表ごとに逐次 await していた旧実装は Ollama サーバーの並列処理能力を活かせず、
-/// 表の数だけ待ち時間が線形に伸びる構造的なボトルネックだった。ここでは Ollama への
-/// リクエストのみを `TABLE_REOCR_CONCURRENCY` 件まで同時実行し、ファイルの読み込み・
-/// 置換・書き込みは全リクエストの結果が出揃ってから md_path ごとに1回だけ行う
-/// （同一ファイルへの並行読み書きによる競合を避けるため、I/O は並列化しない）。
-async fn resolve_pending_tables(
-    pending_tables: &[PendingTable],
-    client: &OllamaClient,
-    total: u32,
-    on_progress: Option<&ProgressCallback>,
-) {
-    let total_tables = pending_tables.len();
-    let semaphore = Arc::new(tokio::sync::Semaphore::new(TABLE_REOCR_CONCURRENCY));
-    let mut join_set = tokio::task::JoinSet::new();
-
-    for (idx, t) in pending_tables.iter().enumerate() {
-        let sem = semaphore.clone();
-        let client = client.clone();
-        let image_base64 = t.image_base64.clone();
-        join_set.spawn(async move {
-            let _permit = sem.acquire_owned().await.expect("semaphore は閉じられない");
-            (idx, reocr_table_image(&image_base64, &client).await)
-        });
-    }
-
-    let mut replacements: Vec<Option<String>> = vec![None; total_tables];
-    let mut done = 0usize;
-    let mut warned = false;
-
-    while let Some(joined) = join_set.join_next().await {
-        done += 1;
-        if let Some(cb) = &on_progress {
-            cb(total, total, &format!("表を再OCR中: {done}/{total_tables}"));
-        }
-
-        let (idx, result) = match joined {
-            Ok(pair) => pair,
-            Err(e) => {
-                log::warn!("表の再OCR タスクが失敗（平坦テキストにフォールバック）: {e}");
-                continue;
-            }
-        };
-
-        replacements[idx] = Some(match result {
-            Ok(md) => md,
-            Err(e) => {
-                log::warn!("表の再OCR失敗（平坦テキストにフォールバック）: {e}");
-                if !warned {
-                    if let Some(cb) = &on_progress {
-                        cb(total, total, "表の再OCRに失敗したため平坦テキストで出力します");
-                    }
-                    warned = true;
-                }
-                html_table_to_markdown(&pending_tables[idx].html_fallback)
-            }
-        });
-    }
-
-    use std::collections::HashMap;
-    let mut by_file: HashMap<&Path, Vec<usize>> = HashMap::new();
-    for (idx, t) in pending_tables.iter().enumerate() {
-        by_file.entry(t.md_path.as_path()).or_default().push(idx);
-    }
-
-    for (md_path, indices) in by_file {
-        let Ok(mut content) = fs::read_to_string(md_path) else {
-            continue;
-        };
-        for idx in indices {
-            // タスクが JoinSet エラーで結果を返せなかった場合はプレースホルダを平坦テキストへ。
-            let replacement = replacements[idx]
-                .clone()
-                .unwrap_or_else(|| html_table_to_markdown(&pending_tables[idx].html_fallback));
-            content = content.replace(&pending_tables[idx].placeholder, &replacement);
-        }
-        let _ = fs::write(md_path, content);
-    }
-}
-
-/// glm-ocr が利用できない場合、保留していた表を平坦テキストで解決する。
-fn flatten_pending_tables(pending_tables: &[PendingTable]) -> Result<(), String> {
-    use std::collections::HashMap;
-    let mut by_file: HashMap<&Path, Vec<&PendingTable>> = HashMap::new();
-    for t in pending_tables {
-        by_file.entry(t.md_path.as_path()).or_default().push(t);
-    }
-    for (md_path, tables) in by_file {
-        let mut content = fs::read_to_string(md_path)
-            .map_err(|e| format!("{}の読み込み失敗: {e}", md_path.display()))?;
-        for t in tables {
-            content = content.replace(&t.placeholder, &html_table_to_markdown(&t.html_fallback));
-        }
-        fs::write(md_path, content)
-            .map_err(|e| format!("{}の書き込み失敗: {e}", md_path.display()))?;
-    }
-    Ok(())
-}
-
 /// OCR 処理の進捗コールバック
 pub type ProgressCallback = Box<dyn Fn(u32, u32, &str) + Send + Sync>;
 
@@ -898,7 +234,6 @@ pub struct OcrOptions {
     pub dpi: u32,
     pub poppler_path: Option<PathBuf>,
     pub enable_figure: bool,
-    pub enable_table_reocr: bool,
     pub python_bin: Option<String>,
     pub detect_figures_script: Option<PathBuf>,
     pub start_page: Option<u32>,
@@ -919,7 +254,6 @@ impl Default for OcrOptions {
             dpi: 300,
             poppler_path: None,
             enable_figure: false,
-            enable_table_reocr: false,
             python_bin: None,
             detect_figures_script: None,
             start_page: None,
@@ -955,7 +289,6 @@ pub async fn run_ocr_pipeline(
     }
 
     let mut md_paths = Vec::new();
-    let mut pending_tables: Vec<PendingTable> = Vec::new();
     let total_for_progress;
 
     if is_pdf_file(input_path) {
@@ -1070,14 +403,13 @@ pub async fn run_ocr_pipeline(
                 cb(relative_page, total, &format!("OCR 処理中: {relative_page}/{total}"));
             }
 
-            let (md_path, mut pending) = ocr_image_to_md(
+            let md_path = ocr_image_to_md(
                 &image_path, result_dir, relative_page, total, options, &client, on_progress,
             ).await?;
 
             // ページ画像を即削除（メモリ・ディスク節約）
             let _ = fs::remove_file(&image_path);
 
-            pending_tables.append(&mut pending);
             md_paths.push(md_path);
 
             // ページ間休止（最終ページを除く）
@@ -1105,40 +437,16 @@ pub async fn run_ocr_pipeline(
         };
         let image_path = cropped_path.as_deref().unwrap_or(input_path);
 
-        let (md_path, mut pending) = ocr_image_to_md(
+        let md_path = ocr_image_to_md(
             image_path, result_dir, 1, 1, options, &client, on_progress,
         ).await?;
         if let Some(p) = &cropped_path {
             let _ = fs::remove_file(p);
         }
-        pending_tables.append(&mut pending);
         md_paths.push(md_path);
 
     } else {
         return Err(format!("未対応のファイル形式です: {}", input_path.display()));
-    }
-
-    // Phase2: 保留していた表領域をまとめて glm-ocr で再OCR する。
-    // モデル入れ替えはページごとではなく、全体を通じて最大1回に集約される。
-    //
-    // Unlimited OCR の keep_alive（3分）は Phase1 終了直後にはまだ切れておらず、
-    // 明示的にアンロードしないと glm-ocr と同時にメモリへ乗ったままになる
-    // （実機で 2 モデル同時常駐によるメモリ超過・表再OCRの失敗を確認済み）。
-    // Phase2 に入る直前に Unlimited OCR を明示アンロードし、常時1モデルのみが
-    // 常駐する状態を保証する。
-    if !pending_tables.is_empty() {
-        let table_reocr_available = client.has_model(TABLE_OCR_MODEL).await.unwrap_or(false);
-        if table_reocr_available {
-            if let Err(e) = client.unload_model(OCR_MODEL).await {
-                log::warn!("Unlimited OCR のアンロードに失敗（続行）: {e}");
-            }
-            resolve_pending_tables(&pending_tables, &client, total_for_progress, on_progress).await;
-        } else {
-            if let Some(cb) = &on_progress {
-                cb(total_for_progress, total_for_progress, "glm-ocr が見つからないため表は平坦テキストで出力します");
-            }
-            flatten_pending_tables(&pending_tables)?;
-        }
     }
 
     if let Some(cb) = on_progress {
@@ -1149,7 +457,7 @@ pub async fn run_ocr_pipeline(
 }
 
 /// 1枚の画像を OCR して page_NNN.md に保存する。表領域が見つかった場合は
-/// PendingTable として返す（この時点では glm-ocr を呼ばない）。
+/// glm-ocr が返した Markdown をそのまま page_NNN.md として書き出す。
 async fn ocr_image_to_md(
     image_path: &Path,
     result_dir: &Path,
@@ -1158,34 +466,23 @@ async fn ocr_image_to_md(
     options: &OcrOptions,
     client: &OllamaClient,
     on_progress: Option<&ProgressCallback>,
-) -> Result<(PathBuf, Vec<PendingTable>), String> {
+) -> Result<PathBuf, String> {
     let image_base64 = encode_image_for_ocr(image_path)?;
 
-    let prompt = ocr_prompt_for(&options.ocr_model);
     let raw_ocr = client
-        .chat_vision(&options.ocr_model, prompt, &image_base64)
+        .chat_vision(&options.ocr_model, "OCR", &image_base64)
         .await?;
     let raw_ocr = truncate_thought_leak(&raw_ocr);
     let raw_ocr = truncate_runaway_repetition(&raw_ocr);
+    let markdown = sanitize_math_delimiters(&raw_ocr);
 
     let md_path = result_dir.join(format!("page_{page_num:03}.md"));
-
-    let (markdown, pending_tables) = if is_unlimited_ocr_format(&raw_ocr) {
-        let (md, table_regions) = unlimited_ocr_to_markdown(&raw_ocr);
-        let (md, pending) = stage_table_placeholders(
-            md, table_regions, image_path, &md_path, options.enable_table_reocr,
-        );
-        (sanitize_math_delimiters(&md), pending)
-    } else {
-        (raw_ocr, Vec::new())
-    };
-
     fs::write(&md_path, &markdown)
         .map_err(|e| format!("page_{page_num:03}.md 書き込み失敗: {e}"))?;
 
     maybe_extract_figures(image_path, result_dir, &md_path, page_num, total, options, on_progress).await;
 
-    Ok((md_path, pending_tables))
+    Ok(md_path)
 }
 
 /// `enable_figure` が有効な場合に限り、ページ画像から図表を検出して md_path に追記する。
@@ -1310,98 +607,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn table_content_confidence_scores_clean_japanese_table_high() {
-        let html = "<table><td colspan=\"2\">男性女性Q1はい4540Q1いいえ510Q2はい2827Q2いいえ2223</table>";
-        let (score, reasons) = table_content_confidence(html);
-        assert!(score > 0.8, "score={score}, reasons={reasons:?}");
-    }
-
-    #[test]
-    fn table_content_confidence_penalizes_replacement_characters() {
-        let html = "<table><td>\u{FFFD}\u{FFFD}\u{FFFD}男性女性Q1はい4540</td></table>";
-        let (score, reasons) = table_content_confidence(html);
-        assert!(score < 0.8, "score={score}");
-        assert!(reasons.contains(&"置換文字(U+FFFD)を含む"));
-    }
-
-    #[test]
-    fn table_content_confidence_penalizes_garbage_ratio() {
-        let html = "<table><td>@#$%^&*()_+-=[]{}|;:,.<>?/~`@#$%^&*()</td></table>";
-        let (score, _reasons) = table_content_confidence(html);
-        assert!(score < 0.6, "score={score}");
-    }
-
-    #[test]
-    fn table_content_confidence_penalizes_repeated_chunks() {
-        let html = "<table><td>A1通りB2通りC3通りA1通りB2通りC3通りA1通りB2通りC3通りA1通りB2通りC3通り</td></table>";
-        let (score, reasons) = table_content_confidence(html);
-        assert!(score < 0.6, "score={score}, reasons={reasons:?}");
-        assert!(reasons.contains(&"同一チャンクの反復（暴走生成の疑い）"));
-    }
-
-    #[test]
-    fn table_content_confidence_empty_extraction_scores_zero() {
-        let (score, reasons) = table_content_confidence("<table></table>");
-        assert_eq!(score, 0.0);
-        assert_eq!(reasons, vec!["空の抽出結果"]);
-    }
-
-    #[test]
-    fn html_table_to_markdown_falls_back_to_flat_text_without_td() {
-        let html = "<table>セル1セル2セル3</table>";
-        let result = html_table_to_markdown(html);
-        assert_eq!(result, "セル1セル2セル3");
-    }
-
-    #[test]
-    fn html_table_to_markdown_still_parses_td_when_present() {
-        let html = "<table><td>A</td><td>B</td></table>";
-        let result = html_table_to_markdown(html);
-        assert_eq!(result, "| A | B |\n| --- | --- |");
-    }
-
-    #[test]
-    fn html_table_to_markdown_truncates_repeated_tr_rows() {
-        // <tr> ベースの表でも、行データの反復（見出し行の再掲を挟む不揃いな
-        // 間隔）を検知して打ち切れることを確認する回帰テスト。
-        let rows = "<tr><td>部署</td><td>営業1課</td></tr>\
-<tr><td>担当</td><td>佐藤</td></tr>\
-<tr><td>状態</td><td>要確認</td></tr>\
-<tr><td>項目</td><td>値</td></tr>\
-<tr><td>部署</td><td>営業1課</td></tr>\
-<tr><td>担当</td><td>佐藤</td></tr>\
-<tr><td>状態</td><td>要確認</td></tr>";
-        let html = format!("<table>{rows}</table>");
-        let result = html_table_to_markdown(&html);
-        assert_eq!(
-            result.matches("営業1課").count(),
-            1,
-            "反復した2回目のデータ行が残っている: {result}"
-        );
-    }
-
-    #[test]
-    fn html_table_to_markdown_preserves_multiple_rows() {
-        let html = "<table><tr><td>A</td><td>B</td></tr><tr><td>C</td><td>D</td></tr></table>";
-        let result = html_table_to_markdown(html);
-        assert_eq!(result, "| A | B |\n| --- | --- |\n| C | D |");
-    }
-
-    #[test]
-    fn html_table_to_markdown_pads_ragged_rows_to_max_column_count() {
-        let html = "<table><tr><td>A</td><td>B</td></tr><tr><td>C</td></tr></table>";
-        let result = html_table_to_markdown(html);
-        assert_eq!(result, "| A | B |\n| --- | --- |\n| C |  |");
-    }
-
-    #[test]
-    fn html_table_to_markdown_keeps_empty_cells_to_preserve_column_alignment() {
-        let html = "<table><tr><td>A</td><td></td><td>C</td></tr></table>";
-        let result = html_table_to_markdown(html);
-        assert_eq!(result, "| A |  | C |\n| --- | --- | --- |");
-    }
-
-    #[test]
     fn sanitize_math_delimiters_converts_to_dollar_syntax() {
         let text = "本文 \\( \\frac{5}{9} \\) の後に\n\n\\[ (0.4 \\times 0.6) = 0.24 \\]\n\n続き";
         let result = sanitize_math_delimiters(text);
@@ -1409,24 +614,6 @@ mod tests {
         assert!(result.contains("$$ (0.4 \\times 0.6) = 0.24 $$"));
         assert!(!result.contains("\\("));
         assert!(!result.contains("\\["));
-    }
-
-    #[test]
-    fn unlimited_ocr_to_markdown_joins_multiline_equation_and_strips_bbox() {
-        let raw = "equation [190, 639, 863, 660]\\[\n\n(0. 4 \\times 0. 6) = 0. 2 4\n\n\\]\n\ntext [1, 2, 3, 4]続きの本文";
-        let (md, regions) = unlimited_ocr_to_markdown(raw);
-        assert!(regions.is_empty());
-        assert!(!md.contains("equation ["));
-        assert!(!md.contains("639"));
-        assert!(md.contains("\\[ (0. 4 \\times 0. 6) = 0. 2 4 \\]"));
-        assert!(md.contains("続きの本文"));
-    }
-
-    #[test]
-    fn unlimited_ocr_to_markdown_handles_single_line_equation() {
-        let raw = "equation [1, 2, 3, 4]\\( x = 1 \\)";
-        let (md, _regions) = unlimited_ocr_to_markdown(raw);
-        assert_eq!(md.trim(), "\\( x = 1 \\)");
     }
 
     #[test]
@@ -1451,6 +638,38 @@ mod tests {
     }
 
     #[test]
+    fn truncate_runaway_repetition_cuts_non_table_block_runaway() {
+        // 実機（1周間SPI_模擬4.pdf）で実際に発生した暴走生成の回帰テスト。
+        // 表とは無関係な、ページ本文中の選択肢テキスト（3行1セット）が
+        // ```フェンスに包まれながら周期的に繰り返される。
+        let raw = "(1) ある2日間で、初日が雨で、次の日が雨でない確率はいくらか。\n\n\
+A 0.16 B 0.36 C 0.56\n\
+D 0.48 E 0.24 F 0.1\n\
+G 0.2 H A～Gのいずれでもない\n\n\
+```markdown\n\n\
+A 0.16 B 0.36 C 0.56\n\
+D 0.48 E 0.24 F 0.1\n\
+G 0.2 H A〜Gのいずれでもない\n\
+```\n\
+```\n\
+A 0.16 B 0.36 C 0.56\n\
+D 0.48 E 0.24 F 0.1\n\
+G 0.2 H A〜Gのいずれでもない\n\
+```\n\
+```\n\
+A 0.16 B 0.36 C 0.56\n\
+D 0.48 E 0.24 F 0.1\n\
+G 0.2 H A〜Gのいずれでもない\n\
+```";
+        let result = truncate_runaway_repetition(raw);
+        assert_eq!(
+            result.matches("A 0.16 B 0.36 C 0.56").count(),
+            1,
+            "反復した2回目以降のブロックが残っている: {result}"
+        );
+    }
+
+    #[test]
     fn truncate_thought_leak_cuts_at_first_marker() {
         let raw = "B：小誌では，小謡家の成型申告中しないでも人知れず落している。\n\nOkay, I'm ready.\n```\n\nFinal transcription:\n\nB：小誌では、...";
         let result = truncate_thought_leak(raw);
@@ -1467,191 +686,7 @@ mod tests {
         assert_eq!(result, raw);
     }
 
-    #[test]
-    fn stage_table_placeholders_defers_to_pending_when_enabled() {
-        let md = "本文\n\n<!--TABLE_REOCR_0-->\n\n続き".to_string();
-        let regions = vec![TableRegion {
-            bbox: (0, 0, 10, 10),
-            html: "<table><td>A</td></table>".to_string(),
-        }];
-        let img_path = Path::new("this_file_does_not_exist.png");
-        let md_path = Path::new("page_001.md");
-        let (result, pending) =
-            stage_table_placeholders(md, regions, img_path, md_path, true);
-        // 画像が開けないので pending には積まれず、その場で平坦テキストに解決される
-        assert!(pending.is_empty());
-        assert!(!result.contains("TABLE_REOCR"));
-        assert!(result.contains('A'));
-    }
-
-    #[test]
-    fn stage_table_placeholders_flattens_immediately_when_disabled() {
-        let md = "本文\n\n<!--TABLE_REOCR_0-->".to_string();
-        let regions = vec![TableRegion {
-            bbox: (0, 0, 10, 10),
-            html: "<table><td>A</td><td>B</td></table>".to_string(),
-        }];
-        let img_path = Path::new("irrelevant.png");
-        let md_path = Path::new("page_001.md");
-        let (result, pending) =
-            stage_table_placeholders(md, regions, img_path, md_path, false);
-        assert!(pending.is_empty());
-        assert!(result.contains("| A | B |"));
-    }
-
-    /// テスト用の実画像を一時ファイルに書き出す（クロップ処理が実際に走ることを
-    /// 検証するため、image::open が成功する必要がある）。
-    fn write_temp_test_image() -> PathBuf {
-        let img = image::RgbImage::new(200, 200);
-        let dest = std::env::temp_dir().join(format!("stage_table_test_{}.png", uuid::Uuid::new_v4()));
-        image::DynamicImage::ImageRgb8(img)
-            .save(&dest)
-            .expect("テスト用画像の保存に失敗");
-        dest
-    }
-
-    #[test]
-    fn stage_table_placeholders_defers_low_confidence_table_to_pending() {
-        let img_path = write_temp_test_image();
-        let md = "本文\n\n<!--TABLE_REOCR_0-->\n\n続き".to_string();
-        // 置換文字混入により confidence が閾値(0.95)を下回る表
-        let regions = vec![TableRegion {
-            bbox: (0, 0, 500, 500),
-            html: "<table><td>\u{FFFD}\u{FFFD}\u{FFFD}男性女性Q1はい4540</td></table>".to_string(),
-        }];
-        let md_path = Path::new("page_001.md");
-        let (result, pending) =
-            stage_table_placeholders(md, regions, &img_path, md_path, true);
-        let _ = fs::remove_file(&img_path);
-        assert_eq!(pending.len(), 1, "低confidenceの表はクロップ画像を再OCR保留すべき");
-        assert!(result.contains("TABLE_REOCR_0"), "保留中はプレースホルダを残すべき");
-    }
-
-    #[test]
-    fn stage_table_placeholders_skips_reocr_for_high_confidence_table_even_with_valid_image() {
-        let img_path = write_temp_test_image();
-        let md = "本文\n\n<!--TABLE_REOCR_0-->\n\n続き".to_string();
-        // クリーンな日本語表: table_content_confidence が閾値(0.95)以上になるはず
-        let regions = vec![TableRegion {
-            bbox: (0, 0, 500, 500),
-            html: "<table><td colspan=\"2\">男性女性Q1はい4540Q1いいえ510</td></table>".to_string(),
-        }];
-        let md_path = Path::new("page_001.md");
-        let (result, pending) =
-            stage_table_placeholders(md, regions, &img_path, md_path, true);
-        let _ = fs::remove_file(&img_path);
-        assert!(
-            pending.is_empty(),
-            "画像を開けても高confidenceならクロップ自体を試みず再OCRをスキップすべき"
-        );
-        assert!(!result.contains("TABLE_REOCR"));
-    }
-
-    #[test]
-    fn unlimited_ocr_to_markdown_keeps_list_and_page_footnote_as_body_text() {
-        let raw = "list [137, 295, 941, 548]A：本文の内容\n\npage_footnote [120, 749, 411, 770]脚注の内容";
-        let (md, _regions) = unlimited_ocr_to_markdown(raw);
-        assert!(!md.contains("list ["));
-        assert!(!md.contains("page_footnote ["));
-        assert!(md.contains("A：本文の内容"));
-        assert!(md.contains("脚注の内容"));
-    }
-
-    #[test]
-    fn unlimited_ocr_to_markdown_collects_table_region_with_bbox() {
-        let raw = "table [10, 20, 900, 300]<table><td>A</td><td>B</td></table>";
-        let (md, regions) = unlimited_ocr_to_markdown(raw);
-        assert!(md.contains("<!--TABLE_REOCR_0-->"));
-        assert!(!md.contains("TABLE_REOCR_1"));
-        assert_eq!(regions.len(), 1);
-        assert_eq!(regions[0].bbox, (10, 20, 900, 300));
-        assert_eq!(regions[0].html, "<table><td>A</td><td>B</td></table>");
-    }
-
-    #[test]
-    fn unlimited_ocr_to_markdown_falls_back_when_bbox_missing() {
-        let raw = "table <table><td>A</td></table>";
-        let (md, regions) = unlimited_ocr_to_markdown(raw);
-        assert!(regions.is_empty());
-        assert!(!md.contains("TABLE_REOCR"));
-        assert!(md.contains("| A |"));
-    }
-
-    #[test]
-    fn extract_table_markdown_converts_raw_html_fallback_to_markdown() {
-        let raw = r#"<table border="1"><tr><td></td><td>要旨把握</td><td>内容把握</td></tr></table>"#;
-        let result = extract_table_markdown(raw);
-        assert!(!result.contains("<table"));
-        assert!(result.contains("要旨把握"));
-    }
-
-    #[test]
-    fn extract_table_markdown_prefers_fenced_block_and_dedupes() {
-        let raw = "| A | B |\n| --- | --- |\n| 1 | 2 |\n\n```table\n| A | B |\n| --- | --- |\n| 1 | 2 |\n```";
-        let result = extract_table_markdown(raw);
-        assert_eq!(result, "| A | B |\n| --- | --- |\n| 1 | 2 |");
-    }
-
-    #[test]
-    fn extract_table_markdown_without_fence_extracts_first_block() {
-        let raw = "前置きテキスト\n| A | B |\n| --- | --- |\n| 1 | 2 |\n後書きテキスト";
-        let result = extract_table_markdown(raw);
-        assert_eq!(result, "| A | B |\n| --- | --- |\n| 1 | 2 |");
-    }
-
-    #[test]
-    fn extract_table_markdown_falls_back_to_raw_when_no_table_found() {
-        let raw = "テーブルが見つかりません";
-        let result = extract_table_markdown(raw);
-        assert_eq!(result, "テーブルが見つかりません");
-    }
-
-    #[test]
-    fn extract_table_markdown_truncates_repeated_rows_despite_irregular_spacing() {
-        // reocr_pdf_manual の実機検証（yomitoku_ocr_table_sample_v1.pdf のPage3）で
-        // 実際に glm-ocr が返した内容を再現した回帰テスト: 12行の表データが2回
-        // 反復するが、1回目にしか罫線区切り行がなく、2回目の手前に見出し行が
-        // 再掲されるため、反復の間隔が完全には揃っていない。固定長ブロックの
-        // 周期比較（truncate_runaway_repetition）ではこの不揃いさに阻まれて検知
-        // できなかったため、行単位の対応追跡（find_repeating_rows_cut）で対応した。
-        let raw = "\
-| 項目 | 値 | 備考 |
-| --- | --- | --- |
-| 部署 | 営業1課 | 全角+数字 |
-| 担当 | Sato / 佐藤 | スラッシュ混在 |
-| 状態 | 要確認 | カテゴリ |
-| 判定 | &triangle; | 単発記号 |
-| 比率 | 0.5 | 小数（短い） |
-| 閾值 | 0.05 | 小数（0多め） |
-| 誤差 | ±1 | プラスマイナス |
-| コード | A_B-12 | アンダースコア+ハイフン |
-| 注記 | (仮) | 括弧 |
-| 金額 | ¥12,345 | 通貨+桁区切り |
-| 番号 | 123 | 全角数字 |
-| 期限 | 2025-12-31 | ハイフンの日付 |
-| 項目 | 値 | 備考 |
-| 部署 | 営業1課 | 全角+数字 |
-| 担当 | Sato / 佐藤 | スラッシュ混在 |
-| 状態 | 要確認 | カテゴリ |
-| 判定 | &triangle; | 単発記号 |
-| 比率 | 0.5 | 小数（短い） |
-| 閾值 | 0.05 | 小数（0多め） |
-| 誤差 | ±1 | プラスマイナス |
-| コード | A_B-12 | アンダースコア+ハイフン |
-| 注記事 | (仮) | 括弧 |
-| 金額 | ¥12,345 | 通貨+桁区切り |
-| 番号 | 123 | 全角数字 |
-| 期限 | 2025-12-31 | ハイフンの日付 |";
-        let result = extract_table_markdown(raw);
-        assert_eq!(
-            result.matches("営業1課").count(),
-            1,
-            "反復した2回目のデータ行群が残っている: {result}"
-        );
-    }
-
-    /// equation/repeat_penalty 修正の動作確認用の使い捨て統合テスト。
-    /// Ollama 起動中 + Unlimited OCR + glm-ocr が必要。
+    /// 実機検証用の使い捨て統合テスト。Ollama 起動中 + glm-ocr が必要。
     /// REOCR_PDF に PDF パス、REOCR_OUT に出力先ディレクトリを指定して実行する:
     /// REOCR_PDF=/path/to.pdf REOCR_OUT=/path/to/out cargo test --lib reocr_pdf_manual -- --ignored --nocapture
     #[tokio::test]
@@ -1668,13 +703,11 @@ mod tests {
 
         let stem = pdf.file_stem().and_then(|s| s.to_str()).unwrap_or("output").to_string();
 
-        let enable_table_reocr = std::env::var("REOCR_TABLE").as_deref() != Ok("0");
         let use_embedded_text = std::env::var("REOCR_EMBEDDED_TEXT").as_deref() == Ok("1");
         let start_page = std::env::var("REOCR_START").ok().and_then(|s| s.parse().ok());
         let end_page = std::env::var("REOCR_END").ok().and_then(|s| s.parse().ok());
         let options = OcrOptions {
             enable_figure: false,
-            enable_table_reocr,
             use_embedded_text,
             start_page,
             end_page,
@@ -1693,45 +726,5 @@ mod tests {
         let merged = crate::markdown::merge_page_markdowns(&out_dir, &stem, true)
             .unwrap_or_else(|e| panic!("merge 失敗: {e}"));
         println!("merged markdown: {}", merged.display());
-    }
-
-    /// 実機統合テスト。Ollama 起動中 + Unlimited OCR + glm-ocr が必要。
-    /// TABLE_REOCR_SAMPLE に表を含む画像パスを指定して実行する:
-    /// TABLE_REOCR_SAMPLE=/path/to/table.png cargo test table_reocr_end_to_end -- --ignored --nocapture
-    #[tokio::test]
-    #[ignore]
-    async fn table_reocr_end_to_end() {
-        let sample = std::env::var("TABLE_REOCR_SAMPLE")
-            .expect("TABLE_REOCR_SAMPLE に表を含む画像パスを指定してください");
-        let sample = std::path::PathBuf::from(sample);
-        assert!(sample.exists(), "サンプル画像が存在しません: {sample:?}");
-
-        let base = std::env::temp_dir().join(format!("table_reocr_it_{}", std::process::id()));
-
-        for (enable, label) in [(false, "off"), (true, "on")] {
-            let result_dir = base.join(label);
-            std::fs::create_dir_all(&result_dir).unwrap();
-            let options = OcrOptions {
-                enable_table_reocr: enable,
-                ..Default::default()
-            };
-            let outputs = run_ocr_pipeline(&sample, &result_dir, &options, None)
-                .await
-                .unwrap_or_else(|e| panic!("pipeline 失敗 ({label}): {e}"));
-            assert!(!outputs.is_empty(), "出力ファイルなし ({label})");
-            let md = std::fs::read_to_string(&outputs[0]).unwrap();
-            println!("=== enable_table_reocr={label} ===\n{md}\n");
-            assert!(
-                !md.contains("<!--TABLE_REOCR_"),
-                "プレースホルダが残留 ({label})"
-            );
-            assert!(md.contains("A-001"), "表の内容が消えている ({label})");
-            if enable {
-                assert!(
-                    md.lines().filter(|l| l.trim_start().starts_with('|')).count() >= 3,
-                    "ON なのに Markdown テーブルが出力されていない"
-                );
-            }
-        }
     }
 }

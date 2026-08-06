@@ -71,8 +71,8 @@ impl OllamaClient {
                 images: Some(vec![image_base64.to_string()]),
             }],
             stream: false,
-            // Unlimited OCR と glm-ocr は Phase1/Phase2 で完全に分離しページ単位では
-            // 切り替わらないため、常駐時間は短めで十分（アプリ終了時は lib.rs で明示アンロード）。
+            // OCR は常に単一モデル（glm-ocr）で行うため、常駐時間は短めで十分
+            // （アプリ終了時は lib.rs で明示アンロード）。
             keep_alive: Some("3m".to_string()),
             options: Some(ChatOptions {
                 num_predict: Some(8192),

@@ -122,7 +122,6 @@ async fn run_job_ollama(
     let job_id_clone = job_id.clone();
     let dpi = opts.pdf_dpi.unwrap_or(300);
     let enable_figure = opts.enable_figure;
-    let enable_table_reocr = settings.as_ref().map(|s| s.enable_table_reocr).unwrap_or(false);
     let enable_rest = opts.enable_rest;
     let rest_seconds = opts.rest_seconds.unwrap_or(10) as u64;
     let formats = opts.formats.clone();
@@ -166,7 +165,6 @@ async fn run_job_ollama(
                 dpi,
                 poppler_path: resolve_poppler_bin_dir(&project_root_clone),
                 enable_figure,
-                enable_table_reocr,
                 python_bin: Some(python_bin.clone()),
                 detect_figures_script: Some(detect_script),
                 start_page,
@@ -778,7 +776,6 @@ pub fn run() {
                 tauri::async_runtime::spawn(async move {
                     let client = crate::ollama::client::OllamaClient::new();
                     let _ = client.unload_model(ocr::pipeline::OCR_MODEL).await;
-                    let _ = client.unload_model(ocr::pipeline::TABLE_OCR_MODEL).await;
                     app.exit(0);
                 });
             }
