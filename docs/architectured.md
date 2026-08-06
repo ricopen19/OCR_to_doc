@@ -3,8 +3,12 @@
 コードから読み取れない情報のみ記載。コンポーネントの責務や CLI オプションはコードを参照。
 
 GLM-OCR 移行（`docs/tasks.md` 参照）により OCR 本体は Rust + Ollama に置き換わった。
-Python は「エクスポート（docx/xlsx/csv）」「図表検出（YOLOv8x-DocLayNet）」「`--cli`/`--self-test`
-経由の旧パイプライン（`dispatcher.py`、CI 自己診断用）」に役割が縮小している。
+表の再 OCR も含め本文・表とも glm-ocr 単体で処理する構成に統一済み（Unlimited OCR は撤去、
+`docs/decisions.md` 参照）。旧 YomiToku パイプライン（`dispatcher.py`/`ocr.py`/`ingest.py`
+等）と、GUI 未到達だった `--cli` 実行パスは削除済み（`docs/decisions.md` ADR-017 参照）。
+Python は「エクスポート（docx/xlsx/csv）」「図表検出（YOLOv8x-DocLayNet）」「HEIC/SVG
+画像正規化（プレビュー用）」「`--self-test`（CI 自己診断用、`export_docx.py` のみ使用）」に
+役割が縮小している。
 
 ## 1. システム構成
 
@@ -24,23 +28,22 @@ Python は「エクスポート（docx/xlsx/csv）」「図表検出（YOLOv8x-D
            │            │ subprocess（結果整形後にのみ呼ぶ）
 ┌──────────▼──────┐ ┌───▼─────────────────────┐
 │  Ollama          │ │  Python (エクスポート限定)│
-│  Unlimited OCR   │ │  export_docx.py          │
-│  (glm-ocr は表の  │ │  export_excel_poc.py     │
-│   み再OCR に使用) │ │  detect_figures.py       │
+│  glm-ocr         │ │  export_docx.py          │
+│  (本文・表とも    │ │  export_excel_poc.py     │
+│   単一モデル)     │ │  detect_figures.py       │
 └──────────────────┘ │  (YOLOv8x-DocLayNet)     │
                       └───────────────────────────┘
 ```
 
-`--cli <input>` / `--self-test`（`ui/src-tauri/src/cli.rs`）は上記とは別経路で、
-旧 Python パイプライン（`dispatcher.py`）を直接叩く。GUI からは到達しない
-CI 自己診断専用のフォールバック。
+`--self-test`（`ui/src-tauri/src/cli.rs`）は上記とは別経路で、`export_docx.py` の
+最小動作確認のみ行う。GUI からは到達しない CI 自己診断専用のフォールバック。
 
 ## 2. データフロー概要
 
 ```
 入力(PDF/画像)
-  → [PDF] Poppler で1ページずつ画像化 → Ollama (Unlimited OCR) で OCR
-       → 表領域はページ処理後に glm-ocr でまとめて再OCR（enableTableReocr ON 時）
+  → [PDF] Poppler で1ページずつ画像化 → glm-ocr (Ollama) でページ OCR
+       → 表領域は必要に応じて glm-ocr で再OCR（enableTableReocr ON 時）
   → page_###.md → マージ → *_merged.md
   → エクスポート（Python subprocess）→ docx / xlsx / csv
 ```
@@ -50,9 +53,10 @@ CI 自己診断専用のフォールバック。
 | 項目 | 配布先 | 開発 |
 |---|---|---|
 | OS | macOS (Apple Silicon) | macOS (Apple Silicon) |
-| Ollama | ユーザーが別途インストール（Unlimited OCR / glm-ocr を pull） | 同左 |
+| Ollama | ユーザーが別途インストール（glm-ocr を pull） | 同左 |
 | Python | システム Python3（`.app` に同梱されない。エクスポート・図表検出用のみ） | uv 管理の `.venv` |
 | Poppler | Homebrew または PATH から検出 | Homebrew |
 
-Windows portable 版は GLM-OCR 移行前の構成を前提としており、現状は配布対象外
+配布は現在 macOS DMG（`.github/workflows/macos-dmg.yml`）が主経路。Windows portable 版は
+GLM-OCR 移行前（YomiToku 構成）を前提としたビルドが CI 上に残るのみで、配布対象外
 （`docs/decisions.md` ADR-011/ADR-012 参照）。

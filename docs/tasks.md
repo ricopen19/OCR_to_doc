@@ -85,6 +85,10 @@ ADR-011 の保留方針を撤回。Ollama バージョンダウンで glm-ocr �
   → 検証: `cargo build`（warning 17→0件）、`cargo test --lib`（19 passed, 2 ignored）で確認済み
 - [x] Phase1/Phase2 移行（YomiToku Python 版 → Ollama Rust 版）で欠落していた RunOptions の機能ギャップを解消。`crop`（per-file トリミング）を `OcrOptions` に追加し OCR 前にページ画像を実際に切り出すよう修正（`crop_page_image_to_temp`、`ui_preview.py` の `apply_crop` と同じ正規化座標仕様）。`excelMode` / `excelMetaSheet` を `export_excel_poc.py` 呼び出しに `--excel-mode` / `--meta` / `--no-meta` として渡すよう修正。YomiToku 専用で glm-ocr パイプラインには適用先がなかった `useGpu` / `imageAsPdf` / `chunkSize` / `mode`（lite/full）と、CLI 引数化されておらず渡しようがなかった `excelSymbolFallback` は型・UI ごと削除（Rust: `job.rs` / `settings.rs`、フロント: `api/runJob.ts` / `api/settings.ts` / `App.tsx` / `pages/RunJob.tsx` / `pages/Settings.tsx`）
   → 検証: `cargo build` / `cargo test --lib`（19 passed, 2 ignored）、フロント `npx tsc --noEmit`・`npm run build` で確認済み。実機での「トリミング適用後のOCR結果」「Excel出力モード切替」の目視確認は未実施
+- [x] Python 側デッドコード整理（YomiToku 旧パイプライン一式）。`dispatcher.py` / `ocr.py` / `ingest.py` / `image_preprocessor.py` / `markdown_cleanup.py` / `scripts/command_help.py` と対応テスト3本を削除。あわせて `cli.rs` の `--cli` 実行パス（GUI 未到達、`dispatcher.py` を subprocess 起動するだけの旧経路）を削除。調査の過程で、`dispatcher.py` の存在確認だけを行っていた `environment.rs` の `dispatcher_found` がホーム画面の「準備完了」判定（`envAllOk`）に組み込まれたままだったことが判明したため、`EnvironmentStatus` / `history.ts` / `Home.tsx` から関連フィールド・バッジを合わせて削除。`image_normalizer.py` は現役の `ui_preview.py`（HEIC/SVG プレビュー変換）が依存しているため維持。経緯: `docs/decisions.md` ADR-017
+  → 検証: `cargo build`（warning 0件）/ `cargo test --lib`（11 passed, 1 ignored）/ `npx tsc --noEmit` / `npm run build` 成功。`uv run pytest tests/ --ignore=tests/test_image_normalizer.py` で 8 passed（`test_image_normalizer.py` はローカルの `libcairo` 未検出により実行不可、本変更と無関係の既存環境問題）
+- [ ] `test_image_normalizer.py` がローカル環境で `cairosvg`→`cairocffi`→`libcairo` の動的ライブラリ解決に失敗し実行不可（`brew install cairo` 済みだが dylib パスが解決されない）。CI 環境での実行可否は未確認
+  → 検証: `uv run pytest tests/test_image_normalizer.py` が成功する
 
 ## Unlimited OCR 表対応
 

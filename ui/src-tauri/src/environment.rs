@@ -3,7 +3,6 @@ use std::path::PathBuf;
 use crate::job::EnvironmentStatus;
 use crate::paths::{
     resolve_output_root, resolve_project_root, resolve_python_bin, resolve_python_dir_candidates,
-    resolve_python_entry,
 };
 use crate::load_settings_from_disk;
 
@@ -29,10 +28,6 @@ pub async fn check_environment() -> Result<EnvironmentStatus, String> {
         .iter()
         .map(|p| p.to_string_lossy().to_string())
         .collect::<Vec<_>>();
-
-    let dispatcher_path_buf = resolve_python_entry(&project_root, "dispatcher.py");
-    let dispatcher_found = dispatcher_path_buf.is_file();
-    let dispatcher_path = dispatcher_found.then(|| dispatcher_path_buf.to_string_lossy().to_string());
 
     // Poppler: バンドル内 → macOS Homebrew → PATH の順で探索
     let poppler_bases = [
@@ -113,8 +108,6 @@ pub async fn check_environment() -> Result<EnvironmentStatus, String> {
     Ok(EnvironmentStatus {
         project_root: project_root.to_string_lossy().to_string(),
         os: std::env::consts::OS.to_string(),
-        dispatcher_found,
-        dispatcher_path,
         result_dir_found,
         result_root: result_root.to_string_lossy().to_string(),
         python_bin,

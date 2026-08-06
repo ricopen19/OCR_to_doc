@@ -1,95 +1,12 @@
 use std::{fs, io::Write, process::Command};
 
-use crate::paths::{
-    apply_python_env, resolve_output_root, resolve_project_root, resolve_python_bin,
-    resolve_python_entry,
-};
-use crate::load_settings_from_disk;
+use crate::paths::{apply_python_env, resolve_project_root, resolve_python_bin, resolve_python_entry};
 
 pub fn run_cli_if_requested() -> Option<i32> {
     let args: Vec<String> = std::env::args().collect();
     let is_self_test = args.iter().any(|a| a == "--self-test");
-    let cli_index = args.iter().position(|a| a == "--cli");
-    if !is_self_test && cli_index.is_none() {
+    if !is_self_test {
         return None;
-    }
-
-    if let Some(idx) = cli_index {
-        let mut input: Option<String> = None;
-        let mut passthrough: Vec<String> = Vec::new();
-        let mut i = idx + 1;
-        while i < args.len() {
-            if args[i] == "--" {
-                passthrough.extend_from_slice(&args[i + 1..]);
-                break;
-            }
-            if input.is_none() && !args[i].starts_with('-') {
-                input = Some(args[i].clone());
-            }
-            i += 1;
-        }
-        let input = match input {
-            Some(p) => p,
-            None => {
-                eprintln!("[cli] usage: ocr-to-doc.exe --cli <input> [-- <dispatcher args>]");
-                return Some(2);
-            }
-        };
-
-        let exe_path = match std::env::current_exe() {
-            Ok(p) => p,
-            Err(e) => {
-                eprintln!("[cli] failed to get current_exe: {e}");
-                return Some(2);
-            }
-        };
-        let project_root = match resolve_project_root(&exe_path) {
-            Some(p) => p,
-            None => {
-                eprintln!(
-                    "[cli] failed to resolve project root from {}",
-                    exe_path.display()
-                );
-                return Some(2);
-            }
-        };
-        let python_bin = resolve_python_bin(&project_root);
-        let dispatcher = resolve_python_entry(&project_root, "dispatcher.py");
-        if !dispatcher.exists() {
-            eprintln!("[cli] dispatcher not found: {}", dispatcher.display());
-            return Some(2);
-        }
-
-        let settings = load_settings_from_disk(&project_root).ok();
-        let output_root = resolve_output_root(&project_root, settings.as_ref());
-        if let Err(e) = fs::create_dir_all(&output_root) {
-            eprintln!(
-                "[cli] failed to create output root {}: {e}",
-                output_root.display()
-            );
-            return Some(2);
-        }
-
-        let mut cmd = Command::new(&python_bin);
-        apply_python_env(&mut cmd);
-        cmd.arg("-u")
-            .arg(&dispatcher)
-            .arg(&input)
-            .arg("--output-root")
-            .arg(&output_root);
-        for a in passthrough {
-            cmd.arg(a);
-        }
-        cmd.current_dir(&project_root);
-
-        let status = match cmd.status() {
-            Ok(s) => s,
-            Err(e) => {
-                eprintln!("[cli] failed to run dispatcher: {e}");
-                return Some(1);
-            }
-        };
-        return Some(if status.success() { 0 } else { 1 });
     }
 
     // --self-test mode

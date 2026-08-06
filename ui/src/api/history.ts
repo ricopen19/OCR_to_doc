@@ -10,8 +10,6 @@ export type RecentResultEntry = {
 export type EnvironmentStatus = {
   projectRoot: string
   os: string
-  dispatcherFound: boolean
-  dispatcherPath?: string
   resultDirFound: boolean
   resultRoot: string
   pythonBin: string
@@ -49,8 +47,6 @@ export async function checkEnvironment(): Promise<EnvironmentStatus> {
   return {
     projectRoot: '',
     os: '',
-    dispatcherFound: false,
-    dispatcherPath: undefined,
     resultDirFound: false,
     resultRoot: '',
     pythonBin: '',

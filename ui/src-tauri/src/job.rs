@@ -114,8 +114,6 @@ pub struct RecentResultEntry {
 pub struct EnvironmentStatus {
     pub project_root: String,
     pub os: String,
-    pub dispatcher_found: bool,
-    pub dispatcher_path: Option<String>,
     pub result_dir_found: bool,
     pub result_root: String,
     pub python_bin: String,

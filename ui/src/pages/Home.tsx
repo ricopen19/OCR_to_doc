@@ -136,7 +136,7 @@ export function Home({ onNavigate }: HomeProps) {
     const visibleRecent = showAllHistory ? recent : recent.slice(0, 3)
 
     const envAllOk = env
-        ? env.dispatcherFound && env.resultDirFound && env.popplerFound && env.ollamaRunning && env.ocrModelReady
+        ? env.resultDirFound && env.popplerFound && env.ollamaRunning && env.ocrModelReady
         : false
 
     const ocrModelBadge = () => {
@@ -320,17 +320,6 @@ export function Home({ onNavigate }: HomeProps) {
                                         {env?.os || 'unknown'}
                                     </Badge>
                                 </Group>
-
-                                {/* dispatcher.py */}
-                                <Group justify="space-between">
-                                    <Text size="sm">dispatcher.py</Text>
-                                    <Badge color={env?.dispatcherFound ? 'green' : 'red'} variant="light">
-                                        {env?.dispatcherFound ? 'OK' : 'NG'}
-                                    </Badge>
-                                </Group>
-                                {env?.dispatcherPath && (
-                                    <Text size="xs" c="dimmed">{env.dispatcherPath}</Text>
-                                )}
 
                                 {/* result フォルダ */}
                                 <Group justify="space-between">

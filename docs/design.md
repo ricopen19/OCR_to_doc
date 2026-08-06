@@ -87,11 +87,9 @@
 | コンポーネント | 変更 | 担当 |
 |---|---|---|
 | Tauri (lib.rs) | Ollama API 呼び出し、セットアップ、MD マージを Rust 実装 | Rust |
-| `ocr.py` | 廃止（Rust に移行） | - |
-| `ocr_chanked.py` | 廃止（PDF→画像化 + OCR を Rust 側に移行） | - |
-| `dispatcher.py` | 廃止（Tauri が直接オーケストレーション） | - |
-| `postprocess.py` | 廃止（MD マージを Rust に移行） | - |
-| `markdown_cleanup.py` | 廃止（Rust に移行） | - |
+| `ocr.py` | 廃止済み（Rust に移行、ADR-017） | - |
+| `dispatcher.py` | 廃止済み（Tauri が直接オーケストレーション、ADR-017） | - |
+| `markdown_cleanup.py` | 廃止済み（ADR-017） | - |
 | `export_docx.py` | **維持**（Tauri から Python を呼び出し） | Python |
 | `export_excel_poc.py` | **維持**（JSON 構造の変換は必要） | Python |
 | GUI (React) | Ollama 設定 UI、セットアップ画面を追加 | React |
@@ -126,14 +124,11 @@ GLM-OCR は OCR 専用 VLM であり、bbox 検出に非対応（GGML_ASSERT エ
 | B. 別 VLM で bbox 検出 (LLaVA 等) | 数 GB の追加モデルが必要。Ollama で完結するが導入ハードルが高い |
 | C. Rust + ONNX Runtime | 精度は同等だが組み込み工数が大きい。Python がハイブリッド構成で残るため YOLO Python 版で十分 |
 
-### Markdown クリーンアップの扱い
+### Markdown クリーンアップの扱い（実施済み）
 
-既存の `markdown_cleanup.py`（593行、30以上の正規表現）は **YomiToku 固有の出力の癖を補正するもの**（バックリファレンス残骸、LaTeX デリミタ崩れ、img タグ破損 等）。GLM-OCR ではこれらの問題は発生しない前提。
-
-- **GLM-OCR ブランチでは markdown_cleanup.py を使わない**
-- Rust 側には `basic_cleanup`（連続改行の整理のみ）を実装済み
-- GLM-OCR 固有の問題が見つかったら、その時に最小限の cleanup を Rust で追加
-- LLM 校正が入ればモデル固有の癖はそちらで吸収
+`markdown_cleanup.py`（YomiToku 固有の出力の癖を補正する正規表現群）は廃止済み（ADR-017）。
+GLM-OCR ではこれらの問題は発生しないため、Rust 側の専用クリーンアップ関数も追加していない。
+GLM-OCR 固有の整形問題は発生の都度 `markdown/mod.rs` に個別対応で追加する方針。
 
 ### LLM 校正フロー
 
@@ -305,6 +300,6 @@ EnvironmentStatus {
 - [ ] 環境チェック画面の刷新
 
 #### Phase 4: Python 依存の縮小
-- [ ] dispatcher.py / ocr.py / ocr_chanked.py / postprocess.py を廃止
+- [x] dispatcher.py / ocr.py / ingest.py / image_preprocessor.py / markdown_cleanup.py を廃止（ADR-017）
 - [ ] Python は export_docx.py + export_excel_poc.py のみに縮小
 - [ ] 配布パッケージのサイズ検証

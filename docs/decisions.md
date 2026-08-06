@@ -121,6 +121,9 @@
 
 ## ADR-013: 表はハイブリッド再OCR（Unlimited OCR + glm-ocr）
 
+> **撤回（ADR-016, 2026-08-06）**: Unlimited OCR 自体をアーキテクチャ由来のハルシネーション
+> 問題により撤去したため、本 ADR の構成はもう存在しない。経緯の記録として残す。
+
 2026-07
 
 **決定**: Unlimited OCR の表出力は使わず、表領域だけ glm-ocr で再OCR する。GUI トグル `enableTableReocr`（デフォルト OFF）で切り替え可能とし、OFF・glm-ocr 不在・失敗時はセル内容を平坦テキストで出力する。
@@ -169,3 +172,100 @@
 `pages/RunJob.tsx` / `pages/Settings.tsx`）の型・UI を変更。設定ファイル
 （`configs/settings.json`）に旧フィールドが残っていても `#[serde(default)]` で無視されるため
 後方互換は保たれる
+
+## ADR-015: リポジトリ全体のデッドコード静的診断（Rust 側のみ実施）
+
+2026-07
+
+**決定**: `/thermo-nuclear-code-quality-review` によるリポジトリ全体のデッドコード診断のうち、
+Rust 側（`ui/src-tauri`）のみ削除を実施。Python 側は対象外とし後日に持ち越す。
+
+- `run_job`（YomiToku Python subprocess 版、535行）を削除。フロントエンドは
+  `run_job_ollama` のみを invoke しており、`invoke_handler!` に登録されているだけで
+  実際には GUI から到達不能だった（`invoke_handler!` 登録は Rust の `dead_code` lint を
+  素通りするため、標準的な検出の死角になっていた）
+- 削除に伴い孤立化した `default_gpu_device`（paths.rs）、`collect_output_files`（results.rs）
+  を合わせて除去
+- `cargo build` の未使用警告が指していた `ollama/client.rs` の未使用メソッド
+  （`with_base_url` / `chat_text` / `pull_model`）、`ollama/types.rs` の未使用フィールド・
+  未使用構造体（`PullRequest` / `PullProgress`）、`ocr/pdf_to_images.rs` の
+  `pdf_to_page_images_range`、`markdown/mod.rs` の `basic_cleanup` も削除
+- `lib.rs` が 1319 行から 728 行に減り、`workflow.md` の 1k 行ルール逸脱が解消
+
+**理由**: `run_job` は ADR-009（2026-03）時点では「Phase 4 で Python パイプライン自体を
+廃止予定のため分割対象外」として温存されていたが、Ollama 移行が完了した現在は
+到達経路そのものが存在せず、リファクタリング対象ではなく削除対象と判断した
+
+**却下案**:
+- Python 側も含めて同時に整理する: 「python側は後でやりたい」との判断により、
+  影響範囲・検証コストを Rust 側と分離するため見送り
+- `run_job` を残したまま `#[allow(dead_code)]` を付与: 到達不能な535行を
+  保守対象に残す理由がないため削除を選択
+
+**影響**: `ui/src-tauri/src/lib.rs` / `cli.rs` / `markdown/mod.rs` / `ocr/pdf_to_images.rs` /
+`ollama/client.rs` / `ollama/types.rs` / `paths.rs` / `results.rs`。
+`cargo build` の警告が17件→2件に減少、`cargo test --lib` は19 passed / 2 ignored で
+リグレッションなし。Python 側のデッドコード整理は `docs/tasks.md` に別タスクとして保留
+
+## ADR-016: Unlimited OCR を撤去し glm-ocr 単体構成に戻す
+
+- **日付**: 2026-08-06
+- **決定**: ADR-013 のハイブリッド構成（本文: Unlimited OCR / 表: glm-ocr）を撤去し、
+  本文・表とも glm-ocr 単体で処理する構成に戻す。表領域検出・クロップ・再OCR・
+  モデル入れ替えロジックを含め `ocr/pipeline.rs` から関連コードを削除
+  （1295行中1161行削除）
+- **理由**: Unlimited-OCR-GGUF は公称「0.9B」だったが実際は 2.93B で、長文生成時の
+  反復ハルシネーション（R-SWA のコンテキストアンカー消失、検出不能な反復パターン）が
+  アーキテクチャ由来の既知の欠陥として複数報告されていた。表処理とは無関係な箇所でも
+  多行ブロックの暴走生成が発生し、モデル導入前に GitHub Issue 等の実際の不具合報告を
+  リサーチしていれば避けられた問題だった（`CLAUDE.md` に教訓として記録）
+- **却下案**:
+  - モデル入れ替えタイミングの調整のみで様子見（ADR-013→本 ADR 間で Phase1/Phase2 二段階方式
+    に一度改善を試みたが、モデル自体のハルシネーション傾向は解消しなかった）
+  - 反復検出・切り詰めロジックで抑え込む（対症療法であり、本文中の非表領域まで暴走が及ぶ
+    ケースを塞ぎきれない）
+- **影響**: `ui/src-tauri/src/ocr/pipeline.rs`（表検出・クロップ・再OCR・モデル切替コード削除、
+  glm-ocr 向けのブロック反復対策は維持）、`lib.rs`、`ollama/client.rs`、`settings.rs`。
+  `docs/architectured.md` は本文・表とも glm-ocr 単体で処理する構成に更新済み。
+  今後モデルを追加・変更する際は「モデル導入前に実際の不具合報告をリサーチする」
+  「要素ごとに複数モデルを混在させる構成は避け、まず単一モデルで足りないか検証する」を
+  `CLAUDE.md` のプロジェクト固有ルールとして明文化した
+
+## ADR-017: Python 側デッドコード整理（YomiToku 旧パイプライン一式を削除）
+
+- **日付**: 2026-08-06
+- **決定**: ADR-015（Rust 側デッドコード整理）で後回しにしていた Python 側を実施。
+  `dispatcher.py` / `ocr.py` / `ingest.py` / `image_preprocessor.py` / `markdown_cleanup.py` /
+  `scripts/command_help.py` と対応テスト3本（`test_dispatcher_passthrough.py` /
+  `test_ocr_figure_overwrite.py` / `test_markdown_cleanup.py`）を削除。あわせて
+  `ui/src-tauri/src/cli.rs` の `--cli` 実行パス（`dispatcher.py` を subprocess で叩く
+  GUI 未到達の旧経路）も削除し、`--self-test` のみ残した
+- **調査で判明した副次的な問題**: `dispatcher.py` は `--cli` 経由でしか実行されず
+  実質到達不能だったが、`environment.rs` の `check_environment` がこのファイルの
+  **存在確認だけ**を行い、`EnvironmentStatus.dispatcherFound` としてホーム画面の
+  「準備完了」判定（`envAllOk`）とバッジ表示に組み込まれていた。実際の OCR 処理
+  （Ollama 経路）とは無関係な古いファイルの有無がアプリの準備完了判定に影響する
+  「動くふりをして実は関係ない判定」状態になっており、ADR-014 の RunOptions 整理と
+  同種の取りこぼしだった。`environment.rs` / `job.rs`（`EnvironmentStatus`）/
+  `ui/src/api/history.ts` / `ui/src/pages/Home.tsx` から `dispatcherFound` /
+  `dispatcherPath` を削除し、`envAllOk` の条件からも外した
+- **削除しなかったもの**: `image_normalizer.py` は削除候補として調査されたが、
+  現役の `ui_preview.py`（HEIC/SVG プレビュー変換、Rust `lib.rs` から subprocess 呼び出し）
+  が `ensure_png_image` に依存しているため維持。`test_image_normalizer.py` も維持
+- **理由**: `dispatcher.py` 系は YomiToku（ADR-006 で廃止済み）専用のオーケストレーション
+  コードで、Ollama パイプラインへの移行後は呼び出し元が存在しない。`command_help.py` は
+  `poetry run` 前提のまま放置されており `uv` 管理（CLAUDE.md ルール）と矛盾していたため、
+  自動呼び出し元がないことも踏まえてユーザー判断で削除
+- **却下案**:
+  - `command_help.py` を `uv run` 向けに書き直して維持: 自動呼び出しが一切なく
+    README 等の代替手段があるため、修正コストに見合わないとユーザーが判断
+  - `image_normalizer.py` も一括削除: 削除候補調査の grep 一次判定では
+    `dispatcher.py` からの参照しか見えなかったが、`ui_preview.py` 経由の現役依存を
+    見落としていた。実削除前に依存関係を再確認したため回避できた
+- **影響**: `ui/src-tauri/src/cli.rs` / `environment.rs` / `job.rs`、
+  `ui/src/api/history.ts` / `ui/src/pages/Home.tsx`、`scripts/python/` 6ファイル、
+  `tests/` 3ファイル。検証: `cargo build` / `cargo test --lib` 成功、
+  `uv run pytest tests/ --ignore=tests/test_image_normalizer.py` で8 passed
+  （`test_image_normalizer.py` は本変更と無関係な環境要因＝ローカルの `libcairo`
+  未検出で実行不可、既存の別問題として `docs/tasks.md` に記録）。フロントエンドの
+  `npx tsc --noEmit` / `npm run build` は本コミット作成時に別途検証
