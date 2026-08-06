@@ -32,6 +32,26 @@ fn sanitize_math_delimiters(text: &str) -> String {
     text.into_owned()
 }
 
+/// `\textcircled{N}` は原資料の丸数字（①②③...）を glm-ocr が LaTeX コマンドとして
+/// 誤符号化したもの。KaTeX 等の軽量 Markdown レンダラは `\textcircled` に対応して
+/// おらず、`$ ... $` で囲んでも数式として描画されない（丸数字という情報が失われる）
+/// ため、対応する Unicode 丸数字文字に変換し数式扱いをやめる。Unicode の丸数字は
+/// 1〜20 のみ連続したコードポイントを持つため、その範囲外は変換せず元のまま残す。
+fn convert_circled_numbers(text: &str) -> String {
+    const CIRCLED_DIGITS: [char; 20] = [
+        '①', '②', '③', '④', '⑤', '⑥', '⑦', '⑧', '⑨', '⑩',
+        '⑪', '⑫', '⑬', '⑭', '⑮', '⑯', '⑰', '⑱', '⑲', '⑳',
+    ];
+    let re = Regex::new(r"\$?\\textcircled\{(\d{1,2})\}\$?").unwrap();
+    re.replace_all(text, |caps: &regex::Captures| {
+        match caps[1].parse::<usize>() {
+            Ok(n) if (1..=20).contains(&n) => CIRCLED_DIGITS[n - 1].to_string(),
+            _ => caps[0].to_string(),
+        }
+    })
+    .into_owned()
+}
+
 /// Unlimited OCR がまれに OCR 結果ではなく英語の思考・雑談（chain-of-thought の漏れ）を
 /// 出力し始めることがある。正規の OCR 出力には現れないはずの定型文言なので、
 /// 出現した時点でそこから後ろを切り捨てる。
@@ -535,6 +555,7 @@ async fn ocr_image_to_md(
     let raw_ocr = truncate_runaway_repetition(&raw_ocr);
     let raw_ocr = truncate_duplicate_reemission(&raw_ocr);
     let markdown = sanitize_math_delimiters(&raw_ocr);
+    let markdown = convert_circled_numbers(&markdown);
 
     let md_path = result_dir.join(format!("page_{page_num:03}.md"));
     fs::write(&md_path, &markdown)
@@ -674,6 +695,21 @@ mod tests {
         assert!(result.contains("$$ (0.4 \\times 0.6) = 0.24 $$"));
         assert!(!result.contains("\\("));
         assert!(!result.contains("\\["));
+    }
+
+    #[test]
+    fn convert_circled_numbers_replaces_textcircled_with_unicode() {
+        let text = "確実にいえるのは$\\textcircled{1}$から$\\textcircled{3}$のどれか。D $\\textcircled{1}$$\\textcircled{2}$";
+        let result = convert_circled_numbers(text);
+        assert_eq!(result, "確実にいえるのは①から③のどれか。D ①②");
+        assert!(!result.contains("textcircled"));
+    }
+
+    #[test]
+    fn convert_circled_numbers_leaves_out_of_range_untouched() {
+        let text = "$\\textcircled{25}$";
+        let result = convert_circled_numbers(text);
+        assert_eq!(result, text);
     }
 
     #[test]
