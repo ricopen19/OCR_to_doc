@@ -150,3 +150,41 @@ ADR-011 の保留方針を撤回。Ollama バージョンダウンで glm-ocr �
   → 検証: `cargo test --lib`（27 passed, 2 ignored）で確認済み。実機検証（クリーンな状態から`ollama ps`を8秒間隔で監視）で、Phase1中はUnlimited-OCR-GGUFのみ、Phase2移行後はglm-ocrのみが表示され、**2モデル同時常駐が解消**されたことを確認
 - [ ] `OllamaClient::unload_model`のタイムアウト（3秒）が短すぎる可能性がある副作用として発見: 複数の検証用バックグラウンドプロセスが同時にOllamaへ接続している状況で`ollama stop`が90秒以上「Stopping...」のまま進まない現象を観測した（通常の単一プロセス運用では問題なし）。実運用でジョブを連続実行した際に同様の遅延が起きないか、別途確認が必要
   → 検証: 実運用に近い形（GUIから複数ジョブを短時間に連続実行等）でアンロードが詰まらないか確認する
+
+## OCR エンジン選択（ADR-018）— E2E 検証
+
+- [x] Rust スタック通しの統合テスト（`ocr::pipeline::tests::ocr_pipeline_llamacpp_manual`、
+  `#[ignore]`）を追加し、起動中の mlx-vlm サーバーに対して `yomitoku_ocr_table_sample_v1.pdf`
+  全5ページを通し実行。`/v1/models` の serde 往復（`ModelsResponse`）→ poppler pdftoppm →
+  画像 base64 → `OpenAiClient::chat_vision`（`ContentPart` シリアライズ）→
+  `/v1/chat/completions` レスポンス parse（`ChatCompletionResponse`）→ 後処理 →
+  md 書き出し → `merge_page_markdowns` まで通過。
+  → 検証: `cargo test --lib`（15 passed / 2 ignored、リグレッションなし）。
+  E2E は 5ページ 119秒（~27 tok/s）。表は markdown（`| --- |`）で復元され、記号
+  （○△×◎▲▼□■）・日本語・桁区切り・日付も維持。p4（回転文字・背景色ページ）のみ
+  表が空に近い結果になったが暴走生成・クラッシュはなし。実行手順:
+  `LLAMACPP_MODEL=<id> OCR_INPUT=<pdf> OCR_OUT=<dir> cargo test --lib ocr_pipeline_llamacpp_manual -- --ignored --nocapture`
+  （`LLAMACPP_URL` 省略時 `http://127.0.0.1:8080`、`OCR_START`/`OCR_END` でページ範囲指定可）
+- [x] Tauri アプリを実ビルド（`npm run tauri:build`）して UI から通す E2E を実施。
+  Ollama（既定）・llama.cpp（mlx-vlm）両エンジンでモデル選択→OCR→エクスポートまで
+  UI 操作で確認。`invoke` 境界・`RunOptions` の JS→Rust デシリアライズ・進捗イベント・
+  エラー表示（未選択ガード）が期待どおり動作。この過程で見つけた不具合4件を修正
+  （`424b366` Ollama 経路の base_url 誤適用 / `4c67eab`→`64fe126` エンジン別モデル欄の
+  引き継ぎ / `f2ba575`→`64fe126` 未選択ガード / `850187f` 撤去）。残 1 件は下記の
+  「[低優先] モデル再表示時に空」
+
+## [低優先] llama.cpp: 選択したモデルが Settings 再表示時に空になる
+
+- [ ] Settings で llama.cpp のモデルを選択 → OCR は正常に実行される（llama_model は
+  セットされている）が、別画面へ移動して Settings に戻るとモデル欄が空表示になる。
+  `64fe126`（ocr_model / llama_model のフィールド分離）でも未解消。
+  実害は小（実行はできる、「再取得」し直せば再選択できる）ため後回し。
+  調査の当たり:
+  - `Settings.tsx` の `currentModel` は `settings.llamaModel?.trim() ?? ''`。
+    保存済み `settings.json` が旧フィールド（`ocrModel` に llama モデル名）のままだと
+    `llamaModel` が undefined で空になる → **旧→新フィールドのマイグレーション漏れ**の疑い
+  - あるいは save 経路で `llamaModel` が `settings.json` に書かれていない
+    （`saveCurrent` の `toSave` は `...settings` で含むはずだが要確認）
+  - `App.tsx` の `handleSettingsSaved` / 初期 `loadSettings` の `llamaModel` 反映も確認
+  - 切り分け: 実行中の設定ファイル実体（`resolve_config_dir` の場所）を開いて
+    `ocrEngine` / `ocrModel` / `llamaModel` の実値を見る

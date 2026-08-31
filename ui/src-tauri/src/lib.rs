@@ -95,7 +95,32 @@ async fn run_job_ollama(
         excel_meta_sheet: None,
         file_options: None,
         use_embedded_text: false,
+        ocr_engine: None,
+        ocr_model: None,
+        llama_base_url: None,
+        llama_api_key: None,
+        llama_model: None,
     });
+
+    use crate::ollama::engine::OcrEngine;
+    let engine = OcrEngine::parse(opts.ocr_engine.as_deref());
+
+    // エンジンごとにモデル欄が別（Ollama: ocr_model / llama.cpp: llama_model）。
+    // llama.cpp はサーバーが指定名のモデルをロードしようとするため、未選択のまま
+    // 実行させると HF fetch に走って失敗する。ここで弾く。
+    let ocr_model = match engine {
+        OcrEngine::LlamaCpp => {
+            let m = opts.llama_model.as_deref().unwrap_or("").trim().to_string();
+            if m.is_empty() {
+                return Err(
+                    "llama.cpp エンジンではモデルを選択してください（設定画面で「再取得」→モデルを選択）。"
+                        .into(),
+                );
+            }
+            m
+        }
+        OcrEngine::Ollama => crate::ollama::engine::resolve_ocr_model(opts.ocr_model.clone()),
+    };
 
     let job_id = Uuid::new_v4().to_string();
     {
@@ -130,6 +155,11 @@ async fn run_job_ollama(
     let excel_mode = opts.excel_mode.clone();
     let excel_meta_sheet = opts.excel_meta_sheet;
     let use_embedded_text = opts.use_embedded_text;
+    let backend_cfg = crate::ollama::engine::BackendConfig::new(
+        engine,
+        opts.llama_base_url.clone(),
+        opts.llama_api_key.clone(),
+    );
     let python_bin = resolve_python_bin(&project_root);
     let project_root_clone = project_root.clone();
 
@@ -162,6 +192,7 @@ async fn run_job_ollama(
 
             let detect_script = resolve_python_entry(&project_root_clone, "detect_figures.py");
             let ocr_options = ocr::pipeline::OcrOptions {
+                ocr_model: ocr_model.clone(),
                 dpi,
                 poppler_path: resolve_poppler_bin_dir(&project_root_clone),
                 enable_figure,
@@ -173,7 +204,7 @@ async fn run_job_ollama(
                 rest_seconds,
                 crop,
                 use_embedded_text,
-                ..ocr::pipeline::OcrOptions::default()
+                backend: backend_cfg.clone(),
             };
 
             // 進捗コールバック
@@ -729,6 +760,21 @@ async fn check_environment() -> Result<EnvironmentStatus, String> {
     environment::check_environment().await
 }
 
+/// 設定画面のモデル選択用。指定エンジン / 接続先から利用可能なモデル名を取得する。
+#[tauri::command]
+async fn list_ocr_models(
+    engine: Option<String>,
+    base_url: Option<String>,
+    api_key: Option<String>,
+) -> Result<Vec<String>, String> {
+    let cfg = crate::ollama::engine::BackendConfig::new(
+        crate::ollama::engine::OcrEngine::parse(engine.as_deref()),
+        base_url,
+        api_key,
+    );
+    crate::ollama::engine::OcrBackend::new(&cfg).list_models().await
+}
+
 #[tauri::command]
 fn load_settings() -> Result<AppSettings, String> {
     let exe_dir = std::env::current_exe().map_err(|e| e.to_string())?;
@@ -742,6 +788,29 @@ fn save_settings(settings: AppSettings) -> Result<(), String> {
     let project_root = resolve_project_root(&exe_dir).unwrap_or_else(|| PathBuf::from("."));
     let config_dir = resolve_config_dir(&project_root);
     settings::save_settings_to_disk(&settings, &config_dir)
+}
+
+/// アプリ終了時に OCR モデルを解放する。
+/// Ollama 経路のときだけ実行し、llama.cpp（ユーザー管理のサーバー）には触れない。
+async fn unload_model_if_ollama() {
+    let Some(root) = std::env::current_exe()
+        .ok()
+        .and_then(|d| resolve_project_root(&d))
+    else {
+        return;
+    };
+    let Ok(s) = load_settings_from_disk(&root) else {
+        return;
+    };
+    if crate::ollama::engine::OcrEngine::parse(s.ocr_engine.as_deref())
+        != crate::ollama::engine::OcrEngine::Ollama
+    {
+        return;
+    }
+    let model = crate::ollama::engine::resolve_ocr_model(s.ocr_model);
+    let _ = crate::ollama::client::OllamaClient::new()
+        .unload_model(&model)
+        .await;
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -763,6 +832,7 @@ pub fn run() {
             open_result_dir,
             open_result_file,
             check_environment,
+            list_ocr_models,
             load_settings,
             save_settings,
             get_pdf_page_count,
@@ -774,8 +844,7 @@ pub fn run() {
                 api.prevent_close();
                 let app = window.app_handle().clone();
                 tauri::async_runtime::spawn(async move {
-                    let client = crate::ollama::client::OllamaClient::new();
-                    let _ = client.unload_model(ocr::pipeline::OCR_MODEL).await;
+                    unload_model_if_ollama().await;
                     app.exit(0);
                 });
             }

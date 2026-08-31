@@ -269,3 +269,78 @@ Rust 側（`ui/src-tauri`）のみ削除を実施。Python 側は対象外とし
   （`test_image_normalizer.py` は本変更と無関係な環境要因＝ローカルの `libcairo`
   未検出で実行不可、既存の別問題として `docs/tasks.md` に記録）。フロントエンドの
   `npx tsc --noEmit` / `npm run build` は本コミット作成時に別途検証
+
+## ADR-018: OCR エンジンを選択式にする（Ollama 既定 + llama.cpp オプション）
+
+- **日付**: 2026-08-31
+- **決定**: OCR バックエンドを設定で切り替え可能にする。既定は従来どおり Ollama
+  （ネイティブ `/api/chat`）。上級者向けに、同一 PC で起動している llama.cpp サーバー
+  （`llama-server`、OpenAI 互換 `/v1/chat/completions`）も選べるようにする。
+  モデル名も設定で選択可能にし、`/api/tags` または `/v1/models` から一覧を取得する。
+- **理由**:
+  - Ollama は多くのモデルで thinking モードが既定 ON になり、OCR 出力に思考ブロックが
+    混入して悪さをするケースがある（対策として全 OCR リクエストに `think: false` を付与）
+  - 直接的な動機は、glm-ocr の代わりに `qwen3-vl-8b-instruct` などを llama.cpp で
+    試したいこと。Ollama に無い量子化・モデルを使う自由度を確保する
+- **却下案**:
+  - llama.cpp をアプリが直接起動（バイナリ同梱 or ライブラリリンク）: OS×アクセラレータ
+    ごとのビルドマトリクス増、プロセス管理・モデル DL の自前実装が必要で「まず小さく」に
+    反する。Ollama をやめて一本化すると決めたとき初めて割に合う投資
+  - Tailscale 等のリモートサーバー対応: 実装量が増えるため今回のスコープ外。URL 欄は
+    自由入力だが既定は `http://localhost:8080` で、当面は同一 PC 上のサーバーを想定
+- **ローカル完結（ADR-003）との関係**: ADR-003 の「すべてローカル PC で完結」は維持。
+  llama.cpp 経路も接続先は既定で localhost であり、別マシンへの送信を促す UI にはしない。
+  ただし URL は自由入力のため、ユーザーが明示的に他ホストを指定することは技術的に可能。
+  入力値のバリデーション（プライベート IP 帯チェック等）は行わない（上級者向け機能の
+  ため過剰と判断）。
+- **セキュリティ**: llama.cpp の API キーは Bearer ヘッダーでのみ送信（URL クエリに
+  入れない）。reqwest のエラーは `without_url()` で URL を除去してから表示・ログ出力する
+  （`client.rs` / `openai_client.rs` 全経路に適用）。
+- **影響**:
+  - Rust: `ollama/engine.rs`（`OcrEngine` / `BackendConfig` / `OcrBackend` を新設し
+    エンジン差をここに閉じ込める）、`ollama/openai_client.rs`（新規）、`ollama/client.rs`
+    （`new()` を base_url 可変化 + `think: false`）、`ocr/pipeline.rs`（`OcrBackend` 経由に
+    変更、`has_model` 事前チェックは llama.cpp ではスキップ）、`lib.rs`（`list_ocr_models`
+    コマンド新設、`run_job_ollama` への配線、終了時アンロードは Ollama 経路のみ）、
+    `settings.rs` / `job.rs`（`ocr_engine` / `ocr_model` / `llama_base_url` / `llama_api_key` / `llama_model`）、
+    `environment.rs`（選択エンジンに対する準備完了判定。`EnvironmentStatus.ollama_running`
+    → `engine_ready` にリネーム、`ocr_engine` 追加）
+  - フロント: `api/settings.ts` / `api/runJob.ts`（型 + `listOcrModels()`）、`App.tsx`
+    （`RunJobOptions` に統合。従来 App 側に重複していたインライン型を廃止）、`Settings.tsx`
+    （エンジン `SegmentedControl` + llama.cpp 用 URL/APIキー欄 + モデル `Select` + 再取得）、
+    `Home.tsx`（環境パネルをエンジン別表示に）、`api/history.ts`（`ollamaRunning`
+    → `engineReady`、`ocrEngine` 追加）
+  - 検証: `cargo build` / `cargo test --lib`（14 passed）/ `npx tsc --noEmit` /
+    `npm run build` 成功。
+- **プロトコル検証（2026-08-31、mlx-vlm サーバーに対して実施）**:
+  検証は `openai_client.rs` と同形の JSON を手組みして mlx-vlm に投げたレベルで、
+  Tauri アプリをビルドして UI から実 OCR を通すフル E2E は別途（`docs/tasks.md` の宿題）。
+  - 対象は GGUF ではなく MLX モデル（`mlx-community/Qwen3-VL-8B-Instruct-4bit`）
+    だったため llama.cpp ではなく `mlx-vlm` サーバー（`python -m mlx_vlm.server`、
+    要 `jinja2`）を使用。OpenAI 互換 `/v1` を同じく提供する
+  - `/v1/models` は `data[].id` を返す。ただし **HF キャッシュ内の全モデルのカタログ**を返す
+    実装で、起動中モデルだけではない。「再取得」後の一覧には無関係なモデルも並ぶので
+    選択時に注意が要る（起動中モデルの id は含まれる）
+  - `data:image/png;base64,...` 画像入力・日本語 OCR とも正常（実測 ~27 tok/s / ~6.4GB）
+  - **`repeat_penalty` は mlx-vlm では黙って無視される**。mlx-vlm が解釈するのは
+    `repetition_penalty`。ただし `repetition_penalty: 1.3` を送ると OCR の literal fidelity が
+    下がる副作用が実測で出た（ピリオド落ち・語尾の言い換え）。ADR-016 の 1.3 は
+    Unlimited-OCR という特定の壊れたモデル向けの調整値で、行儀の良い instruct モデルに
+    複製する根拠がない。**OpenAI 互換経路には `repetition_penalty` を送らない**方針とし、
+    反復対策は pipeline 側の後処理（`truncate_runaway_repetition` 等、モデル非依存）に任せる。
+    `repeat_penalty` は llama.cpp サーバー向けに残す（未対応サーバーは無視するだけ）
+  - **`model` フィールドは無視されない**。mlx-vlm サーバーは指定名のモデルを都度ロード
+    しようとするため、アプリの `ocrModel` は起動中モデルの id と完全一致させる必要がある
+    （例: `mlx-community/Qwen3-VL-8B-Instruct-4bit`）。不一致だと HF fetch に走って 400。
+    現在の Settings のモデル欄は `Select`（自由入力不可）なので、`/v1/models` 非対応サーバー
+    だと現在値以外を選べない制約が残る（mlx-vlm では `/v1/models` が効くので回避できる）
+  - 未知のサンプラーフィールドはどのサーバーも 400 にせず黙って無視する
+  - thinking は `--enable-thinking` 未指定で OFF。OCR 出力に思考は混入しなかった
+  - 起動コマンドと環境依存パスは `docs/local-llm-server.md`（git 追跡外）に控えた
+  - **UI 検証で判明した設計不備と修正**: OCR モデル欄を当初 `ocr_model` 1 本で
+    Ollama と llama.cpp 兼用にしていたが、両エンジンで値域が全く違う（Ollama:
+    `glm-ocr` / llama.cpp: `mlx-community/...`）ため、エンジン切替後に前エンジンの
+    モデル名が残り、実行時に llama-server へ `glm-ocr` を投げて 400 になる等の
+    不整合が続いた。`llama_model` を別フィールドに分離して解決（`settings.rs` /
+    `job.rs` / フロント型 / `App.tsx` / `Settings.tsx`）。`run_job_ollama` は
+    engine=llamacpp かつ `llama_model` 未選択なら実行前に弾く

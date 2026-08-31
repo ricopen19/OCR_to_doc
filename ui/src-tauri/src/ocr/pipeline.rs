@@ -8,17 +8,18 @@ use image::GenericImageView;
 use regex::Regex;
 
 use crate::job::CropRect;
-use crate::ollama::client::OllamaClient;
+use crate::ollama::engine::{BackendConfig, OcrBackend};
 use super::pdf_to_images::{
     is_pdf_file, is_image_file,
     pdf_page_count, pdf_single_page_to_image,
 };
 
-/// OCR に使うモデル。以前は速度優先で Unlimited-OCR-GGUF（本文）と glm-ocr（表の
+/// 既定の OCR モデル。以前は速度優先で Unlimited-OCR-GGUF（本文）と glm-ocr（表の
 /// 再OCR）を使い分けていたが、Unlimited OCR は本文生成でも既知の暴走生成
 /// （反復ハルシネーション）を起こすことが実機検証で判明したため撤去し、
 /// 過去に安定運用できていた glm-ocr 一本構成に戻した。
-pub(crate) const OCR_MODEL: &str = "glm-ocr";
+/// エンジン選択（ADR-018）後も、設定でモデルを指定しなかった場合の既定値。
+pub(crate) use crate::ollama::engine::DEFAULT_OCR_MODEL as OCR_MODEL;
 
 /// `\( ... \)` / `\[ ... \]` を Obsidian 等のデフォルト Markdown レンダラが認識する
 /// `$ ... $` / `$$ ... $$` に変換する。Unlimited OCR は LaTeX 区切りとして
@@ -322,8 +323,10 @@ pub struct OcrOptions {
     /// 正規化トリミング範囲（left/top/width/height, 0〜1）。ページ画像に対して適用する。
     pub crop: Option<CropRect>,
     /// PDF に埋め込まれたテキストを（信頼できる場合に限り）そのまま使い、
-    /// 該当ページの Ollama OCR 呼び出しをスキップする。
+    /// 該当ページの OCR 呼び出しをスキップする。
     pub use_embedded_text: bool,
+    /// OCR バックエンド（エンジンと接続先）。
+    pub backend: BackendConfig,
 }
 
 impl Default for OcrOptions {
@@ -341,6 +344,7 @@ impl Default for OcrOptions {
             rest_seconds: 10,
             crop: None,
             use_embedded_text: false,
+            backend: BackendConfig::ollama_default(),
         }
     }
 }
@@ -355,17 +359,12 @@ pub async fn run_ocr_pipeline(
     fs::create_dir_all(result_dir)
         .map_err(|e| format!("出力ディレクトリ作成失敗: {e}"))?;
 
-    let client = OllamaClient::new();
+    let client = OcrBackend::new(&options.backend);
 
     if !client.health_check().await? {
-        return Err("Ollama が起動していません。Ollama を起動してください。".to_string());
+        return Err(client.not_running_hint());
     }
-    if !client.has_model(&options.ocr_model).await? {
-        return Err(format!(
-            "OCR モデル '{}' が見つかりません。'ollama pull {}' を実行してください。",
-            options.ocr_model, options.ocr_model
-        ));
-    }
+    client.ensure_model(&options.ocr_model).await?;
 
     let mut md_paths = Vec::new();
     let total_for_progress;
@@ -543,7 +542,7 @@ async fn ocr_image_to_md(
     page_num: u32,
     total: u32,
     options: &OcrOptions,
-    client: &OllamaClient,
+    client: &OcrBackend,
     on_progress: Option<&ProgressCallback>,
 ) -> Result<PathBuf, String> {
     let image_base64 = encode_image_for_ocr(image_path)?;
@@ -852,5 +851,73 @@ A 550円 B 600円 C 650円\n\
         let merged = crate::markdown::merge_page_markdowns(&out_dir, &stem, true)
             .unwrap_or_else(|e| panic!("merge 失敗: {e}"));
         println!("merged markdown: {}", merged.display());
+    }
+
+    /// 実機検証用の使い捨て統合テスト（llama.cpp / mlx-vlm 経路）。
+    /// OpenAI 互換サーバーを起動しておき、実 PDF/画像で通し実行する。
+    /// serde 往復（ContentPart 送信・ChatCompletionResponse / ModelsResponse 受信）と
+    /// OcrBackend の分岐を実サーバーに対して検証する。
+    ///
+    /// LLAMACPP_MODEL=mlx-community/Qwen3-VL-8B-Instruct-4bit \
+    ///   OCR_INPUT=/path/to.pdf OCR_OUT=/tmp/e2e \
+    ///   cargo test --lib ocr_pipeline_llamacpp_manual -- --ignored --nocapture
+    /// LLAMACPP_URL は省略時 http://127.0.0.1:8080。
+    #[tokio::test]
+    #[ignore]
+    async fn ocr_pipeline_llamacpp_manual() {
+        let _ = env_logger::builder().is_test(true).try_init();
+        let url = std::env::var("LLAMACPP_URL")
+            .unwrap_or_else(|_| "http://127.0.0.1:8080".to_string());
+        let model = std::env::var("LLAMACPP_MODEL")
+            .expect("LLAMACPP_MODEL に起動中モデルの id を指定してください");
+        let input = std::path::PathBuf::from(
+            std::env::var("OCR_INPUT").expect("OCR_INPUT に PDF / 画像パスを指定してください"),
+        );
+        assert!(input.exists(), "入力が存在しません: {input:?}");
+        let out_dir = std::path::PathBuf::from(
+            std::env::var("OCR_OUT").expect("OCR_OUT に出力先ディレクトリを指定してください"),
+        );
+        std::fs::create_dir_all(&out_dir).unwrap();
+
+        let cfg = BackendConfig::new(
+            crate::ollama::engine::OcrEngine::LlamaCpp,
+            Some(url.clone()),
+            std::env::var("LLAMACPP_API_KEY").ok(),
+        );
+
+        // 1) /v1/models の serde 往復。起動中モデルが一覧に含まれること。
+        let models = OcrBackend::new(&cfg)
+            .list_models()
+            .await
+            .unwrap_or_else(|e| panic!("list_models 失敗: {e}"));
+        println!("[e2e] /v1/models -> {models:?}");
+        assert!(
+            models.iter().any(|m| m == &model),
+            "起動中モデル {model} が /v1/models に見当たらない"
+        );
+
+        // 2) パイプライン通し実行（画像エンコード → OpenAiClient → 後処理 → md 書き出し）
+        let options = OcrOptions {
+            ocr_model: model.clone(),
+            enable_figure: false,
+            start_page: std::env::var("OCR_START").ok().and_then(|s| s.parse().ok()),
+            end_page: std::env::var("OCR_END").ok().and_then(|s| s.parse().ok()),
+            backend: cfg,
+            ..Default::default()
+        };
+        let progress: ProgressCallback = Box::new(|current, total, msg| {
+            println!("[e2e] {current}/{total}: {msg}");
+        });
+        let outputs = run_ocr_pipeline(&input, &out_dir, &options, Some(&progress))
+            .await
+            .unwrap_or_else(|e| panic!("pipeline 失敗: {e}"));
+        assert!(!outputs.is_empty(), "出力ファイルなし");
+
+        let stem = input.file_stem().and_then(|s| s.to_str()).unwrap_or("output").to_string();
+        let merged = crate::markdown::merge_page_markdowns(&out_dir, &stem, true)
+            .unwrap_or_else(|e| panic!("merge 失敗: {e}"));
+        let text = std::fs::read_to_string(&merged).unwrap();
+        println!("[e2e] merged: {}\n---\n{}\n---", merged.display(), text);
+        assert!(text.trim().len() > 10, "OCR 結果が空に近い");
     }
 }

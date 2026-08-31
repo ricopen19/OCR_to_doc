@@ -1,6 +1,7 @@
 use std::path::PathBuf;
 
 use crate::job::EnvironmentStatus;
+use crate::ollama::engine::{resolve_ocr_model, BackendConfig, OcrBackend, OcrEngine};
 use crate::paths::{
     resolve_output_root, resolve_project_root, resolve_python_bin, resolve_python_dir_candidates,
 };
@@ -92,18 +93,27 @@ pub async fn check_environment() -> Result<EnvironmentStatus, String> {
 
     let poppler_found = poppler_path.is_some();
 
-    // Ollama チェック
-    let ollama_client = crate::ollama::client::OllamaClient::new();
-    let ocr_model_name = "glm-ocr".to_string();
-    let ollama_running = ollama_client.health_check().await.unwrap_or(false);
-    let ocr_model_ready = if ollama_running {
-        ollama_client
-            .has_model(&ocr_model_name)
-            .await
-            .unwrap_or(false)
-    } else {
-        false
+    // OCR バックエンドのチェック（設定で選ばれたエンジンに対して行う）
+    let engine = OcrEngine::parse(settings.as_ref().and_then(|s| s.ocr_engine.as_deref()));
+    // モデル欄はエンジンごとに別（Ollama: ocr_model / llama.cpp: llama_model）
+    let ocr_model_name = match engine {
+        OcrEngine::LlamaCpp => settings
+            .as_ref()
+            .and_then(|s| s.llama_model.clone())
+            .map(|m| m.trim().to_string())
+            .filter(|m| !m.is_empty())
+            .unwrap_or_else(|| "(未選択)".to_string()),
+        OcrEngine::Ollama => resolve_ocr_model(settings.as_ref().and_then(|s| s.ocr_model.clone())),
     };
+    let backend = OcrBackend::new(&BackendConfig::new(
+        engine,
+        settings.as_ref().and_then(|s| s.llama_base_url.clone()),
+        settings.as_ref().and_then(|s| s.llama_api_key.clone()),
+    ));
+    let engine_ready = backend.health_check().await.unwrap_or(false);
+    // llama.cpp はサーバー側で単一モデルをロード済みのため、モデル名は照合しない
+    // （ensure_model が health_check だけ見る）。engine_ready なら準備完了扱い。
+    let ocr_model_ready = engine_ready && backend.ensure_model(&ocr_model_name).await.is_ok();
 
     Ok(EnvironmentStatus {
         project_root: project_root.to_string_lossy().to_string(),
@@ -116,7 +126,8 @@ pub async fn check_environment() -> Result<EnvironmentStatus, String> {
         poppler_found,
         poppler_path: poppler_path.map(|p| p.to_string_lossy().to_string()),
         resource_roots: resource_roots_display,
-        ollama_running,
+        ocr_engine: engine.as_str().to_string(),
+        engine_ready,
         ocr_model_ready,
         ocr_model_name,
     })

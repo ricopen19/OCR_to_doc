@@ -18,7 +18,8 @@ export type EnvironmentStatus = {
   popplerFound: boolean
   popplerPath?: string
   resourceRoots?: string[]
-  ollamaRunning: boolean
+  ocrEngine: 'ollama' | 'llamacpp'
+  engineReady: boolean
   ocrModelReady: boolean
   ocrModelName: string
 }
@@ -55,7 +56,8 @@ export async function checkEnvironment(): Promise<EnvironmentStatus> {
     popplerFound: false,
     popplerPath: undefined,
     resourceRoots: [],
-    ollamaRunning: false,
+    ocrEngine: 'ollama',
+    engineReady: false,
     ocrModelReady: false,
     ocrModelName: 'glm-ocr',
   }
