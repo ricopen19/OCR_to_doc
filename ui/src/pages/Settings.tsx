@@ -279,11 +279,22 @@ export const Settings = forwardRef<SettingsHandle, SettingsProps>(function Setti
                                     { label: 'llama.cpp', value: 'llamacpp' },
                                 ]}
                                 value={settings.ocrEngine ?? 'ollama'}
-                                onChange={(v) =>
+                                onChange={(v) => {
+                                    const engine = v as 'ollama' | 'llamacpp'
+                                    // エンジンごとにモデルの意味が違うので、切替時に
+                                    // 前エンジンの一覧・選択・エラーをクリアする
+                                    setFetchedModels([])
+                                    setModelError(null)
                                     setSettings((prev) =>
-                                        prev ? { ...prev, ocrEngine: v as 'ollama' | 'llamacpp' } : prev
+                                        prev
+                                            ? {
+                                                  ...prev,
+                                                  ocrEngine: engine,
+                                                  ocrModel: engine === 'ollama' ? 'glm-ocr' : '',
+                                              }
+                                            : prev
                                     )
-                                }
+                                }}
                             />
                             <Text size="xs" c="dimmed">
                                 llama.cpp はこの PC で起動している llama-server に接続します（上級者向け）。
@@ -320,12 +331,20 @@ export const Settings = forwardRef<SettingsHandle, SettingsProps>(function Setti
                         <Group align="flex-end">
                             <Select
                                 label="OCR モデル"
-                                description="「再取得」で接続先から一覧を読み込みます"
-                                placeholder="glm-ocr"
+                                description={
+                                    settings.ocrEngine === 'llamacpp'
+                                        ? '「再取得」で llama-server の一覧を読み込み、使用するモデルを選択'
+                                        : '「再取得」で Ollama の一覧を読み込みます'
+                                }
+                                placeholder={settings.ocrEngine === 'llamacpp' ? '「再取得」から選択' : 'glm-ocr'}
                                 data={modelOptions}
-                                value={settings.ocrModel ?? 'glm-ocr'}
+                                value={settings.ocrModel || ''}
                                 onChange={(v) =>
-                                    setSettings((prev) => (prev ? { ...prev, ocrModel: v ?? 'glm-ocr' } : prev))
+                                    setSettings((prev) =>
+                                        prev
+                                            ? { ...prev, ocrModel: v ?? (prev.ocrEngine === 'ollama' ? 'glm-ocr' : '') }
+                                            : prev
+                                    )
                                 }
                                 searchable
                                 flex={1}
