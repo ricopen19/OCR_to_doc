@@ -8,17 +8,18 @@ use image::GenericImageView;
 use regex::Regex;
 
 use crate::job::CropRect;
-use crate::ollama::client::OllamaClient;
+use crate::ollama::engine::{BackendConfig, OcrBackend};
 use super::pdf_to_images::{
     is_pdf_file, is_image_file,
     pdf_page_count, pdf_single_page_to_image,
 };
 
-/// OCR に使うモデル。以前は速度優先で Unlimited-OCR-GGUF（本文）と glm-ocr（表の
+/// 既定の OCR モデル。以前は速度優先で Unlimited-OCR-GGUF（本文）と glm-ocr（表の
 /// 再OCR）を使い分けていたが、Unlimited OCR は本文生成でも既知の暴走生成
 /// （反復ハルシネーション）を起こすことが実機検証で判明したため撤去し、
 /// 過去に安定運用できていた glm-ocr 一本構成に戻した。
-pub(crate) const OCR_MODEL: &str = "glm-ocr";
+/// エンジン選択（ADR-018）後も、設定でモデルを指定しなかった場合の既定値。
+pub(crate) use crate::ollama::engine::DEFAULT_OCR_MODEL as OCR_MODEL;
 
 /// `\( ... \)` / `\[ ... \]` を Obsidian 等のデフォルト Markdown レンダラが認識する
 /// `$ ... $` / `$$ ... $$` に変換する。Unlimited OCR は LaTeX 区切りとして
@@ -322,8 +323,10 @@ pub struct OcrOptions {
     /// 正規化トリミング範囲（left/top/width/height, 0〜1）。ページ画像に対して適用する。
     pub crop: Option<CropRect>,
     /// PDF に埋め込まれたテキストを（信頼できる場合に限り）そのまま使い、
-    /// 該当ページの Ollama OCR 呼び出しをスキップする。
+    /// 該当ページの OCR 呼び出しをスキップする。
     pub use_embedded_text: bool,
+    /// OCR バックエンド（エンジンと接続先）。
+    pub backend: BackendConfig,
 }
 
 impl Default for OcrOptions {
@@ -341,6 +344,7 @@ impl Default for OcrOptions {
             rest_seconds: 10,
             crop: None,
             use_embedded_text: false,
+            backend: BackendConfig::ollama_default(),
         }
     }
 }
@@ -355,17 +359,12 @@ pub async fn run_ocr_pipeline(
     fs::create_dir_all(result_dir)
         .map_err(|e| format!("出力ディレクトリ作成失敗: {e}"))?;
 
-    let client = OllamaClient::new();
+    let client = OcrBackend::new(&options.backend);
 
     if !client.health_check().await? {
-        return Err("Ollama が起動していません。Ollama を起動してください。".to_string());
+        return Err(client.not_running_hint());
     }
-    if !client.has_model(&options.ocr_model).await? {
-        return Err(format!(
-            "OCR モデル '{}' が見つかりません。'ollama pull {}' を実行してください。",
-            options.ocr_model, options.ocr_model
-        ));
-    }
+    client.ensure_model(&options.ocr_model).await?;
 
     let mut md_paths = Vec::new();
     let total_for_progress;
@@ -543,7 +542,7 @@ async fn ocr_image_to_md(
     page_num: u32,
     total: u32,
     options: &OcrOptions,
-    client: &OllamaClient,
+    client: &OcrBackend,
     on_progress: Option<&ProgressCallback>,
 ) -> Result<PathBuf, String> {
     let image_base64 = encode_image_for_ocr(image_path)?;

@@ -135,13 +135,16 @@ export function Home({ onNavigate }: HomeProps) {
 
     const visibleRecent = showAllHistory ? recent : recent.slice(0, 3)
 
+    const isLlamaCpp = env?.ocrEngine === 'llamacpp'
+    const engineLabel = isLlamaCpp ? 'llama.cpp サーバー' : 'Ollama'
+
     const envAllOk = env
-        ? env.resultDirFound && env.popplerFound && env.ollamaRunning && env.ocrModelReady
+        ? env.resultDirFound && env.popplerFound && env.engineReady && env.ocrModelReady
         : false
 
     const ocrModelBadge = () => {
         if (!env) return { label: '...', color: 'gray' }
-        if (!env.ollamaRunning) return { label: '確認不可', color: 'orange' }
+        if (!env.engineReady) return { label: '確認不可', color: 'orange' }
         return env.ocrModelReady
             ? { label: 'OK', color: 'green' }
             : { label: 'NG', color: 'red' }
@@ -360,14 +363,19 @@ export function Home({ onNavigate }: HomeProps) {
                                     />
                                 )}
 
-                                {/* Ollama */}
+                                {/* OCR エンジン */}
                                 <Group justify="space-between">
-                                    <Text size="sm">Ollama</Text>
-                                    <Badge color={env?.ollamaRunning ? 'green' : 'red'} variant="light">
-                                        {env?.ollamaRunning ? '起動中' : '停止中'}
+                                    <Text size="sm">{engineLabel}</Text>
+                                    <Badge color={env?.engineReady ? 'green' : 'red'} variant="light">
+                                        {env?.engineReady ? (isLlamaCpp ? '接続OK' : '起動中') : (isLlamaCpp ? '未接続' : '停止中')}
                                     </Badge>
                                 </Group>
-                                {env && !env.ollamaRunning && (
+                                {env && !env.engineReady && isLlamaCpp && (
+                                    <Text size="xs" c="dimmed" pl="sm">
+                                        llama-server を起動し、設定画面の接続先 URL（既定 http://localhost:8080）を確認してください。
+                                    </Text>
+                                )}
+                                {env && !env.engineReady && !isLlamaCpp && (
                                     <Stack gap={4}>
                                         <Text size="xs" c="dimmed" pl="sm">起動:</Text>
                                         <CopyRow
@@ -386,14 +394,14 @@ export function Home({ onNavigate }: HomeProps) {
                                     </Stack>
                                 )}
 
-                                {/* glm-ocr モデル */}
+                                {/* OCR モデル */}
                                 <Group justify="space-between">
                                     <Text size="sm">{env?.ocrModelName || 'glm-ocr'} モデル</Text>
                                     <Badge color={ocrModelBadge().color} variant="light">
                                         {ocrModelBadge().label}
                                     </Badge>
                                 </Group>
-                                {env && !env.ocrModelReady && (
+                                {env && !env.ocrModelReady && !isLlamaCpp && (
                                     <CopyRow
                                         cmd={`ollama pull ${env.ocrModelName || 'glm-ocr'}:latest`}
                                         copyKey="glm-ocr-pull"

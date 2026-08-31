@@ -269,3 +269,47 @@ Rust 側（`ui/src-tauri`）のみ削除を実施。Python 側は対象外とし
   （`test_image_normalizer.py` は本変更と無関係な環境要因＝ローカルの `libcairo`
   未検出で実行不可、既存の別問題として `docs/tasks.md` に記録）。フロントエンドの
   `npx tsc --noEmit` / `npm run build` は本コミット作成時に別途検証
+
+## ADR-018: OCR エンジンを選択式にする（Ollama 既定 + llama.cpp オプション）
+
+- **日付**: 2026-08-31
+- **決定**: OCR バックエンドを設定で切り替え可能にする。既定は従来どおり Ollama
+  （ネイティブ `/api/chat`）。上級者向けに、同一 PC で起動している llama.cpp サーバー
+  （`llama-server`、OpenAI 互換 `/v1/chat/completions`）も選べるようにする。
+  モデル名も設定で選択可能にし、`/api/tags` または `/v1/models` から一覧を取得する。
+- **理由**:
+  - Ollama は多くのモデルで thinking モードが既定 ON になり、OCR 出力に思考ブロックが
+    混入して悪さをするケースがある（対策として全 OCR リクエストに `think: false` を付与）
+  - 直接的な動機は、glm-ocr の代わりに `qwen3-vl-8b-instruct` などを llama.cpp で
+    試したいこと。Ollama に無い量子化・モデルを使う自由度を確保する
+- **却下案**:
+  - llama.cpp をアプリが直接起動（バイナリ同梱 or ライブラリリンク）: OS×アクセラレータ
+    ごとのビルドマトリクス増、プロセス管理・モデル DL の自前実装が必要で「まず小さく」に
+    反する。Ollama をやめて一本化すると決めたとき初めて割に合う投資
+  - Tailscale 等のリモートサーバー対応: 実装量が増えるため今回のスコープ外。URL 欄は
+    自由入力だが既定は `http://localhost:8080` で、当面は同一 PC 上のサーバーを想定
+- **ローカル完結（ADR-003）との関係**: ADR-003 の「すべてローカル PC で完結」は維持。
+  llama.cpp 経路も接続先は既定で localhost であり、別マシンへの送信を促す UI にはしない。
+  ただし URL は自由入力のため、ユーザーが明示的に他ホストを指定することは技術的に可能。
+  入力値のバリデーション（プライベート IP 帯チェック等）は行わない（上級者向け機能の
+  ため過剰と判断）。
+- **セキュリティ**: llama.cpp の API キーは Bearer ヘッダーでのみ送信（URL クエリに
+  入れない）。reqwest のエラーは `without_url()` で URL を除去してから表示・ログ出力する
+  （`client.rs` / `openai_client.rs` 全経路に適用）。
+- **影響**:
+  - Rust: `ollama/engine.rs`（`OcrEngine` / `BackendConfig` / `OcrBackend` を新設し
+    エンジン差をここに閉じ込める）、`ollama/openai_client.rs`（新規）、`ollama/client.rs`
+    （`new()` を base_url 可変化 + `think: false`）、`ocr/pipeline.rs`（`OcrBackend` 経由に
+    変更、`has_model` 事前チェックは llama.cpp ではスキップ）、`lib.rs`（`list_ocr_models`
+    コマンド新設、`run_job_ollama` への配線、終了時アンロードは Ollama 経路のみ）、
+    `settings.rs` / `job.rs`（`ocr_engine` / `ocr_model` / `llama_base_url` / `llama_api_key`）、
+    `environment.rs`（選択エンジンに対する準備完了判定。`EnvironmentStatus.ollama_running`
+    → `engine_ready` にリネーム、`ocr_engine` 追加）
+  - フロント: `api/settings.ts` / `api/runJob.ts`（型 + `listOcrModels()`）、`App.tsx`
+    （`RunJobOptions` に統合。従来 App 側に重複していたインライン型を廃止）、`Settings.tsx`
+    （エンジン `SegmentedControl` + llama.cpp 用 URL/APIキー欄 + モデル `Select` + 再取得）、
+    `Home.tsx`（環境パネルをエンジン別表示に）、`api/history.ts`（`ollamaRunning`
+    → `engineReady`、`ocrEngine` 追加）
+  - 検証: `cargo build` / `cargo test --lib`（14 passed）/ `npx tsc --noEmit` /
+    `npm run build` 成功。llama.cpp 実サーバーでの通し実行は未実施（ユーザーが
+    `llama-server` 起動時に確認予定）

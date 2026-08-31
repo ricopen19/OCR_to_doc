@@ -12,6 +12,10 @@ export interface AppSettings {
     enableRest: boolean
     restSeconds?: number
     pdfDpi?: number
+    ocrEngine?: 'ollama' | 'llamacpp'
+    ocrModel?: string
+    llamaBaseUrl?: string
+    llamaApiKey?: string
     windowWidth?: number
     windowHeight?: number
     previewQuality?: 'light' | 'standard' | 'high'
@@ -27,6 +31,8 @@ const DEFAULT_SETTINGS: AppSettings = {
     enableRest: true,
     restSeconds: 5,
     pdfDpi: 150,
+    ocrEngine: 'ollama',
+    ocrModel: 'glm-ocr',
     windowWidth: 1200,
     windowHeight: 760,
     previewQuality: 'light',

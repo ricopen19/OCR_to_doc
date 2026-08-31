@@ -13,11 +13,14 @@ import {
     NumberInput,
     Collapse,
     SegmentedControl,
+    Select,
+    PasswordInput,
 } from '@mantine/core'
 import { IconDeviceFloppy, IconFolder } from '@tabler/icons-react'
 import { open } from '@tauri-apps/plugin-dialog'
 import { notifications } from '@mantine/notifications'
 import { getCurrentWindowSize, type AppSettings, loadSettings, saveSettings } from '../api/settings'
+import { listOcrModels } from '../api/runJob'
 
 export type SettingsHandle = {
     isDirty: () => boolean
@@ -42,6 +45,35 @@ export const Settings = forwardRef<SettingsHandle, SettingsProps>(function Setti
     const [settings, setSettings] = useState<AppSettings | null>(null)
     const [initialSnapshot, setInitialSnapshot] = useState<string | null>(null)
     const [loading, setLoading] = useState(false)
+    const [fetchedModels, setFetchedModels] = useState<string[]>([])
+    const [modelsLoading, setModelsLoading] = useState(false)
+    const [modelError, setModelError] = useState<string | null>(null)
+
+    const modelOptions = useMemo(() => {
+        const set = new Set<string>(fetchedModels)
+        const cur = settings?.ocrModel?.trim()
+        if (cur) set.add(cur)
+        return Array.from(set)
+    }, [fetchedModels, settings?.ocrModel])
+
+    const fetchModels = useCallback(async () => {
+        if (!settings) return
+        setModelsLoading(true)
+        setModelError(null)
+        try {
+            const list = await listOcrModels(
+                settings.ocrEngine ?? 'ollama',
+                settings.llamaBaseUrl?.trim() || undefined,
+                settings.llamaApiKey?.trim() || undefined,
+            )
+            setFetchedModels(list)
+            if (list.length === 0) setModelError('モデルが見つかりませんでした')
+        } catch (e) {
+            setModelError(String(e))
+        } finally {
+            setModelsLoading(false)
+        }
+    }, [settings])
 
     useEffect(() => {
         loadSettings().then((s) => {
@@ -231,6 +263,81 @@ export const Settings = forwardRef<SettingsHandle, SettingsProps>(function Setti
                         出力形式 / 表出力モード / 処理モード / PDF DPI のデフォルトは「実行」画面で設定し、
                         「デフォルトに保存」から保存してください。
                     </Text>
+                </Card>
+
+                {/* OCR Engine */}
+                <Card withBorder shadow="sm" radius="lg" padding="lg">
+                    <Text fw={600} size="sm" c="dimmed" tt="uppercase" mb="sm" style={{ letterSpacing: '0.5px' }}>
+                        OCR エンジン
+                    </Text>
+                    <Stack gap="md">
+                        <Stack gap={4}>
+                            <Text size="sm" fw={600}>エンジン</Text>
+                            <SegmentedControl
+                                data={[
+                                    { label: 'Ollama（推奨）', value: 'ollama' },
+                                    { label: 'llama.cpp', value: 'llamacpp' },
+                                ]}
+                                value={settings.ocrEngine ?? 'ollama'}
+                                onChange={(v) =>
+                                    setSettings((prev) =>
+                                        prev ? { ...prev, ocrEngine: v as 'ollama' | 'llamacpp' } : prev
+                                    )
+                                }
+                            />
+                            <Text size="xs" c="dimmed">
+                                llama.cpp はこの PC で起動している llama-server に接続します（上級者向け）。
+                                サーバーの起動・モデルの用意は各自で行ってください。
+                            </Text>
+                        </Stack>
+
+                        {settings.ocrEngine === 'llamacpp' && (
+                            <>
+                                <TextInput
+                                    label="llama-server の接続先"
+                                    description="空欄で既定（http://localhost:8080）"
+                                    placeholder="http://localhost:8080"
+                                    value={settings.llamaBaseUrl ?? ''}
+                                    onChange={(e) =>
+                                        setSettings((prev) =>
+                                            prev ? { ...prev, llamaBaseUrl: e.target.value || undefined } : prev
+                                        )
+                                    }
+                                />
+                                <PasswordInput
+                                    label="API キー"
+                                    description="llama-server が認証を要求する場合のみ"
+                                    value={settings.llamaApiKey ?? ''}
+                                    onChange={(e) =>
+                                        setSettings((prev) =>
+                                            prev ? { ...prev, llamaApiKey: e.target.value || undefined } : prev
+                                        )
+                                    }
+                                />
+                            </>
+                        )}
+
+                        <Group align="flex-end">
+                            <Select
+                                label="OCR モデル"
+                                description="「再取得」で接続先から一覧を読み込みます"
+                                placeholder="glm-ocr"
+                                data={modelOptions}
+                                value={settings.ocrModel ?? 'glm-ocr'}
+                                onChange={(v) =>
+                                    setSettings((prev) => (prev ? { ...prev, ocrModel: v ?? 'glm-ocr' } : prev))
+                                }
+                                searchable
+                                flex={1}
+                            />
+                            <Button variant="light" loading={modelsLoading} onClick={fetchModels}>
+                                再取得
+                            </Button>
+                        </Group>
+                        {modelError && (
+                            <Text size="xs" c="red">{modelError}</Text>
+                        )}
+                    </Stack>
                 </Card>
 
                 {/* Excel Settings */}

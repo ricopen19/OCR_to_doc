@@ -28,6 +28,10 @@ pub struct ChatRequest {
     pub model: String,
     pub messages: Vec<ChatMessage>,
     pub stream: bool,
+    /// thinking 対応モデルの思考出力を抑制する。OCR では思考ブロックが
+    /// 本文に混入して悪さをするため常に false を送る（非対応モデルは無視する）。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub think: Option<bool>,
     /// モデルのメモリ保持時間。"3m" = 3分後に自動アンロード。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub keep_alive: Option<String>,

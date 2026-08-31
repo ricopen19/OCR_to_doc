@@ -18,6 +18,10 @@ export type RunOptions = {
   pdfDpi?: number
   fileOptions?: Record<string, FileSpecificOptions>
   useEmbeddedText?: boolean
+  ocrEngine?: 'ollama' | 'llamacpp'
+  ocrModel?: string
+  llamaBaseUrl?: string
+  llamaApiKey?: string
 }
 
 export type PdfTextDetection = {
@@ -115,6 +119,16 @@ export async function detectPdfText(path: string): Promise<PdfTextDetection | nu
   } catch {
     return null
   }
+}
+
+export async function listOcrModels(
+  engine: 'ollama' | 'llamacpp',
+  baseUrl?: string,
+  apiKey?: string,
+): Promise<string[]> {
+  const hasTauri = typeof window !== 'undefined' && ('__TAURI__' in window || '__TAURI_INTERNALS__' in window)
+  if (!hasTauri) return []
+  return invoke<string[]>('list_ocr_models', { engine, baseUrl, apiKey })
 }
 
 export async function openInputFile(path: string): Promise<void> {

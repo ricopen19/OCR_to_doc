@@ -71,6 +71,10 @@ export interface RunJobOptions {
     pdfDpi: number
     fileOptions: Record<string, { start?: number; end?: number; crop?: CropRect }>
     useEmbeddedText: boolean
+    ocrEngine: 'ollama' | 'llamacpp'
+    ocrModel: string
+    llamaBaseUrl?: string
+    llamaApiKey?: string
 }
 
 interface RunJobProps {

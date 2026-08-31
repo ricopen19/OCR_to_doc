@@ -14,14 +14,13 @@ import {
 import { runJob, getProgress, getResult } from './api/runJob'
 import { Sidebar, type PageKey } from './components/Layout/Sidebar'
 import { Home } from './pages/Home'
-import { RunJob } from './pages/RunJob'
+import { RunJob, type RunJobOptions } from './pages/RunJob'
 import { Result } from './pages/Result'
 import { Settings, type SettingsHandle } from './pages/Settings'
 import { HelpAbout } from './pages/HelpAbout'
 import { HelpHowToUse } from './pages/HelpHowToUse'
 import { HelpTroubleshooting } from './pages/HelpTroubleshooting'
 import { loadSettings, type AppSettings } from './api/settings'
-import type { CropRect } from './types/crop'
 
 function App() {
   const [opened, setOpened] = useState(true)
@@ -54,18 +53,7 @@ function App() {
   const [navPendingPage, setNavPendingPage] = useState<PageKey | null>(null)
   const [navSaving, setNavSaving] = useState(false)
   const [previewQuality, setPreviewQuality] = useState<'light' | 'standard' | 'high'>('light')
-  const [options, setOptions] = useState<{
-    formats: string[]
-    enableFigure: boolean
-    docxEngine: 'python' | 'pandoc'
-    excelMode: 'layout' | 'table'
-    excelMetaSheet: boolean
-    enableRest: boolean
-    restSeconds: number
-    pdfDpi: number
-    fileOptions: Record<string, { start?: number; end?: number; crop?: CropRect }>
-    useEmbeddedText: boolean
-  }>({
+  const [options, setOptions] = useState<RunJobOptions>({
     formats: ['md'],
     enableFigure: false,
     docxEngine: 'python',
@@ -76,6 +64,8 @@ function App() {
     pdfDpi: 150,
     fileOptions: {},
     useEmbeddedText: false,
+    ocrEngine: 'ollama',
+    ocrModel: 'glm-ocr',
   })
 
   const closeNavConfirm = () => {
@@ -108,6 +98,10 @@ function App() {
           enableRest: s.enableRest,
           restSeconds: s.restSeconds ?? 10,
           pdfDpi: s.pdfDpi ?? 150,
+          ocrEngine: s.ocrEngine ?? 'ollama',
+          ocrModel: s.ocrModel?.trim() || 'glm-ocr',
+          llamaBaseUrl: s.llamaBaseUrl,
+          llamaApiKey: s.llamaApiKey,
         }))
         setPreviewQuality(s.previewQuality ?? 'light')
     }).catch(console.error)
@@ -134,6 +128,10 @@ function App() {
       enableRest: s.enableRest,
       restSeconds: s.restSeconds ?? 10,
       pdfDpi: s.pdfDpi ?? 150,
+      ocrEngine: s.ocrEngine ?? 'ollama',
+      ocrModel: s.ocrModel?.trim() || 'glm-ocr',
+      llamaBaseUrl: s.llamaBaseUrl,
+      llamaApiKey: s.llamaApiKey,
     }))
     setPreviewQuality(s.previewQuality ?? 'light')
   }

@@ -24,6 +24,18 @@ pub struct AppSettings {
     pub rest_seconds: Option<u32>,
     #[serde(default)]
     pub pdf_dpi: Option<u32>,
+    /// OCR エンジン識別子（"ollama" | "llamacpp"）。
+    #[serde(default)]
+    pub ocr_engine: Option<String>,
+    /// 使用する OCR モデル名（未指定は既定モデル）。
+    #[serde(default)]
+    pub ocr_model: Option<String>,
+    /// llama.cpp のベース URL（エンジンが llamacpp のときのみ）。
+    #[serde(default)]
+    pub llama_base_url: Option<String>,
+    /// llama.cpp が認証を要求する場合の API キー。
+    #[serde(default)]
+    pub llama_api_key: Option<String>,
     #[serde(default)]
     pub window_width: Option<u32>,
     #[serde(default)]
@@ -74,6 +86,10 @@ pub fn load_settings_from_disk(
         enable_rest: true,
         rest_seconds: Some(5),
         pdf_dpi: Some(150),
+        ocr_engine: Some("ollama".into()),
+        ocr_model: Some("glm-ocr".into()),
+        llama_base_url: None,
+        llama_api_key: None,
         window_width: Some(1200),
         window_height: Some(760),
         preview_quality: default_preview_quality(),

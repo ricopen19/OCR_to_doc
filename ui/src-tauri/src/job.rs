@@ -55,6 +55,18 @@ pub struct RunOptions {
     pub file_options: Option<HashMap<String, FileSpecificOptions>>,
     #[serde(default)]
     pub use_embedded_text: bool,
+    /// OCR エンジン識別子（"ollama" | "llamacpp"）。未指定は "ollama" 扱い。
+    #[serde(default)]
+    pub ocr_engine: Option<String>,
+    /// 使用する OCR モデル名。未指定は既定モデル（glm-ocr）。
+    #[serde(default)]
+    pub ocr_model: Option<String>,
+    /// llama.cpp のベース URL。エンジンが llamacpp のときのみ使用。
+    #[serde(default)]
+    pub llama_base_url: Option<String>,
+    /// llama.cpp が認証を要求する場合の API キー。
+    #[serde(default)]
+    pub llama_api_key: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -122,7 +134,11 @@ pub struct EnvironmentStatus {
     pub poppler_found: bool,
     pub poppler_path: Option<String>,
     pub resource_roots: Vec<String>,
-    pub ollama_running: bool,
+    /// 選択中の OCR エンジン（"ollama" | "llamacpp"）。
+    pub ocr_engine: String,
+    /// 選択中エンジンのサーバーに接続できるか。
+    pub engine_ready: bool,
+    /// OCR モデルが使える状態か（Ollama: pull 済み / llama.cpp: サーバー応答あり）。
     pub ocr_model_ready: bool,
     pub ocr_model_name: String,
 }

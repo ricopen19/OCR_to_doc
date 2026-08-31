@@ -10,9 +10,13 @@ pub struct OllamaClient {
 }
 
 impl OllamaClient {
-    pub fn new() -> Self {
+    /// `base_url` が None なら既定（http://localhost:11434）を使う。
+    pub fn new(base_url: Option<String>) -> Self {
         Self {
-            base_url: DEFAULT_BASE_URL.to_string(),
+            base_url: base_url
+                .map(|u| u.trim_end_matches('/').to_string())
+                .filter(|u| !u.is_empty())
+                .unwrap_or_else(|| DEFAULT_BASE_URL.to_string()),
             http: reqwest::Client::new(),
         }
     }
@@ -38,9 +42,9 @@ impl OllamaClient {
             match self.http.get(&url).send().await {
                 Ok(resp) => match resp.json::<TagsResponse>().await {
                     Ok(tags) => return Ok(tags.models),
-                    Err(e) => last_err = format!("レスポンスのパースに失敗: {e}"),
+                    Err(e) => last_err = format!("レスポンスのパースに失敗: {}", e.without_url()),
                 },
-                Err(e) => last_err = format!("Ollama への接続に失敗: {e}"),
+                Err(e) => last_err = format!("Ollama への接続に失敗: {}", e.without_url()),
             }
         }
         Err(last_err)
@@ -71,6 +75,7 @@ impl OllamaClient {
                 images: Some(vec![image_base64.to_string()]),
             }],
             stream: false,
+            think: Some(false),
             // OCR は常に単一モデル（glm-ocr）で行うため、常駐時間は短めで十分
             // （アプリ終了時は lib.rs で明示アンロード）。
             keep_alive: Some("3m".to_string()),
@@ -89,7 +94,7 @@ impl OllamaClient {
             .json(&request)
             .send()
             .await
-            .map_err(|e| format!("Ollama OCR リクエスト失敗: {e}"))?;
+            .map_err(|e| format!("Ollama OCR リクエスト失敗: {}", e.without_url()))?;
 
         if !resp.status().is_success() {
             let status = resp.status();
@@ -100,7 +105,7 @@ impl OllamaClient {
         let chat_resp: ChatResponse = resp
             .json()
             .await
-            .map_err(|e| format!("OCR レスポンスのパースに失敗: {e}"))?;
+            .map_err(|e| format!("OCR レスポンスのパースに失敗: {}", e.without_url()))?;
         Ok(chat_resp.message.content)
     }
 
@@ -112,7 +117,7 @@ impl OllamaClient {
         let resp = timeout(Duration::from_secs(3), fut)
             .await
             .map_err(|_| "unload timeout".to_string())?
-            .map_err(|e| format!("unload リクエスト失敗: {e}"))?;
+            .map_err(|e| format!("unload リクエスト失敗: {}", e.without_url()))?;
         let _ = resp.bytes().await;
         Ok(())
     }
