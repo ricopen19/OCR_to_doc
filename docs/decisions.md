@@ -311,5 +311,20 @@ Rust 側（`ui/src-tauri`）のみ削除を実施。Python 側は対象外とし
     `Home.tsx`（環境パネルをエンジン別表示に）、`api/history.ts`（`ollamaRunning`
     → `engineReady`、`ocrEngine` 追加）
   - 検証: `cargo build` / `cargo test --lib`（14 passed）/ `npx tsc --noEmit` /
-    `npm run build` 成功。llama.cpp 実サーバーでの通し実行は未実施（ユーザーが
-    `llama-server` 起動時に確認予定）
+    `npm run build` 成功。
+- **実サーバー検証（2026-08-31、mlx-vlm サーバーに対して実施）**:
+  - 対象は GGUF ではなく MLX モデル（`mlx-community/Qwen3-VL-8B-Instruct-4bit`）
+    だったため llama.cpp ではなく `mlx-vlm` サーバー（`python -m mlx_vlm.server`、
+    要 `jinja2`）を使用。OpenAI 互換 `/v1` を同じく提供する
+  - `/v1/models` は `data[].id` を返す（HF キャッシュ内モデルのカタログを返す実装。
+    起動中モデルの id も含まれるので「再取得」→ Select で選択可能）
+  - `data:image/png;base64,...` 画像入力・日本語 OCR とも正常（実測 ~27 tok/s / ~6.4GB）
+  - **`repeat_penalty` は mlx-vlm では黙って無視される**。mlx-vlm が解釈するのは
+    `repetition_penalty`（実測で出力が変わることを確認）。llama.cpp は `repeat_penalty`、
+    vLLM も `repetition_penalty` を使うため、`openai_client.rs` は両名を送るように修正した
+    （知らないフィールドはどのサーバーも 400 にせず無視することを実測）
+  - **`model` フィールドは無視されない**。mlx-vlm サーバーは指定名のモデルを都度ロード
+    しようとするため、アプリの `ocrModel` は起動中モデルの id と完全一致させる必要がある
+    （例: `mlx-community/Qwen3-VL-8B-Instruct-4bit`）。不一致だと HF fetch に走って 400
+  - thinking は `--enable-thinking` 未指定で OFF。OCR 出力に思考は混入しなかった
+  - 起動コマンドは `docs/tasks.md` に控えた
