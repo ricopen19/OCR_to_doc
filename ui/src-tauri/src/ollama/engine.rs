@@ -80,9 +80,11 @@ pub enum OcrBackend {
 impl OcrBackend {
     pub fn new(cfg: &BackendConfig) -> Self {
         match cfg.engine {
-            OcrEngine::Ollama => {
-                Self::Ollama(OllamaClient::new(cfg.base_url.clone()))
-            }
+            // Ollama は常に既定の localhost:11434 を使う。`base_url` / `api_key` は
+            // llama.cpp 用の設定であり、呼び出し元がエンジンに関係なく渡してくるため
+            // ここで無視する（渡すと Ollama クライアントが llama.cpp サーバーに
+            // `/api/tags` を投げてパース失敗する）。
+            OcrEngine::Ollama => Self::Ollama(OllamaClient::new()),
             OcrEngine::LlamaCpp => Self::LlamaCpp(OpenAiClient::new(
                 cfg.base_url.clone(),
                 cfg.api_key.clone(),

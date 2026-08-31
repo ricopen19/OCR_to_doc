@@ -788,7 +788,7 @@ async fn unload_model_if_ollama() {
         return;
     }
     let model = crate::ollama::engine::resolve_ocr_model(s.ocr_model);
-    let _ = crate::ollama::client::OllamaClient::new(None)
+    let _ = crate::ollama::client::OllamaClient::new()
         .unload_model(&model)
         .await;
 }

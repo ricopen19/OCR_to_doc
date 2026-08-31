@@ -10,13 +10,11 @@ pub struct OllamaClient {
 }
 
 impl OllamaClient {
-    /// `base_url` が None なら既定（http://localhost:11434）を使う。
-    pub fn new(base_url: Option<String>) -> Self {
+    /// 接続先は常に既定（http://localhost:11434）。カスタム URL 対応はリモート
+    /// Ollama を扱うときに追加する（現状は不要）。
+    pub fn new() -> Self {
         Self {
-            base_url: base_url
-                .map(|u| u.trim_end_matches('/').to_string())
-                .filter(|u| !u.is_empty())
-                .unwrap_or_else(|| DEFAULT_BASE_URL.to_string()),
+            base_url: DEFAULT_BASE_URL.to_string(),
             http: reqwest::Client::new(),
         }
     }
@@ -40,6 +38,12 @@ impl OllamaClient {
                 tokio::time::sleep(Duration::from_millis(500)).await;
             }
             match self.http.get(&url).send().await {
+                Ok(resp) if !resp.status().is_success() => {
+                    let status = resp.status();
+                    let body = resp.text().await.unwrap_or_default();
+                    let body: String = body.chars().take(200).collect();
+                    last_err = format!("Ollama エラー (HTTP {status}): {body}");
+                }
                 Ok(resp) => match resp.json::<TagsResponse>().await {
                     Ok(tags) => return Ok(tags.models),
                     Err(e) => last_err = format!("レスポンスのパースに失敗: {}", e.without_url()),
