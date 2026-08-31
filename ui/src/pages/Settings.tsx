@@ -49,12 +49,19 @@ export const Settings = forwardRef<SettingsHandle, SettingsProps>(function Setti
     const [modelsLoading, setModelsLoading] = useState(false)
     const [modelError, setModelError] = useState<string | null>(null)
 
+    // llama.cpp のモデルはサーバー依存なので、「再取得」した一覧に無い値は候補に出さない
+    //（前エンジンで選んだ Ollama モデル名が残って見えるのを防ぐ）。
+    // Ollama は既定モデル(glm-ocr)を fetch なしでも選べるので現在値を候補に含める。
     const modelOptions = useMemo(() => {
         const set = new Set<string>(fetchedModels)
         const cur = settings?.ocrModel?.trim()
-        if (cur) set.add(cur)
+        if (cur && settings?.ocrEngine !== 'llamacpp') set.add(cur)
         return Array.from(set)
-    }, [fetchedModels, settings?.ocrModel])
+    }, [fetchedModels, settings?.ocrModel, settings?.ocrEngine])
+
+    // Select に渡す表示値。候補に無いものは空（= placeholder）にする。
+    const modelValue =
+        settings?.ocrModel && modelOptions.includes(settings.ocrModel) ? settings.ocrModel : ''
 
     const fetchModels = useCallback(async () => {
         if (!settings) return
@@ -338,7 +345,7 @@ export const Settings = forwardRef<SettingsHandle, SettingsProps>(function Setti
                                 }
                                 placeholder={settings.ocrEngine === 'llamacpp' ? '「再取得」から選択' : 'glm-ocr'}
                                 data={modelOptions}
-                                value={settings.ocrModel || ''}
+                                value={modelValue}
                                 onChange={(v) =>
                                     setSettings((prev) =>
                                         prev
