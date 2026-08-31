@@ -99,19 +99,28 @@ async fn run_job_ollama(
         ocr_model: None,
         llama_base_url: None,
         llama_api_key: None,
+        llama_model: None,
     });
 
-    let engine = crate::ollama::engine::OcrEngine::parse(opts.ocr_engine.as_deref());
-    // llama.cpp はサーバーが指定名のモデルをロードしようとするため、モデル未選択で
-    // 既定(glm-ocr)にフォールバックさせると HF fetch に走って失敗する。ここで弾く。
-    if engine == crate::ollama::engine::OcrEngine::LlamaCpp
-        && opts.ocr_model.as_deref().unwrap_or("").trim().is_empty()
-    {
-        return Err(
-            "llama.cpp エンジンではモデルを選択してください（設定画面で「再取得」→モデルを選択）。"
-                .into(),
-        );
-    }
+    use crate::ollama::engine::OcrEngine;
+    let engine = OcrEngine::parse(opts.ocr_engine.as_deref());
+
+    // エンジンごとにモデル欄が別（Ollama: ocr_model / llama.cpp: llama_model）。
+    // llama.cpp はサーバーが指定名のモデルをロードしようとするため、未選択のまま
+    // 実行させると HF fetch に走って失敗する。ここで弾く。
+    let ocr_model = match engine {
+        OcrEngine::LlamaCpp => {
+            let m = opts.llama_model.as_deref().unwrap_or("").trim().to_string();
+            if m.is_empty() {
+                return Err(
+                    "llama.cpp エンジンではモデルを選択してください（設定画面で「再取得」→モデルを選択）。"
+                        .into(),
+                );
+            }
+            m
+        }
+        OcrEngine::Ollama => crate::ollama::engine::resolve_ocr_model(opts.ocr_model.clone()),
+    };
 
     let job_id = Uuid::new_v4().to_string();
     {
@@ -146,7 +155,6 @@ async fn run_job_ollama(
     let excel_mode = opts.excel_mode.clone();
     let excel_meta_sheet = opts.excel_meta_sheet;
     let use_embedded_text = opts.use_embedded_text;
-    let ocr_model = crate::ollama::engine::resolve_ocr_model(opts.ocr_model.clone());
     let backend_cfg = crate::ollama::engine::BackendConfig::new(
         engine,
         opts.llama_base_url.clone(),

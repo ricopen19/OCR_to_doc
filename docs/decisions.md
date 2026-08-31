@@ -302,7 +302,7 @@ Rust 側（`ui/src-tauri`）のみ削除を実施。Python 側は対象外とし
     （`new()` を base_url 可変化 + `think: false`）、`ocr/pipeline.rs`（`OcrBackend` 経由に
     変更、`has_model` 事前チェックは llama.cpp ではスキップ）、`lib.rs`（`list_ocr_models`
     コマンド新設、`run_job_ollama` への配線、終了時アンロードは Ollama 経路のみ）、
-    `settings.rs` / `job.rs`（`ocr_engine` / `ocr_model` / `llama_base_url` / `llama_api_key`）、
+    `settings.rs` / `job.rs`（`ocr_engine` / `ocr_model` / `llama_base_url` / `llama_api_key` / `llama_model`）、
     `environment.rs`（選択エンジンに対する準備完了判定。`EnvironmentStatus.ollama_running`
     → `engine_ready` にリネーム、`ocr_engine` 追加）
   - フロント: `api/settings.ts` / `api/runJob.ts`（型 + `listOcrModels()`）、`App.tsx`
@@ -337,3 +337,10 @@ Rust 側（`ui/src-tauri`）のみ削除を実施。Python 側は対象外とし
   - 未知のサンプラーフィールドはどのサーバーも 400 にせず黙って無視する
   - thinking は `--enable-thinking` 未指定で OFF。OCR 出力に思考は混入しなかった
   - 起動コマンドと環境依存パスは `docs/local-llm-server.md`（git 追跡外）に控えた
+  - **UI 検証で判明した設計不備と修正**: OCR モデル欄を当初 `ocr_model` 1 本で
+    Ollama と llama.cpp 兼用にしていたが、両エンジンで値域が全く違う（Ollama:
+    `glm-ocr` / llama.cpp: `mlx-community/...`）ため、エンジン切替後に前エンジンの
+    モデル名が残り、実行時に llama-server へ `glm-ocr` を投げて 400 になる等の
+    不整合が続いた。`llama_model` を別フィールドに分離して解決（`settings.rs` /
+    `job.rs` / フロント型 / `App.tsx` / `Settings.tsx`）。`run_job_ollama` は
+    engine=llamacpp かつ `llama_model` 未選択なら実行前に弾く

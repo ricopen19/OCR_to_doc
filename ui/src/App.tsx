@@ -66,6 +66,7 @@ function App() {
     useEmbeddedText: false,
     ocrEngine: 'ollama',
     ocrModel: 'glm-ocr',
+    llamaModel: undefined,
   })
 
   const closeNavConfirm = () => {
@@ -102,6 +103,7 @@ function App() {
           ocrModel: s.ocrModel?.trim() || 'glm-ocr',
           llamaBaseUrl: s.llamaBaseUrl,
           llamaApiKey: s.llamaApiKey,
+          llamaModel: s.llamaModel,
         }))
         setPreviewQuality(s.previewQuality ?? 'light')
     }).catch(console.error)
@@ -132,6 +134,7 @@ function App() {
       ocrModel: s.ocrModel?.trim() || 'glm-ocr',
       llamaBaseUrl: s.llamaBaseUrl,
       llamaApiKey: s.llamaApiKey,
+      llamaModel: s.llamaModel,
     }))
     setPreviewQuality(s.previewQuality ?? 'light')
   }

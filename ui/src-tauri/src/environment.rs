@@ -95,14 +95,24 @@ pub async fn check_environment() -> Result<EnvironmentStatus, String> {
 
     // OCR バックエンドのチェック（設定で選ばれたエンジンに対して行う）
     let engine = OcrEngine::parse(settings.as_ref().and_then(|s| s.ocr_engine.as_deref()));
-    let ocr_model_name =
-        resolve_ocr_model(settings.as_ref().and_then(|s| s.ocr_model.clone()));
+    // モデル欄はエンジンごとに別（Ollama: ocr_model / llama.cpp: llama_model）
+    let ocr_model_name = match engine {
+        OcrEngine::LlamaCpp => settings
+            .as_ref()
+            .and_then(|s| s.llama_model.clone())
+            .map(|m| m.trim().to_string())
+            .filter(|m| !m.is_empty())
+            .unwrap_or_else(|| "(未選択)".to_string()),
+        OcrEngine::Ollama => resolve_ocr_model(settings.as_ref().and_then(|s| s.ocr_model.clone())),
+    };
     let backend = OcrBackend::new(&BackendConfig::new(
         engine,
         settings.as_ref().and_then(|s| s.llama_base_url.clone()),
         settings.as_ref().and_then(|s| s.llama_api_key.clone()),
     ));
     let engine_ready = backend.health_check().await.unwrap_or(false);
+    // llama.cpp はサーバー側で単一モデルをロード済みのため、モデル名は照合しない
+    // （ensure_model が health_check だけ見る）。engine_ready なら準備完了扱い。
     let ocr_model_ready = engine_ready && backend.ensure_model(&ocr_model_name).await.is_ok();
 
     Ok(EnvironmentStatus {

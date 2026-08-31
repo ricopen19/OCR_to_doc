@@ -75,6 +75,7 @@ export interface RunJobOptions {
     ocrModel: string
     llamaBaseUrl?: string
     llamaApiKey?: string
+    llamaModel?: string
 }
 
 interface RunJobProps {

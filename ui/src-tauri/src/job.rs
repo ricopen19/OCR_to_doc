@@ -58,7 +58,7 @@ pub struct RunOptions {
     /// OCR エンジン識別子（"ollama" | "llamacpp"）。未指定は "ollama" 扱い。
     #[serde(default)]
     pub ocr_engine: Option<String>,
-    /// 使用する OCR モデル名。未指定は既定モデル（glm-ocr）。
+    /// Ollama で使う OCR モデル名。未指定は既定モデル（glm-ocr）。
     #[serde(default)]
     pub ocr_model: Option<String>,
     /// llama.cpp のベース URL。エンジンが llamacpp のときのみ使用。
@@ -67,6 +67,9 @@ pub struct RunOptions {
     /// llama.cpp が認証を要求する場合の API キー。
     #[serde(default)]
     pub llama_api_key: Option<String>,
+    /// llama.cpp で使うモデル id。エンジンが llamacpp のときのみ使用。
+    #[serde(default)]
+    pub llama_model: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Clone)]

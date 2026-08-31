@@ -16,6 +16,7 @@ export interface AppSettings {
     ocrModel?: string
     llamaBaseUrl?: string
     llamaApiKey?: string
+    llamaModel?: string
     windowWidth?: number
     windowHeight?: number
     previewQuality?: 'light' | 'standard' | 'high'

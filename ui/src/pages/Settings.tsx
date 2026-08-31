@@ -49,19 +49,25 @@ export const Settings = forwardRef<SettingsHandle, SettingsProps>(function Setti
     const [modelsLoading, setModelsLoading] = useState(false)
     const [modelError, setModelError] = useState<string | null>(null)
 
-    // llama.cpp のモデルはサーバー依存なので、「再取得」した一覧に無い値は候補に出さない
-    //（前エンジンで選んだ Ollama モデル名が残って見えるのを防ぐ）。
-    // Ollama は既定モデル(glm-ocr)を fetch なしでも選べるので現在値を候補に含める。
+    // モデル欄はエンジンごとに別フィールド（Ollama: ocrModel / llama.cpp: llamaModel）。
+    const isLlamaCpp = settings?.ocrEngine === 'llamacpp'
+    const currentModel = (isLlamaCpp ? settings?.llamaModel : settings?.ocrModel)?.trim() ?? ''
+
+    // 保存済みの選択は fetch 前でも候補に含める（一覧を開かなくても表示が消えないように）。
     const modelOptions = useMemo(() => {
         const set = new Set<string>(fetchedModels)
-        const cur = settings?.ocrModel?.trim()
-        if (cur && settings?.ocrEngine !== 'llamacpp') set.add(cur)
+        if (currentModel) set.add(currentModel)
         return Array.from(set)
-    }, [fetchedModels, settings?.ocrModel, settings?.ocrEngine])
+    }, [fetchedModels, currentModel])
 
-    // Select に渡す表示値。候補に無いものは空（= placeholder）にする。
-    const modelValue =
-        settings?.ocrModel && modelOptions.includes(settings.ocrModel) ? settings.ocrModel : ''
+    const setModel = (v: string | null) =>
+        setSettings((prev) => {
+            if (!prev) return prev
+            const val = v ?? ''
+            return prev.ocrEngine === 'llamacpp'
+                ? { ...prev, llamaModel: val || undefined }
+                : { ...prev, ocrModel: val || 'glm-ocr' }
+        })
 
     const fetchModels = useCallback(async () => {
         if (!settings) return
@@ -287,19 +293,12 @@ export const Settings = forwardRef<SettingsHandle, SettingsProps>(function Setti
                                 ]}
                                 value={settings.ocrEngine ?? 'ollama'}
                                 onChange={(v) => {
-                                    const engine = v as 'ollama' | 'llamacpp'
-                                    // エンジンごとにモデルの意味が違うので、切替時に
-                                    // 前エンジンの一覧・選択・エラーをクリアする
+                                    // モデルはエンジン別フィールドに保持するので切替時の
+                                    // リセットは不要。前エンジンで取得した一覧だけクリアする。
                                     setFetchedModels([])
                                     setModelError(null)
                                     setSettings((prev) =>
-                                        prev
-                                            ? {
-                                                  ...prev,
-                                                  ocrEngine: engine,
-                                                  ocrModel: engine === 'ollama' ? 'glm-ocr' : '',
-                                              }
-                                            : prev
+                                        prev ? { ...prev, ocrEngine: v as 'ollama' | 'llamacpp' } : prev
                                     )
                                 }}
                             />
@@ -339,20 +338,14 @@ export const Settings = forwardRef<SettingsHandle, SettingsProps>(function Setti
                             <Select
                                 label="OCR モデル"
                                 description={
-                                    settings.ocrEngine === 'llamacpp'
+                                    isLlamaCpp
                                         ? '「再取得」で llama-server の一覧を読み込み、使用するモデルを選択'
                                         : '「再取得」で Ollama の一覧を読み込みます'
                                 }
-                                placeholder={settings.ocrEngine === 'llamacpp' ? '「再取得」から選択' : 'glm-ocr'}
+                                placeholder={isLlamaCpp ? '「再取得」から選択' : 'glm-ocr'}
                                 data={modelOptions}
-                                value={modelValue}
-                                onChange={(v) =>
-                                    setSettings((prev) =>
-                                        prev
-                                            ? { ...prev, ocrModel: v ?? (prev.ocrEngine === 'ollama' ? 'glm-ocr' : '') }
-                                            : prev
-                                    )
-                                }
+                                value={currentModel}
+                                onChange={setModel}
                                 searchable
                                 flex={1}
                             />

@@ -22,6 +22,7 @@ export type RunOptions = {
   ocrModel?: string
   llamaBaseUrl?: string
   llamaApiKey?: string
+  llamaModel?: string
 }
 
 export type PdfTextDetection = {
