@@ -20,13 +20,12 @@ struct ChatCompletionRequest<'a> {
     stream: bool,
     max_tokens: i32,
     temperature: f32,
-    // 反復生成（暴走ハルシネーション）対策のサンプラー拡張。サーバー実装で名前が
-    // 異なるため両方送る（llama.cpp: repeat_penalty / mlx-vlm・vLLM: repetition_penalty）。
-    // 未対応サーバーは知らないフィールドを黙って無視する（実測で確認済み）。
+    // llama.cpp のサンプラー拡張。行儀の悪いモデルの反復生成を軽く抑える。
+    // 未対応サーバー（OpenAI 本家・mlx-vlm 等）は知らないフィールドを黙って無視する。
+    // mlx-vlm が解釈する repetition_penalty は、OCR の literal fidelity を下げる
+    // 副作用が実測で出たため送らない（反復対策は pipeline 側の後処理に任せる。ADR-018）。
     #[serde(skip_serializing_if = "Option::is_none")]
     repeat_penalty: Option<f32>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    repetition_penalty: Option<f32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     presence_penalty: Option<f32>,
 }
@@ -151,7 +150,6 @@ impl OpenAiClient {
             max_tokens: 8192,
             temperature: 0.2,
             repeat_penalty: Some(1.3),
-            repetition_penalty: Some(1.3),
             presence_penalty: Some(0.3),
         };
 

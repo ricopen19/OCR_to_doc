@@ -312,19 +312,28 @@ Rust 側（`ui/src-tauri`）のみ削除を実施。Python 側は対象外とし
     → `engineReady`、`ocrEngine` 追加）
   - 検証: `cargo build` / `cargo test --lib`（14 passed）/ `npx tsc --noEmit` /
     `npm run build` 成功。
-- **実サーバー検証（2026-08-31、mlx-vlm サーバーに対して実施）**:
+- **プロトコル検証（2026-08-31、mlx-vlm サーバーに対して実施）**:
+  検証は `openai_client.rs` と同形の JSON を手組みして mlx-vlm に投げたレベルで、
+  Tauri アプリをビルドして UI から実 OCR を通すフル E2E は別途（`docs/tasks.md` の宿題）。
   - 対象は GGUF ではなく MLX モデル（`mlx-community/Qwen3-VL-8B-Instruct-4bit`）
     だったため llama.cpp ではなく `mlx-vlm` サーバー（`python -m mlx_vlm.server`、
     要 `jinja2`）を使用。OpenAI 互換 `/v1` を同じく提供する
-  - `/v1/models` は `data[].id` を返す（HF キャッシュ内モデルのカタログを返す実装。
-    起動中モデルの id も含まれるので「再取得」→ Select で選択可能）
+  - `/v1/models` は `data[].id` を返す。ただし **HF キャッシュ内の全モデルのカタログ**を返す
+    実装で、起動中モデルだけではない。「再取得」後の一覧には無関係なモデルも並ぶので
+    選択時に注意が要る（起動中モデルの id は含まれる）
   - `data:image/png;base64,...` 画像入力・日本語 OCR とも正常（実測 ~27 tok/s / ~6.4GB）
   - **`repeat_penalty` は mlx-vlm では黙って無視される**。mlx-vlm が解釈するのは
-    `repetition_penalty`（実測で出力が変わることを確認）。llama.cpp は `repeat_penalty`、
-    vLLM も `repetition_penalty` を使うため、`openai_client.rs` は両名を送るように修正した
-    （知らないフィールドはどのサーバーも 400 にせず無視することを実測）
+    `repetition_penalty`。ただし `repetition_penalty: 1.3` を送ると OCR の literal fidelity が
+    下がる副作用が実測で出た（ピリオド落ち・語尾の言い換え）。ADR-016 の 1.3 は
+    Unlimited-OCR という特定の壊れたモデル向けの調整値で、行儀の良い instruct モデルに
+    複製する根拠がない。**OpenAI 互換経路には `repetition_penalty` を送らない**方針とし、
+    反復対策は pipeline 側の後処理（`truncate_runaway_repetition` 等、モデル非依存）に任せる。
+    `repeat_penalty` は llama.cpp サーバー向けに残す（未対応サーバーは無視するだけ）
   - **`model` フィールドは無視されない**。mlx-vlm サーバーは指定名のモデルを都度ロード
     しようとするため、アプリの `ocrModel` は起動中モデルの id と完全一致させる必要がある
-    （例: `mlx-community/Qwen3-VL-8B-Instruct-4bit`）。不一致だと HF fetch に走って 400
+    （例: `mlx-community/Qwen3-VL-8B-Instruct-4bit`）。不一致だと HF fetch に走って 400。
+    現在の Settings のモデル欄は `Select`（自由入力不可）なので、`/v1/models` 非対応サーバー
+    だと現在値以外を選べない制約が残る（mlx-vlm では `/v1/models` が効くので回避できる）
+  - 未知のサンプラーフィールドはどのサーバーも 400 にせず黙って無視する
   - thinking は `--enable-thinking` 未指定で OFF。OCR 出力に思考は混入しなかった
-  - 起動コマンドは `docs/tasks.md` に控えた
+  - 起動コマンドと環境依存パスは `docs/local-llm-server.md`（git 追跡外）に控えた

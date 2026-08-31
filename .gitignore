@@ -67,3 +67,6 @@ tmp/
 .serena/
 self-test-logs/
 self-test-result-ci/
+
+# ローカル LLM サーバー起動メモ（環境依存パスを含む）
+docs/local-llm-server.md

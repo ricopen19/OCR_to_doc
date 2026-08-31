@@ -151,39 +151,10 @@ ADR-011 の保留方針を撤回。Ollama バージョンダウンで glm-ocr �
 - [ ] `OllamaClient::unload_model`のタイムアウト（3秒）が短すぎる可能性がある副作用として発見: 複数の検証用バックグラウンドプロセスが同時にOllamaへ接続している状況で`ollama stop`が90秒以上「Stopping...」のまま進まない現象を観測した（通常の単一プロセス運用では問題なし）。実運用でジョブを連続実行した際に同様の遅延が起きないか、別途確認が必要
   → 検証: 実運用に近い形（GUIから複数ジョブを短時間に連続実行等）でアンロードが詰まらないか確認する
 
-## OCR エンジン選択（ADR-018）— llama.cpp / mlx-vlm サーバー起動コマンド
+## OCR エンジン選択（ADR-018）— フル E2E 検証（未実施）
 
-エンジン選択機能の実サーバー検証（2026-08-31）で確認した起動手順を控える。詳細な所見は `docs/decisions.md` ADR-018 の「実サーバー検証」節。
-
-### mlx-vlm（MLX モデル用。`mlx-community/*` は基本これ）
-
-```
-HF_HOME=/Volumes/HanyeSSD/huggingface \
-  uv run --with mlx-vlm --with jinja2 \
-  python -m mlx_vlm.server \
-  --model mlx-community/Qwen3-VL-8B-Instruct-4bit \
-  --host 127.0.0.1 --port 8080
-```
-
-- `--with jinja2` 必須（無いと `/v1/chat/completions` が 500: `apply_chat_template requires jinja2`）
-- `--enable-thinking` は付けない（OCR に思考出力は不要。既定 OFF）
-- 起動確認: `curl -s http://127.0.0.1:8080/v1/models`
-- 実測: Apple Silicon で ~27 tok/s、peak ~6.4GB（Qwen3-VL-8B-Instruct-4bit）
-
-### アプリ設定（Settings 画面）
-
-- エンジン = llama.cpp
-- 接続先 URL = 空欄（既定 `http://localhost:8080` と一致）
-- モデル = 「再取得」で一覧取得 → **起動中モデルの id を正確に選ぶ**
-  （例: `mlx-community/Qwen3-VL-8B-Instruct-4bit`）。
-  mlx-vlm は `model` フィールドのモデルを都度ロードしようとするため、
-  id 不一致だと HF fetch に走って 400 になる
-
-### llama.cpp（GGUF モデル用。参考）
-
-```
-brew install llama.cpp
-llama-server -hf <org>/<repo>-GGUF --host 127.0.0.1 --port 8080 -c 16384 -ngl 99 --jinja
-```
-
-- MLX モデル（`mlx-community/*`）は llama.cpp では動かない（GGUF 専用）
+- [ ] Tauri アプリをビルドし、UI から エンジン=llama.cpp + mlx-vlm サーバー
+  （`docs/local-llm-server.md` の手順）で実 PDF を OCR する通し検証。
+  プロトコルレベル（手組み JSON を mlx-vlm に投げる）は 2026-08-31 に実施済みで、
+  `list_ocr_models` の serde 往復・`ContentPart` シリアライズ・進捗表示・
+  マージ〜エクスポートまでの一連は未確認
