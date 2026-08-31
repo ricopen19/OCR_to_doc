@@ -1,0 +1,5 @@
+# cognitive complexity の閾値。
+# complexity-nudge.sh (Stop hook) がこの値を基準に、関数ごとの新規発生/悪化を
+# baseline 方式で検知して通知する（既存の負債は初回記録のみで通知しない）。
+# clippy のデフォルトと同値だが、プロジェクト固有に調整できるよう明示しておく。
+cognitive-complexity-threshold = 25
