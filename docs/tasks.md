@@ -151,10 +151,19 @@ ADR-011 の保留方針を撤回。Ollama バージョンダウンで glm-ocr �
 - [ ] `OllamaClient::unload_model`のタイムアウト（3秒）が短すぎる可能性がある副作用として発見: 複数の検証用バックグラウンドプロセスが同時にOllamaへ接続している状況で`ollama stop`が90秒以上「Stopping...」のまま進まない現象を観測した（通常の単一プロセス運用では問題なし）。実運用でジョブを連続実行した際に同様の遅延が起きないか、別途確認が必要
   → 検証: 実運用に近い形（GUIから複数ジョブを短時間に連続実行等）でアンロードが詰まらないか確認する
 
-## OCR エンジン選択（ADR-018）— フル E2E 検証（未実施）
+## OCR エンジン選択（ADR-018）— E2E 検証
 
-- [ ] Tauri アプリをビルドし、UI から エンジン=llama.cpp + mlx-vlm サーバー
-  （`docs/local-llm-server.md` の手順）で実 PDF を OCR する通し検証。
-  プロトコルレベル（手組み JSON を mlx-vlm に投げる）は 2026-08-31 に実施済みで、
-  `list_ocr_models` の serde 往復・`ContentPart` シリアライズ・進捗表示・
-  マージ〜エクスポートまでの一連は未確認
+- [x] Rust スタック通しの統合テスト（`ocr::pipeline::tests::ocr_pipeline_llamacpp_manual`、
+  `#[ignore]`）を追加し、起動中の mlx-vlm サーバーに対して `yomitoku_ocr_table_sample_v1.pdf`
+  全5ページを通し実行。`/v1/models` の serde 往復（`ModelsResponse`）→ poppler pdftoppm →
+  画像 base64 → `OpenAiClient::chat_vision`（`ContentPart` シリアライズ）→
+  `/v1/chat/completions` レスポンス parse（`ChatCompletionResponse`）→ 後処理 →
+  md 書き出し → `merge_page_markdowns` まで通過。
+  → 検証: `cargo test --lib`（15 passed / 2 ignored、リグレッションなし）。
+  E2E は 5ページ 119秒（~27 tok/s）。表は markdown（`| --- |`）で復元され、記号
+  （○△×◎▲▼□■）・日本語・桁区切り・日付も維持。p4（回転文字・背景色ページ）のみ
+  表が空に近い結果になったが暴走生成・クラッシュはなし。実行手順:
+  `LLAMACPP_MODEL=<id> OCR_INPUT=<pdf> OCR_OUT=<dir> cargo test --lib ocr_pipeline_llamacpp_manual -- --ignored --nocapture`
+  （`LLAMACPP_URL` 省略時 `http://127.0.0.1:8080`、`OCR_START`/`OCR_END` でページ範囲指定可）
+- [ ] Tauri アプリを実ビルドして UI から通す E2E（`invoke` 境界・`RunOptions` の JS→Rust
+  デシリアライズ・進捗イベント・エクスポートまで）は未実施。上記でコア経路は確認済みのため優先度低
