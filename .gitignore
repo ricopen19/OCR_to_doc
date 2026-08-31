@@ -65,3 +65,5 @@ tmp/
 # Local tooling artifacts (codegraph / serena)
 .codegraph/
 .serena/
+self-test-logs/
+self-test-result-ci/
